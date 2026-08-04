@@ -140,6 +140,50 @@ class TestValueStartX:
         assert parse.value_start_x(blank, (5, 15), default=42) == 42
 
 
+class TestLabelSimilarity:
+    def test_identical_labels_score_one(self):
+        assert parse.label_similarity("জিলা", "জিলা") == 1.0
+
+    def test_tolerates_the_mangling_tesseract_actually_produces(self):
+        """ব্লক is read as বক; the match must survive that but still pick the right label."""
+        assert parse.label_similarity("বক", "ব্লক") >= parse.LABEL_MATCH_THRESHOLD
+
+    def test_distinguishes_labels_within_a_block(self):
+        """Forgiving is fine; confusing জিলা with ডাকঘৰ is not."""
+        seen = "জিলা"
+        best = max(parse.LOCALITY_LABELS, key=lambda lab: parse.label_similarity(seen, lab))
+        assert best == "জিলা"
+
+    def test_unrelated_text_scores_low(self):
+        assert parse.label_similarity("completely unrelated", "জিলা") < parse.LABEL_MATCH_THRESHOLD
+
+
+class TestLabelsMatchFields:
+    def test_locality_labels_align_with_fields(self):
+        assert len(parse.LOCALITY_LABELS) == len(parse.LOCALITY_FIELDS)
+
+    def test_revision_labels_align_with_fields(self):
+        assert len(parse.REVISION_LABELS) == len(parse.REVISION_FIELDS)
+
+
+class TestLeadingSerial:
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("৫6% - ভাৰতী বিদ্যালয়", "ভাৰতী বিদ্যালয়"),
+            ("এ4 - লক্ষী ইউনিয়ন হাই স্কুল", "লক্ষী ইউনিয়ন হাই স্কুল"),
+            ("€1 - দৰঙী চুক এল পি স্কুল", "দৰঙী চুক এল পি স্কুল"),
+        ],
+    )
+    def test_strips_a_garbled_serial_prefix(self, raw, expected):
+        assert parse.LEADING_SERIAL_RE.sub("", raw) == expected
+
+    def test_does_not_eat_a_real_station_number(self):
+        """526 and ৬২৫ are part of the name in the source and must survive."""
+        for name in ("526 শুড়িপাৰা এল পি স্কুল", "৬২৫ ৰাজেন্দ্ৰপুৰ এল.পি. স্কুল"):
+            assert parse.LEADING_SERIAL_RE.sub("", name) == name
+
+
 @needs_tools
 class TestParsePage:
     def test_reads_the_fixture_end_to_end(self, page):

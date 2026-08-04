@@ -22,20 +22,36 @@ Digits are therefore only ever read from crops known to hold digits alone.
 
 from __future__ import annotations
 
+import base64
+import io
+import json
 import os
 import re
 import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Optional, Protocol
 
 from PIL import Image
 
 DIGIT_WHITELIST = "0123456789"
 
-#: 144 dpi source; Tesseract does better with a larger glyph, and 2x measured best.
-DEFAULT_SCALE = 2
+# Upscaling is not one-size-fits-all here; all three values are measured on this corpus.
+#
+#   digits            scale 2 -> 100.0%  scale 3 -> 99.0%  scale 4 -> 86.9%  (sum check)
+#   single-line text  scale 2 correct;   scale 3 loses long values outright -- it
+#                     returned "" for "যোৰহাট ইঞ্জিনিয়াৰিং কলেজ" on 6 pages
+#   multi-line text   scale 2 silently DROPS a whole line of a two-line address under
+#                     every psm; scale 3 reads both
+#
+# So scale is chosen per region rather than per engine. This is also the second reason
+# read_digits and read_text are separate calls (the first being that the Assamese model
+# renders Western 8 as ৪).
+DEFAULT_DIGIT_SCALE = 2
+DEFAULT_TEXT_SCALE = 2
+MULTILINE_TEXT_SCALE = 3
 
 #: ``psm 6`` ("uniform block") beat 7/8/13 on isolated numbers -- notably it is the only
 #: mode that reliably reads a lone "0", which 7 returns as empty.
@@ -54,8 +70,12 @@ class Engine(Protocol):
 
     name: str
 
-    def read_text(self, image: Image.Image) -> str:
-        """Transcribe a cell containing script."""
+    def read_text(self, image: Image.Image, scale: Optional[int] = None) -> str:
+        """Transcribe a cell containing script.
+
+        ``scale`` lets a caller override upscaling for a region whose shape needs it;
+        engines that do not rescale may ignore it.
+        """
         ...
 
     def read_digits(self, image: Image.Image) -> str:
@@ -75,16 +95,17 @@ class TesseractEngine:
 
     name: str = "tesseract"
     lang: str = "asm"
-    scale: int = DEFAULT_SCALE
+    digit_scale: int = DEFAULT_DIGIT_SCALE
+    text_scale: int = DEFAULT_TEXT_SCALE
     psm: int = DEFAULT_PSM
 
-    def _run(self, image: Image.Image, lang: str, whitelist: Optional[str]) -> str:
+    def _run(self, image: Image.Image, lang: str, whitelist: Optional[str], scale: int) -> str:
         if shutil.which("tesseract") is None:
             raise OCRError("tesseract not found (macOS: brew install tesseract)")
         grey = image.convert("L")
-        if self.scale != 1:
+        if scale != 1:
             grey = grey.resize(
-                (grey.width * self.scale, grey.height * self.scale),
+                (grey.width * scale, grey.height * scale),
                 Image.Resampling.LANCZOS,
             )
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -98,14 +119,102 @@ class TesseractEngine:
                 raise OCRError(f"tesseract failed: {result.stderr.strip()[:200]}")
             return result.stdout.strip()
 
-    def read_text(self, image: Image.Image) -> str:
-        return re.sub(r"\s+", " ", self._run(image, self.lang, None)).strip()
+    def read_text(self, image: Image.Image, scale: Optional[int] = None) -> str:
+        raw = self._run(image, self.lang, None, scale or self.text_scale)
+        return re.sub(r"\s+", " ", raw).strip()
 
     def read_digits(self, image: Image.Image) -> str:
-        return re.sub(r"\D", "", self._run(image, "eng", DIGIT_WHITELIST))
+        return re.sub(r"\D", "", self._run(image, "eng", DIGIT_WHITELIST, self.digit_scale))
 
 
-ENGINES: Dict[str, type] = {"tesseract": TesseractEngine}
+class SuryaEngine:
+    """Surya OCR (VLM) via savitr's MLX runtime, driven as a subprocess.
+
+    Surya's stack conflicts with this package's (it needs mlx-vlm), so it runs in its own
+    venv and communicates over stdin/stdout -- the same cross-venv arrangement savitr and
+    the Manipur benchmark use. ``scripts/surya_worker.py`` holds the model resident, which
+    matters: a process per crop would pay ~0.8s of model load for ~0.3s of work.
+
+    Digits fall back to Tesseract deliberately. Surya's language prior, which is what
+    makes it good at conjuncts, works against it on numerals -- it renders a Latin
+    pincode as ``78336০``, mixing in a Bengali zero.
+    """
+
+    name = "surya"
+
+    def __init__(
+        self,
+        python: str = ".venv-surya/bin/python",
+        worker: str = "scripts/surya_worker.py",
+        model: str = "/Users/soodoku/Documents/GitHub/savitr/models/surya-mlx-4bit",
+        digit_engine: Optional["Engine"] = None,
+    ) -> None:
+        self._python, self._worker, self._model = python, worker, model
+        self._digits = digit_engine or TesseractEngine()
+        self._process: Optional[subprocess.Popen] = None
+
+    def _start(self) -> subprocess.Popen:
+        if self._process and self._process.poll() is None:
+            return self._process
+        if not Path(self._python).exists():
+            raise OCRError(
+                f"{self._python} not found; create it with "
+                "`uv venv --python 3.12 .venv-surya && "
+                "uv pip install --python .venv-surya/bin/python savitr`"
+            )
+        self._process = subprocess.Popen(
+            [self._python, self._worker, "--model", self._model],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+        )
+        ready = self._process.stdout.readline()  # type: ignore[union-attr]
+        if not ready or "ready" not in ready:
+            raise OCRError(f"surya worker failed to start: {ready!r}")
+        return self._process
+
+    def read_text(self, image: Image.Image, scale: Optional[int] = None) -> str:
+        del scale  # Surya is a VLM; it does not benefit from client-side upscaling
+        process = self._start()
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        payload = json.dumps({"png": base64.b64encode(buffer.getvalue()).decode("ascii")})
+        process.stdin.write(payload + "\n")  # type: ignore[union-attr]
+        process.stdin.flush()  # type: ignore[union-attr]
+        reply = json.loads(process.stdout.readline())  # type: ignore[union-attr]
+        if "error" in reply:
+            raise OCRError(reply["error"])
+        return strip_html(reply.get("text", ""))
+
+    def read_digits(self, image: Image.Image) -> str:
+        return self._digits.read_digits(image)
+
+    def close(self) -> None:
+        if self._process and self._process.poll() is None:
+            self._process.terminate()
+            self._process.wait(timeout=10)
+
+
+TAG_RE = re.compile(r"<[^>]+>")
+
+
+def strip_html(text: str) -> str:
+    """Flatten Surya's HTML to plain text.
+
+    Surya emits more than one valid table layout for the same input -- sometimes with
+    ``<b>``-wrapped labels, sometimes not, sometimes inside a ``<div>``. savitr's own
+    findings note the same thing ("cell-structure parsers break"). So the structure is
+    discarded and only the text kept; the grid already tells us what each crop is.
+    """
+    flattened = TAG_RE.sub(" ", text or "")
+    for entity, char in (("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"), ("&nbsp;", " ")):
+        flattened = flattened.replace(entity, char)
+    return re.sub(r"\s+", " ", flattened).strip()
+
+
+ENGINES: Dict[str, type] = {"tesseract": TesseractEngine, "surya": SuryaEngine}
 
 
 def get_engine(name: str = "tesseract", **kwargs) -> Engine:

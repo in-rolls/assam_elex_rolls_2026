@@ -18,13 +18,14 @@ why mixing the Assamese model into number reading corrupts results silently.
 
 from __future__ import annotations
 
+import difflib
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image
 
 from .layout import Grid
-from .ocr import Engine, int_or_none, value_after_label
+from .ocr import MULTILINE_TEXT_SCALE, Engine, int_or_none, value_after_label
 from .render import PartRef
 from .schema import (
     PS_TYPE_FROM_ASSAMESE,
@@ -35,7 +36,9 @@ from .schema import (
     normalize_digits,
 )
 
-#: Row order of the section-2 locality block, top to bottom.
+#: Row order of the section-2 locality block, top to bottom, with the label the form
+#: prints beside each. The label is what makes the mapping checkable: if row 3 does not
+#: read as "পুলিচ থানা", the rows have shifted and every field below it is suspect.
 LOCALITY_FIELDS = (
     "main_town_village",
     "ward_no",
@@ -46,6 +49,16 @@ LOCALITY_FIELDS = (
     "district",
     "pin_code",
 )
+LOCALITY_LABELS = (
+    "মূল চহৰ/গাঁও",
+    "ৱাৰ্ড নং",
+    "ডাকঘৰ",
+    "পুলিচ থানা",
+    "ব্লক",
+    "ৰাজহ চক্ৰ",
+    "জিলা",
+    "পিনকোড",
+)
 
 #: Row order of the section-1 revision block.
 REVISION_FIELDS = (
@@ -54,6 +67,17 @@ REVISION_FIELDS = (
     "revision_type",
     "publication_date",
 )
+REVISION_LABELS = (
+    "সংশোধনৰ বছৰ",
+    "ভিত্তি তাৰিখ",
+    "সংশোধনৰ প্ৰকাৰ",
+    "প্ৰকাশনৰ তাৰিখ",
+)
+
+#: Minimum similarity for an OCR'd label to be accepted as a given field's label.
+#: Tesseract mangles labels (ব্লক -> বক), so this is deliberately forgiving; it only has
+#: to be sharp enough to tell one label from the seven others in its block.
+LABEL_MATCH_THRESHOLD = 0.55
 
 #: Fallback X offset where values begin, used when a row has no label/value gap wide
 #: enough to locate (which is what an empty value looks like).
@@ -156,28 +180,97 @@ def normalize_ps_type(value: str) -> str:
 # ------------------------------------------------------------------------------ blocks
 
 
+def _read_region(cell: Image.Image, engine: Engine, y0: int, y1: int) -> str:
+    """OCR a whole vertical region as one block, joining its lines with spaces.
+
+    Used for free-form multi-line values (station name, address) where there is no
+    field mapping to preserve and slicing into rows risks cutting glyphs.
+    """
+    top, bottom = max(0, y0), min(cell.height, y1)
+    if bottom - top < 4:
+        return ""
+    # A taller region needs more upscaling: at 2x, Tesseract silently drops one line of
+    # a two-line address. Short single-line values are read at the default scale, where
+    # 3x instead loses long values entirely.
+    return engine.read_text(cell.crop((0, top, cell.width, bottom)), scale=MULTILINE_TEXT_SCALE)
+
+
+def label_similarity(seen: str, expected: str) -> float:
+    """How closely an OCR'd label matches the label the form prints."""
+    return difflib.SequenceMatcher(None, clean_text(seen), clean_text(expected)).ratio()
+
+
+def _align_by_label(
+    cell: Image.Image,
+    engine: Engine,
+    spans: List[Tuple[int, int]],
+    fields: Tuple[str, ...],
+    labels: Tuple[str, ...],
+    value_x: int,
+) -> Tuple[Dict[str, Tuple[int, int]], List[str]]:
+    """Assign rows to fields by reading each row's *label*.
+
+    Only used when the row count is not the expected one -- reading the key as well as
+    the value costs an OCR call per row, and positional mapping is already correct when
+    every row is present. When a row is missing (a blank value can merge or vanish),
+    positional mapping would shift every subsequent field silently, so here the label
+    decides.
+    """
+    assigned: Dict[str, Tuple[int, int]] = {}
+    notes: List[str] = []
+    for span in spans:
+        label_text = engine.read_text(cell.crop((0, max(0, span[0] - 4), value_x, span[1] + 5)))
+        scores = [(label_similarity(label_text, lab), i) for i, lab in enumerate(labels)]
+        best, index = max(scores)
+        if best < LABEL_MATCH_THRESHOLD:
+            notes.append(f"unmatched_label:{label_text[:20]}")
+            continue
+        field = fields[index]
+        if field not in assigned:
+            assigned[field] = span
+    return assigned, notes
+
+
 def _stacked_block(
-    cell: Image.Image, fields: Tuple[str, ...], default_x: int, dynamic: bool = False
-) -> Dict[str, Image.Image]:
-    """Crop a stacked label/value block to one value image per field, by row index.
+    cell: Image.Image,
+    engine: Engine,
+    fields: Tuple[str, ...],
+    labels: Tuple[str, ...],
+    default_x: int,
+    dynamic: bool = False,
+) -> Tuple[Dict[str, Image.Image], List[str]]:
+    """Crop a stacked label/value block to one value image per field.
+
+    Fast path: when the number of detected rows equals the number of fields, rows map to
+    fields by index. Otherwise the labels are read and used to align, which is what keeps
+    a missing row from shifting every field beneath it.
 
     ``dynamic`` locates the label/value boundary from the widest whitespace run, which
-    the revision block needs because its values are constant corpus-wide and its label
-    widths differ per row. The locality block instead has a fixed colon column, and a
-    dynamic boundary there would land *before* the colon and pull it into the value.
+    the revision block needs because its values are constant corpus-wide and so cannot be
+    located by comparing pages. The locality block instead has a fixed colon column, and
+    a dynamic boundary there would land *before* the colon and pull it into the value.
     """
+    spans = text_rows(cell)
+    notes: List[str] = []
+
+    if len(spans) == len(fields):
+        by_field = {fields[i]: span for i, span in enumerate(spans)}
+    else:
+        notes.append(f"row_count:{len(spans)}!={len(fields)}")
+        by_field, extra = _align_by_label(cell, engine, spans, fields, labels, default_x)
+        notes += extra
+
     crops: Dict[str, Image.Image] = {}
-    for index, span in enumerate(text_rows(cell)):
-        if index >= len(fields):
-            break
+    for field, span in by_field.items():
         x0 = value_start_x(cell, span, default_x) if dynamic else default_x
-        crops[fields[index]] = _row_crop(cell, span, x0)
-    return crops
+        crops[field] = _row_crop(cell, span, x0)
+    return crops, notes
 
 
-def parse_locality(cell: Image.Image, engine: Engine) -> Dict[str, Any]:
-    crops = _stacked_block(cell, LOCALITY_FIELDS, LOCALITY_VALUE_X)
+def parse_locality(cell: Image.Image, engine: Engine) -> Tuple[Dict[str, Any], List[str]]:
+    crops, notes = _stacked_block(cell, engine, LOCALITY_FIELDS, LOCALITY_LABELS, LOCALITY_VALUE_X)
     parsed: Dict[str, Any] = {name: "" for name in LOCALITY_FIELDS}
+    parsed["pin_code"] = None
     for name, crop in crops.items():
         # The pincode is printed in Latin digits, so read it with the digit engine
         # rather than the Assamese one, which can render an 8 as ৪.
@@ -185,54 +278,79 @@ def parse_locality(cell: Image.Image, engine: Engine) -> Dict[str, Any]:
             parsed[name] = int_or_none(engine.read_digits(crop))
         else:
             parsed[name] = strip_leading_colon(engine.read_text(crop))
-    return parsed
+    return parsed, notes
 
 
-def parse_revision(cell: Image.Image, engine: Engine) -> Dict[str, Any]:
-    crops = _stacked_block(cell, REVISION_FIELDS, REVISION_VALUE_X, dynamic=True)
+def parse_revision(cell: Image.Image, engine: Engine) -> Tuple[Dict[str, Any], List[str]]:
+    crops, notes = _stacked_block(
+        cell, engine, REVISION_FIELDS, REVISION_LABELS, REVISION_VALUE_X, dynamic=True
+    )
     values = {name: engine.read_text(crop) for name, crop in crops.items()}
     return {
         "revision_year": int_or_none(values.get("revision_year", "")),
         "qualifying_date": iso_date(values.get("qualifying_date", "")),
         "revision_type": clean_text(values.get("revision_type", "")),
         "publication_date": iso_date(values.get("publication_date", "")),
-    }
+    }, notes
 
 
-def parse_station(grid: Grid, image: Image.Image, engine: Engine) -> Dict[str, Any]:
-    """Polling station number, name and address.
+#: The address label row, used to split the station name from its address.
+ADDRESS_LABEL = "ভোটগ্ৰহন কেন্দ্ৰৰ ঠিকনা"
 
-    The name is printed *below* its label, so it lands in the address cell's first row;
-    the address itself follows its own label row.
+#: A leading "<n> - " on the station-name line, where <n> may be garbled by OCR. The
+#: number is discarded (it is the part number, known authoritatively from the filename),
+#: but the prefix must be stripped or the garbage lands in the name.
+LEADING_SERIAL_RE = re.compile(r"^\s*\S{0,6}?\s*[-–]\s*")
+
+
+def parse_station(grid: Grid, image: Image.Image, engine: Engine) -> Tuple[Dict[str, Any], list]:
+    """Polling station name and address.
+
+    Both wrap. The name is printed *below* its label so it lands in the address cell,
+    and either the name or the address can run to a second line. Rows before the address
+    label belong to the name; rows from the label onward belong to the address. Taking
+    only the first row (an earlier version) truncated wrapped names and, when the name
+    wrapped, dropped the start of the address.
+
+    ``ps_no`` is deliberately **not** parsed here. It always equals the part number --
+    verified against source images for every mismatch in the corpus -- and reading it
+    off the page misread the leading digits on 10% of pages, corrupting ``ps_name`` too.
+    The caller supplies it from the filename.
     """
     cell = grid.crop(image, "s3_address")
     spans = text_rows(cell)
+    notes: List[str] = []
+    if not spans:
+        return {"ps_name": "", "ps_address": ""}, ["address_cell_empty"]
+
+    # Locate the address label row. Only this row is read individually; the name and
+    # address are then read as whole regions.
     lines = [engine.read_text(_row_crop(cell, span)) for span in spans]
+    label_index = next(
+        (
+            i
+            for i, line in enumerate(lines)
+            if label_similarity(line.split(":")[0], ADDRESS_LABEL) >= LABEL_MATCH_THRESHOLD
+        ),
+        None,
+    )
+    if label_index is None:
+        label_index = next((i for i, line in enumerate(lines) if ":" in line), 1)
+        notes.append("address_label_not_found")
 
-    ps_no, ps_name = (None, "")
-    if lines:
-        ps_no, ps_name = split_numbered_name(lines[0])
-
-    # Everything after the address label row is the address, which may wrap.
-    address_parts: List[str] = []
-    seen_label = False
-    for line in lines[1:]:
-        if not seen_label and ":" in line:
-            seen_label = True
-            tail = value_after_label(line)
-            if tail:
-                address_parts.append(tail)
-            continue
-        if seen_label:
-            address_parts.append(line)
-    if not seen_label:
-        address_parts = lines[1:]
+    # Read each side as ONE region rather than row by row. Assamese hangs glyphs below
+    # the headline, so a boundary drawn from the ink profile can slice through
+    # descenders and render a line unreadable -- observed on AC12 part 47, where the
+    # first address line OCR'd to an empty string and the address lost its opening.
+    name = _read_region(cell, engine, 0, spans[label_index][0] - 2)
+    address_tail = value_after_label(lines[label_index]) if label_index < len(lines) else ""
+    below = _read_region(cell, engine, spans[label_index][1] + 2, cell.height)
+    address = " ".join(part for part in (address_tail, below) if part)
 
     return {
-        "ps_no": ps_no,
-        "ps_name": clean_text(ps_name),
-        "ps_address": clean_text(" ".join(p for p in address_parts if p)),
-    }
+        "ps_name": clean_text(LEADING_SERIAL_RE.sub("", clean_text(name))),
+        "ps_address": clean_text(address),
+    }, notes
 
 
 def parse_sections(grid: Grid, image: Image.Image, engine: Engine) -> List[Dict[str, Any]]:
@@ -299,15 +417,27 @@ def parse_page(
         }
     )
 
-    row.update(parse_revision(grid.crop(image, "s1_revision"), engine))
+    notes: List[str] = []
+
+    revision, revision_notes = parse_revision(grid.crop(image, "s1_revision"), engine)
+    row.update(revision)
+    notes += revision_notes
 
     description = engine.read_text(grid.crop(image, "s1_description"))
     row["roll_description"] = clean_text(description)
     years = [int(y.group()) for y in YEAR_RE.finditer(description)]
     row["mother_roll_year"] = min(years) if years else None
 
-    row.update(parse_locality(grid.crop(image, "s2_locality"), engine))
-    row.update(parse_station(grid, image, engine))
+    locality, locality_notes = parse_locality(grid.crop(image, "s2_locality"), engine)
+    row.update(locality)
+    notes += locality_notes
+
+    station, station_notes = parse_station(grid, image, engine)
+    row.update(station)
+    notes += station_notes
+
+    # The station number always equals the part number; see parse_station.
+    row["ps_no"] = ref.part_no
     row["ps_type"] = normalize_ps_type(engine.read_text(grid.crop(image, "s3_type_value")))
     row["auxiliary_ps_count"] = int_or_none(engine.read_digits(grid.crop(image, "s3_aux_value")))
 
@@ -323,6 +453,7 @@ def parse_page(
 
     row["total_pages"] = int_or_none(engine.read_text(grid.crop(image, "footer")))
     row["template_match"] = True
+    row["anomaly_notes"] = ";".join(notes)
     row.update(derive_columns(row))
 
     sections = [

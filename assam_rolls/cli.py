@@ -273,6 +273,68 @@ def cmd_ocr(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_bench(args: argparse.Namespace) -> int:
+    """Score a candidate engine against a declared reference engine."""
+    from PIL import Image
+
+    from . import bench as bench_mod
+    from . import layout as layout_mod
+    from . import ocr as ocr_mod
+    from . import parse as parse_mod
+
+    refs = [r for r in _all_refs(args.zip_dir) if (args.pages / f"{r.key}.png").exists()]
+    by_ac: Dict[int, List[Any]] = {}
+    for ref in refs:
+        by_ac.setdefault(ref.ac_no, []).append(ref)
+    # Stratify: an equal slice of each AC, so one constituency cannot dominate.
+    per_ac = max(1, args.pages_per_ac)
+    sample = [r for ac in sorted(by_ac) for r in by_ac[ac][::7][:per_ac]]
+    print(f"benchmark on {len(sample)} pages across {len(by_ac)} ACs")
+
+    results: Dict[str, Dict[Any, Dict[str, Any]]] = {}
+    timings: Dict[str, float] = {}
+    for name in (args.reference, args.candidate):
+        engine = ocr_mod.get_engine(name)
+        rows: Dict[Any, Dict[str, Any]] = {}
+        started = time.time()
+        for i, ref in enumerate(sample, 1):
+            image = Image.open(args.pages / f"{ref.key}.png")
+            try:
+                grid = layout_mod.build_grid(image)
+                row, _ = parse_mod.parse_page(image, grid, ref, engine)
+                rows[(ref.ac_no, ref.part_no)] = row
+            except (layout_mod.LayoutError, ocr_mod.OCRError) as exc:
+                print(f"  {name} {ref.key}: {exc}", file=sys.stderr)
+            print(f"  {name}: {i}/{len(sample)}", end="\r", flush=True)
+        timings[name] = (time.time() - started) / max(1, len(sample))
+        results[name] = rows
+        if hasattr(engine, "close"):
+            engine.close()
+        print(f"  {name}: {len(rows)} pages, {timings[name]:.1f}s/page")
+
+    score = bench_mod.score_engine(
+        results[args.reference],
+        results[args.candidate],
+        args.candidate,
+        seconds_per_page=timings[args.candidate],
+    )
+    text = bench_mod.render_report(
+        [score],
+        reference_name=args.reference,
+        n_pages=len(results[args.reference]),
+        notes=[
+            f"reference `{args.reference}` ran at {timings[args.reference]:.1f}s/page, "
+            f"candidate `{args.candidate}` at {timings[args.candidate]:.1f}s/page",
+            "numeric fields are excluded: both engines read them with the same digit "
+            "pass, and they are already verified by the checks in validate.py",
+        ],
+    )
+    bench_mod.write_report(args.out, text, [score])
+    print(f"\nwrote {args.out}\n")
+    print(text)
+    return 0
+
+
 def cmd_review(args: argparse.Namespace) -> int:
     rows = list(csv.DictReader(args.parts.open(encoding="utf-8")))
     html = review_mod.build_review_html(rows, args.pages, only_flagged=not args.all)
@@ -330,6 +392,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_build.add_argument("--out", type=Path, default=Path("out"))
     p_build.add_argument("--model", default=extract_mod.DEFAULT_MODEL)
     p_build.set_defaults(func=cmd_build)
+
+    p_bench = sub.add_parser("bench", help="score one engine against a declared reference")
+    add_common(p_bench)
+    p_bench.add_argument("--reference", default="surya")
+    p_bench.add_argument("--candidate", default="tesseract")
+    p_bench.add_argument("--pages-per-ac", type=int, default=4)
+    p_bench.add_argument("--out", type=Path, default=Path("out/REPORT.md"))
+    p_bench.set_defaults(func=cmd_bench)
 
     p_review = sub.add_parser("review", help="HTML review sheet")
     p_review.add_argument("--parts", type=Path, default=Path("out/parts.csv"))
