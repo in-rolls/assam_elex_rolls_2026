@@ -162,6 +162,11 @@ class TestColumns:
         for column in schema.DERIVED_COLUMNS:
             assert column in schema.PART_COLUMNS
 
+    def test_qa_columns_carry_both_sides_of_the_check_ratio(self):
+        """checks_passed without checks_total is uninterpretable."""
+        assert "checks_passed" in schema.PART_COLUMNS
+        assert "checks_total" in schema.PART_COLUMNS
+
     def test_verbatim_fields_have_roman_companions(self):
         expected_roman = [
             "ac_name",

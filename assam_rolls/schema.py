@@ -257,6 +257,9 @@ QA_COLUMNS = [
     "model",
     "extracted_at",
     "checks_passed",
+    # The denominator varies by row: corpus-consensus checks only run once a mode
+    # exists, so checks_passed is uninterpretable without it.
+    "checks_total",
     "flags",
     "needs_review",
 ]
