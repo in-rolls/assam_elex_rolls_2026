@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -193,6 +194,85 @@ def cmd_build(args: argparse.Namespace) -> int:
     return 0
 
 
+def _ocr_one(job):
+    """Worker: read one rendered page into rows. Top-level so it can be pickled."""
+    from PIL import Image
+
+    from . import layout as layout_mod
+    from . import ocr as ocr_mod
+    from . import parse as parse_mod
+
+    ref, image_path, engine_name = job
+    engine = ocr_mod.get_engine(engine_name)
+    image = Image.open(image_path)
+    try:
+        grid = layout_mod.build_grid(image)
+    except layout_mod.LayoutError as exc:
+        row = {
+            "source_zip": ref.zip_name,
+            "source_pdf": ref.pdf_name,
+            "ac_no_file": ref.ac_no,
+            "part_no_file": ref.part_no,
+            "model": engine_name,
+            "template_match": False,
+            "flags": "layout_failed",
+            "needs_review": True,
+            "anomaly_notes": str(exc)[:200],
+        }
+        return row, []
+    return parse_mod.parse_page(image, grid, ref, engine)
+
+
+def cmd_ocr(args: argparse.Namespace) -> int:
+    """Local OCR over rendered pages -- the free path, no API calls."""
+    import multiprocessing as mp
+    from datetime import datetime, timezone
+
+    refs = [r for r in _all_refs(args.zip_dir) if (args.pages / f"{r.key}.png").exists()]
+    if args.limit:
+        refs = refs[: args.limit]
+    if not refs:
+        print(f"no rendered pages in {args.pages}; run render first", file=sys.stderr)
+        return 1
+
+    jobs = [(ref, args.pages / f"{ref.key}.png", args.engine) for ref in refs]
+    workers = args.workers or max(1, (os.cpu_count() or 2) - 1)
+    print(f"{len(jobs)} pages, engine={args.engine}, {workers} workers")
+
+    started = time.time()
+    if workers == 1:
+        results = [_ocr_one(job) for job in jobs]
+    else:
+        with mp.Pool(workers) as pool:
+            results = pool.map(_ocr_one, jobs, chunksize=4)
+    elapsed = time.time() - started
+
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    part_rows, section_rows = [], []
+    for row, sections in results:
+        row.setdefault("extracted_at", stamp)
+        part_rows.append(row)
+        section_rows.extend(sections)
+
+    validate_mod.validate_rows(part_rows, parts_per_ac=_parts_per_ac(args.zip_dir))
+    report = validate_mod.accuracy_report(part_rows)
+    report["engine"] = args.engine
+    report["seconds_per_page"] = round(elapsed / max(1, len(jobs)), 3)
+
+    _write_csv(args.out / "parts.csv", PART_COLUMNS, part_rows)
+    _write_csv(args.out / "part_sections.csv", SECTION_COLUMNS, section_rows)
+    (args.out / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+    print(f"\nparts.csv         {len(part_rows)} rows")
+    print(f"part_sections.csv {len(section_rows)} rows")
+    per_page = elapsed / max(1, len(jobs))
+    print(f"elapsed           {elapsed:.0f}s ({per_page:.2f}s/page)")
+    print("\nquality (filename and arithmetic checks are ground truth on every page):")
+    for key, value in report.items():
+        print(f"  {key:24s} {value}")
+    return 0
+
+
 def cmd_review(args: argparse.Namespace) -> int:
     rows = list(csv.DictReader(args.parts.open(encoding="utf-8")))
     html = review_mod.build_review_html(rows, args.pages, only_flagged=not args.all)
@@ -229,6 +309,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_extract.add_argument("--limit", type=int, default=None)
     p_extract.add_argument("--sync", action="store_true", help="synchronous, for small pilots")
     p_extract.set_defaults(func=cmd_extract)
+
+    p_ocr = sub.add_parser("ocr", help="local OCR -> validated CSVs (free, no API)")
+    add_common(p_ocr)
+    p_ocr.add_argument("--out", type=Path, default=Path("out"))
+    p_ocr.add_argument("--engine", default="tesseract")
+    p_ocr.add_argument("--limit", type=int, default=None)
+    p_ocr.add_argument("--workers", type=int, default=None)
+    p_ocr.set_defaults(func=cmd_ocr)
 
     p_collect = sub.add_parser("collect", help="fetch finished batches")
     p_collect.add_argument("--raw", type=Path, default=Path("out/raw"))
