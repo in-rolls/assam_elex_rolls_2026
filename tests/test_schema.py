@@ -198,4 +198,23 @@ class TestDeriveColumns:
     def test_missing_fields_do_not_raise(self):
         derived = schema.derive_columns({})
         assert derived["ward_no_num"] is None
-        assert derived["ps_address_digits"] == ""
+        assert derived["ps_address_digits"] is None
+
+    def test_derived_fields_inherit_the_kind_of_emptiness(self):
+        """Blank in, blank out; unread in, unread out.
+
+        A rural part genuinely has no ward number, so ``ward_no_num`` must be blank
+        rather than NA -- reporting NA would claim the pipeline failed to read a value
+        that was never printed.
+        """
+        blank = schema.derive_columns({"ward_no": "", "ps_address": ""})
+        assert blank["ward_no_num"] == ""
+        assert blank["ps_address_digits"] == ""
+
+        unread = schema.derive_columns({"ward_no": None, "ps_address": None})
+        assert unread["ward_no_num"] is None
+        assert unread["ps_address_digits"] is None
+
+    def test_ward_text_without_a_number_is_not_silently_blank(self):
+        derived = schema.derive_columns({"ward_no": "ৱাৰ্ড নং"})
+        assert derived["ward_no_num"] is None

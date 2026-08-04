@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import logging
 import os
 import sys
 import time
@@ -21,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import extract as extract_mod
+from . import log as _log
 from . import render as render_mod
 from . import review as review_mod
 from . import validate as validate_mod
@@ -151,7 +153,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_build(args: argparse.Namespace) -> int:
+def cmd_build_from_model(args: argparse.Namespace) -> int:
     refs = {ref.key: ref for ref in _all_refs(args.zip_dir)}
     raw_files = sorted(args.raw.glob("*.json"))
     if not raw_files:
@@ -195,81 +197,167 @@ def cmd_build(args: argparse.Namespace) -> int:
 
 
 def _ocr_one(job):
-    """Worker: read one rendered page into rows. Top-level so it can be pickled."""
+    """Worker: read one page into rows and cache the result. Top-level so it pickles."""
     from PIL import Image
 
+    from . import cache as cache_mod
     from . import layout as layout_mod
     from . import ocr as ocr_mod
     from . import parse as parse_mod
+    from . import render as render_mod
+    from .log import get_logger
 
-    ref, image_path, engine_name = job
-    engine = ocr_mod.get_engine(engine_name)
+    ref, image_path, engine_name, zip_path, cache_dir = job
+    worker_log = get_logger("worker")
+
+    try:
+        pdf_bytes = render_mod.read_pdf_bytes(zip_path, ref.pdf_name)
+        pdf_sha = render_mod.sha256_bytes(pdf_bytes)
+    except Exception as exc:  # a missing or corrupt zip entry
+        return ref.key, None, f"source unreadable: {exc}"
+
+    cached = cache_mod.read_entry(cache_dir, ref.key)
+    if cache_mod.is_fresh(cached, pdf_sha):
+        return ref.key, "cached", None
+
+    page_bytes = Path(image_path).read_bytes()
+    provenance = {
+        "source_zip_dir": str(Path(zip_path).parent),
+        "pdf_sha256": pdf_sha,
+        "pdf_bytes": len(pdf_bytes),
+        "page_png": str(image_path),
+        "page_sha256": render_mod.sha256_bytes(page_bytes),
+        "engine_version": ocr_mod.engine_version(engine_name),
+    }
+
     image = Image.open(image_path)
     try:
         grid = layout_mod.build_grid(image)
     except layout_mod.LayoutError as exc:
-        row = {
-            "source_zip": ref.zip_name,
-            "source_pdf": ref.pdf_name,
-            "ac_no_file": ref.ac_no,
-            "part_no_file": ref.part_no,
-            "model": engine_name,
-            "template_match": False,
-            "flags": "layout_failed",
-            "needs_review": True,
-            "anomaly_notes": str(exc)[:200],
-        }
-        return row, []
-    return parse_mod.parse_page(image, grid, ref, engine)
+        worker_log.warning("%s: layout failed: %s", ref.key, exc)
+        row = parse_mod.failed_row(ref, engine_name, str(exc), provenance)
+        cache_mod.write_entry(cache_dir, ref.key, row, [], pdf_sha)
+        return ref.key, "done", None
+
+    try:
+        engine = ocr_mod.get_engine(engine_name)
+        row, sections = parse_mod.parse_page(image, grid, ref, engine, provenance)
+    except Exception as exc:
+        return ref.key, None, f"{type(exc).__name__}: {exc}"
+
+    cache_mod.write_entry(cache_dir, ref.key, row, sections, pdf_sha)
+    return ref.key, "done", None
 
 
 def cmd_ocr(args: argparse.Namespace) -> int:
-    """Local OCR over rendered pages -- the free path, no API calls."""
+    """Local OCR over rendered pages -- the free path, no API calls. Resumable."""
     import multiprocessing as mp
-    from datetime import datetime, timezone
+
+    from . import cache as cache_mod
+    from .log import RunSummary
+
+    logger = _log.get_logger(__name__)
+
+    zip_for_ac = {}
+    for zip_path in _zip_paths(args.zip_dir):
+        for ref in render_mod.iter_zip_parts(zip_path):
+            zip_for_ac[ref.key] = zip_path
 
     refs = [r for r in _all_refs(args.zip_dir) if (args.pages / f"{r.key}.png").exists()]
     if args.limit:
         refs = refs[: args.limit]
     if not refs:
-        print(f"no rendered pages in {args.pages}; run render first", file=sys.stderr)
+        logger.error("no rendered pages in %s; run render first", args.pages)
         return 1
 
-    jobs = [(ref, args.pages / f"{ref.key}.png", args.engine) for ref in refs]
+    cache_dir = args.cache
+    if args.overwrite:
+        cache_mod.clear(cache_dir)
+
+    jobs = [
+        (ref, args.pages / f"{ref.key}.png", args.engine, zip_for_ac[ref.key], cache_dir)
+        for ref in refs
+        if ref.key in zip_for_ac
+    ]
     workers = args.workers or max(1, (os.cpu_count() or 2) - 1)
+    logger.info(
+        "ocr: %d pages, engine=%s, %d workers, cache=%s", len(jobs), args.engine, workers, cache_dir
+    )
     print(f"{len(jobs)} pages, engine={args.engine}, {workers} workers")
 
-    started = time.time()
-    if workers == 1:
-        results = [_ocr_one(job) for job in jobs]
-    else:
-        with mp.Pool(workers) as pool:
-            results = pool.map(_ocr_one, jobs, chunksize=4)
-    elapsed = time.time() - started
+    summary = RunSummary(logger, "ocr")
+    log_file = str(args.log_file) if args.log_file else None
 
-    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    def record(result):
+        key, status, error = result
+        if error:
+            summary.failed(key, error)
+        elif status == "cached":
+            summary.was_cached(key)
+        else:
+            summary.succeeded(key)
+
+    if workers == 1:
+        for job in jobs:
+            record(_ocr_one(job))
+    else:
+        with mp.Pool(
+            workers, initializer=_log.worker_init, initargs=(log_file, logging.WARNING)
+        ) as pool:
+            for result in pool.imap_unordered(_ocr_one, jobs, chunksize=4):
+                record(result)
+
+    stats = summary.emit()
+    print(
+        f"\n{stats['processed']} extracted, {stats['cached']} already cached, "
+        f"{stats['failed']} failed in {stats['elapsed_seconds']:.0f}s"
+    )
+    if stats["failed"]:
+        print(f"see {args.log_file} for the failing part keys")
+    print(f"\nnow run: assam-rolls build --cache {cache_dir} --out {args.out}")
+    return 0
+
+
+def cmd_build(args: argparse.Namespace) -> int:
+    """Assemble the dataset from the cache: validate, canonicalise, write JSONL + CSV."""
+    from . import cache as cache_mod
+    from . import dictionary as dict_mod
+    from . import output as output_mod
+
+    logger = _log.get_logger(__name__)
+    entries = sorted(args.cache.glob("*.json"))
+    if not entries:
+        logger.error("no cache entries in %s; run ocr first", args.cache)
+        return 1
+
     part_rows, section_rows = [], []
-    for row, sections in results:
-        row.setdefault("extracted_at", stamp)
-        part_rows.append(row)
-        section_rows.extend(sections)
+    for path in entries:
+        entry = cache_mod.read_entry(args.cache, path.stem)
+        if not entry:
+            continue
+        part_rows.append(entry["row"])
+        section_rows.extend(entry.get("sections") or [])
+    logger.info("build: loaded %d parts, %d sections", len(part_rows), len(section_rows))
 
     validate_mod.validate_rows(part_rows, parts_per_ac=_parts_per_ac(args.zip_dir))
     report = validate_mod.accuracy_report(part_rows)
-    report["engine"] = args.engine
-    report["seconds_per_page"] = round(elapsed / max(1, len(jobs)), 3)
 
-    _write_csv(args.out / "parts.csv", PART_COLUMNS, part_rows)
-    _write_csv(args.out / "part_sections.csv", SECTION_COLUMNS, section_rows)
-    (args.out / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    # Canonical values are written alongside the raw ones, never over them.
+    corpus = dict_mod.build(part_rows)
+    part_rows = [corpus.apply_row(row) for row in part_rows]
+    report["dictionary_substitutions"] = len(corpus.changes())
+    report["dictionary_contested"] = len(corpus.contested())
 
-    print(f"\nparts.csv         {len(part_rows)} rows")
-    print(f"part_sections.csv {len(section_rows)} rows")
-    per_page = elapsed / max(1, len(jobs))
-    print(f"elapsed           {elapsed:.0f}s ({per_page:.2f}s/page)")
+    counts = output_mod.write_dataset(args.out, part_rows, section_rows)
+    (args.out / "report.json").write_text(
+        json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+    for name, n in counts.items():
+        print(f"{name:20s} {n} rows")
     print("\nquality (filename and arithmetic checks are ground truth on every page):")
     for key, value in report.items():
-        print(f"  {key:24s} {value}")
+        print(f"  {key:26s} {value}")
     return 0
 
 
@@ -349,6 +437,14 @@ def cmd_review(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="assam-rolls", description=__doc__)
+    parser.add_argument(
+        "--log-file",
+        type=Path,
+        default=None,
+        help="defaults to out/logs/run-<timestamp>.log",
+    )
+    parser.add_argument("-v", "--verbose", action="store_true", help="debug output on console")
+    parser.add_argument("-q", "--quiet", action="store_true", help="errors only on console")
     sub = parser.add_subparsers(dest="command", required=True)
 
     def add_common(p):
@@ -372,13 +468,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_extract.add_argument("--sync", action="store_true", help="synchronous, for small pilots")
     p_extract.set_defaults(func=cmd_extract)
 
-    p_ocr = sub.add_parser("ocr", help="local OCR -> validated CSVs (free, no API)")
+    p_ocr = sub.add_parser("ocr", help="local OCR -> per-part cache (free, resumable)")
     add_common(p_ocr)
     p_ocr.add_argument("--out", type=Path, default=Path("out"))
+    p_ocr.add_argument("--cache", type=Path, default=Path("out/cache"))
     p_ocr.add_argument("--engine", default="tesseract")
     p_ocr.add_argument("--limit", type=int, default=None)
     p_ocr.add_argument("--workers", type=int, default=None)
+    p_ocr.add_argument(
+        "--overwrite", action="store_true", help="discard the cache and re-extract everything"
+    )
     p_ocr.set_defaults(func=cmd_ocr)
+
+    p_build = sub.add_parser("build", help="cache -> parts.jsonl + CSVs (validated)")
+    add_common(p_build)
+    p_build.add_argument("--cache", type=Path, default=Path("out/cache"))
+    p_build.add_argument("--out", type=Path, default=Path("out"))
+    p_build.set_defaults(func=cmd_build)
 
     p_collect = sub.add_parser("collect", help="fetch finished batches")
     p_collect.add_argument("--raw", type=Path, default=Path("out/raw"))
@@ -386,12 +492,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_collect.add_argument("--poll-seconds", type=int, default=60)
     p_collect.set_defaults(func=cmd_collect)
 
-    p_build = sub.add_parser("build", help="raw JSON -> validated CSVs")
-    add_common(p_build)
-    p_build.add_argument("--raw", type=Path, default=Path("out/raw"))
-    p_build.add_argument("--out", type=Path, default=Path("out"))
-    p_build.add_argument("--model", default=extract_mod.DEFAULT_MODEL)
-    p_build.set_defaults(func=cmd_build)
+    p_model_build = sub.add_parser("build-model", help="Claude raw JSON -> CSVs (dormant path)")
+    add_common(p_model_build)
+    p_model_build.add_argument("--raw", type=Path, default=Path("out/raw"))
+    p_model_build.add_argument("--out", type=Path, default=Path("out"))
+    p_model_build.add_argument("--model", default=extract_mod.DEFAULT_MODEL)
+    p_model_build.set_defaults(func=cmd_build_from_model)
 
     p_bench = sub.add_parser("bench", help="score one engine against a declared reference")
     add_common(p_bench)
@@ -412,8 +518,36 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    args = build_parser().parse_args(argv)
-    return args.func(args)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    # A statewide run is hours long; without a file log a failure leaves no record of
+    # which page failed or why.
+    out_dir = getattr(args, "out", None)
+    if not isinstance(out_dir, Path):
+        out_dir = Path("out")
+    elif out_dir.suffix:
+        # `review --out out/review.html` names a file, not a directory; putting the log
+        # under it would create a directory where the HTML belongs.
+        out_dir = out_dir.parent
+    if args.log_file is None:
+        args.log_file = _log.default_log_path(out_dir)
+    level = logging.DEBUG if args.verbose else (logging.ERROR if args.quiet else logging.INFO)
+    _log.setup_logging(level=level, log_file=args.log_file)
+    logger = _log.get_logger(__name__)
+    logger.info("assam-rolls %s: %s", args.command, " ".join(argv or sys.argv[1:]))
+    logger.debug("log file: %s", args.log_file)
+
+    try:
+        return args.func(args)
+    except KeyboardInterrupt:
+        # The cache makes this recoverable; say so rather than dumping a traceback.
+        logger.warning("interrupted; progress is cached, re-run to resume")
+        print("\ninterrupted — progress is cached, re-run the same command to resume")
+        return 130
+    except Exception:
+        logger.exception("unhandled error in %s", args.command)
+        raise
 
 
 if __name__ == "__main__":

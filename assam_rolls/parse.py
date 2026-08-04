@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import difflib
 import re
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image
@@ -28,12 +30,14 @@ from .layout import Grid
 from .ocr import MULTILINE_TEXT_SCALE, Engine, int_or_none, value_after_label
 from .render import PartRef
 from .schema import (
+    PIPELINE_VERSION,
     PS_TYPE_FROM_ASSAMESE,
     RESERVATION_FROM_ASSAMESE,
     clean_text,
     derive_columns,
     empty_part_row,
     normalize_digits,
+    parse_source_filename,
 )
 
 #: Row order of the section-2 locality block, top to bottom, with the label the form
@@ -180,6 +184,39 @@ def normalize_ps_type(value: str) -> str:
 # ------------------------------------------------------------------------------ blocks
 
 
+def has_ink(image: Image.Image, ink: int = 150, min_pixels: int = 6) -> bool:
+    """Whether a crop contains enough dark pixels to be holding text.
+
+    This is what separates the two kinds of missing value. If the value region carries
+    ink but OCR returned nothing, the pipeline failed to read something that is there
+    (``None``). If there is no ink, the form simply prints nothing there (``""``) --
+    rural parts have no ward number, and that absence is data, not an error.
+    """
+    grey = image.convert("L")
+    pixels = grey.load()
+    width, height = grey.size
+    seen = 0
+    for y in range(height):
+        for x in range(width):
+            if pixels[x, y] < ink:
+                seen += 1
+                if seen >= min_pixels:
+                    return True
+    return False
+
+
+def read_value(engine: Engine, crop: Image.Image, scale: Optional[int] = None):
+    """Read one value crop, distinguishing "unreadable" from "blank".
+
+    Returns ``""`` when the crop holds no ink, ``None`` when it holds ink but yields no
+    text, and the text otherwise.
+    """
+    text = clean_text(engine.read_text(crop, scale=scale) if scale else engine.read_text(crop))
+    if text:
+        return text
+    return None if has_ink(crop) else ""
+
+
 def _read_region(cell: Image.Image, engine: Engine, y0: int, y1: int) -> str:
     """OCR a whole vertical region as one block, joining its lines with spaces.
 
@@ -269,15 +306,17 @@ def _stacked_block(
 
 def parse_locality(cell: Image.Image, engine: Engine) -> Tuple[Dict[str, Any], List[str]]:
     crops, notes = _stacked_block(cell, engine, LOCALITY_FIELDS, LOCALITY_LABELS, LOCALITY_VALUE_X)
-    parsed: Dict[str, Any] = {name: "" for name in LOCALITY_FIELDS}
-    parsed["pin_code"] = None
+    # Fields whose row was never detected stay None: not read, as opposed to read blank.
+    parsed: Dict[str, Any] = {name: None for name in LOCALITY_FIELDS}
     for name, crop in crops.items():
         # The pincode is printed in Latin digits, so read it with the digit engine
         # rather than the Assamese one, which can render an 8 as ৪.
         if name == "pin_code":
-            parsed[name] = int_or_none(engine.read_digits(crop))
+            digits = engine.read_digits(crop)
+            parsed[name] = int_or_none(digits) if digits else (None if has_ink(crop) else "")
         else:
-            parsed[name] = strip_leading_colon(engine.read_text(crop))
+            value = read_value(engine, crop)
+            parsed[name] = strip_leading_colon(value) if value else value
     return parsed, notes
 
 
@@ -367,7 +406,6 @@ def parse_sections(grid: Grid, image: Image.Image, engine: Engine) -> List[Dict[
                 "section_no": number if number is not None else index,
                 "section_name": name,
                 "section_name_digits": normalize_digits(name),
-                "section_name_roman": "",
             }
         )
     return rows
@@ -376,23 +414,91 @@ def parse_sections(grid: Grid, image: Image.Image, engine: Engine) -> List[Dict[
 # -------------------------------------------------------------------------------- page
 
 
-def parse_page(
-    image: Image.Image, grid: Grid, ref: PartRef, engine: Engine
-) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
-    """Read one page into a part row plus its section rows."""
-    row = empty_part_row()
+def failed_row(
+    ref: PartRef,
+    engine_name: str,
+    reason: str,
+    provenance: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """A row for a page that could not be parsed at all.
 
-    # Provenance. ac_no/part_no come from the filename, which is authoritative publisher
-    # metadata; the OCR readings below are kept only as a quality signal.
+    Emitted rather than dropped so the part still appears in the dataset, flagged for
+    review, with its provenance intact. A silently missing part is far harder to notice
+    than one that says why it failed.
+    """
+    row = empty_part_row()
     row.update(
         {
             "source_zip": ref.zip_name,
             "source_pdf": ref.pdf_name,
             "ac_no_file": ref.ac_no,
             "part_no_file": ref.part_no,
-            "model": getattr(engine, "name", "unknown"),
+            "engine": engine_name,
+            "pipeline_version": PIPELINE_VERSION,
+            "extracted_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "template_match": False,
+            "flags": "layout_failed",
+            "needs_review": True,
+            "anomaly_notes": reason[:200],
         }
     )
+    parsed_name = parse_source_filename(Path(ref.pdf_name).name)
+    if parsed_name:
+        row.update(
+            {
+                "roll_year": parsed_name["year"],
+                "state_code": parsed_name["state"],
+                "roll_type": parsed_name["roll_type"],
+                "revision_no": parsed_name["revision"],
+                "lang": parsed_name["lang"],
+            }
+        )
+    row.update(provenance or {})
+    return row
+
+
+def parse_page(
+    image: Image.Image,
+    grid: Grid,
+    ref: PartRef,
+    engine: Engine,
+    provenance: Optional[Dict[str, Any]] = None,
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """Read one page into a part row plus its section rows.
+
+    ``provenance`` carries the source hashes and run metadata the caller has but the
+    parser does not (it never sees the PDF bytes or the page file). Everything needed to
+    stitch a row back to its source file is written here rather than bolted on later.
+    """
+    row = empty_part_row()
+
+    # ac_no/part_no come from the filename, which is authoritative publisher metadata;
+    # the OCR readings below are kept only as a quality signal.
+    row.update(
+        {
+            "source_zip": ref.zip_name,
+            "source_pdf": ref.pdf_name,
+            "ac_no_file": ref.ac_no,
+            "part_no_file": ref.part_no,
+            "engine": getattr(engine, "name", "unknown"),
+            "pipeline_version": PIPELINE_VERSION,
+            "extracted_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+    )
+
+    # The filename encodes the roll year, state, roll type, revision and language.
+    parsed_name = parse_source_filename(Path(ref.pdf_name).name)
+    if parsed_name:
+        row.update(
+            {
+                "roll_year": parsed_name["year"],
+                "state_code": parsed_name["state"],
+                "roll_type": parsed_name["roll_type"],
+                "revision_no": parsed_name["revision"],
+                "lang": parsed_name["lang"],
+            }
+        )
+    row.update(provenance or {})
 
     ac_no, ac_rest = split_numbered_name(
         value_after_label(engine.read_text(grid.crop(image, "header_ac")))

@@ -237,14 +237,47 @@ MODEL_FIELDS: List[Dict[str, Any]] = [
 
 MODEL_FIELD_NAMES = [f["name"] for f in MODEL_FIELDS]
 
-#: Provenance columns computed by the pipeline, never by the model.
-PROVENANCE_COLUMNS = [
+#: Where the row came from -- enough to find the exact source file again.
+#:
+#: ``pdf_sha256`` hashes the **source PDF**, not the rendered page image. The image is
+#: derived, so hashing it would not notice the publisher re-issuing a part; hashing the
+#: PDF both identifies the input and drives cache invalidation on a resumed run.
+SOURCE_COLUMNS = [
     "source_zip",
+    "source_zip_dir",
     "source_pdf",
-    "sha256",
+    "pdf_sha256",
+    "pdf_bytes",
+]
+
+#: Recovered from the source filename, which encodes them all. ``parse_source_filename``
+#: has always returned these; earlier versions kept only ac_no/part_no and dropped the
+#: rest, which are exactly the keys needed to stitch across roll types and revisions.
+FILENAME_COLUMNS = [
+    "roll_year",
+    "state_code",
+    "roll_type",
+    "revision_no",
+    "lang",
     "ac_no_file",
     "part_no_file",
 ]
+
+#: The rendered page this row was read from.
+RENDER_COLUMNS = [
+    "page_png",
+    "page_sha256",
+]
+
+#: Which code and which engine produced the row.
+RUN_COLUMNS = [
+    "engine",
+    "engine_version",
+    "pipeline_version",
+    "extracted_at",
+]
+
+PROVENANCE_COLUMNS = SOURCE_COLUMNS + FILENAME_COLUMNS + RENDER_COLUMNS + RUN_COLUMNS
 
 #: Columns derived in code from verbatim model output -- deterministic, no model call.
 DERIVED_COLUMNS = [
@@ -254,24 +287,71 @@ DERIVED_COLUMNS = [
 
 #: QA columns written by ``validate.py``.
 QA_COLUMNS = [
-    "model",
-    "extracted_at",
     "checks_passed",
     # The denominator varies by row: corpus-consensus checks only run once a mode
     # exists, so checks_passed is uninterpretable without it.
     "checks_total",
     "flags",
     "needs_review",
+    "anomaly_notes",
 ]
 
-PART_COLUMNS = PROVENANCE_COLUMNS + MODEL_FIELD_NAMES + DERIVED_COLUMNS + QA_COLUMNS
+
+def _ordered_unique(*groups: List[str]) -> List[str]:
+    """Concatenate column groups, keeping the first occurrence of each name.
+
+    ``anomaly_notes`` deliberately appears in two groups: it is a field the model can
+    report *and* one ``validate.py`` writes when a check fires. That is one output
+    column with two possible producers, so it is listed in both groups for honesty and
+    collapsed here rather than deleted from either.
+    """
+    seen, columns = set(), []
+    for group in groups:
+        for name in group:
+            if name not in seen:
+                seen.add(name)
+                columns.append(name)
+    return columns
+
+
+PART_COLUMNS = _ordered_unique(PROVENANCE_COLUMNS, MODEL_FIELD_NAMES, DERIVED_COLUMNS, QA_COLUMNS)
+
+#: Fields the dictionary canonicalises; each gains a ``*_canonical`` companion in the
+#: shipped output. Raw values are always kept -- canonical is "made internally
+#: consistent", not "corrected", and conflating the two would overstate its authority.
+CANONICAL_SOURCE_FIELDS = (
+    "district",
+    "ac_name",
+    "pc_name",
+    "revenue_circle",
+    "block",
+    "police_station",
+    "post_office",
+)
+CANONICAL_COLUMNS = [f"{name}_canonical" for name in CANONICAL_SOURCE_FIELDS]
+
+#: Columns the Tesseract pipeline cannot populate, excluded from the shipped output.
+#: The 11 romanisations were produced by the (now dormant) model path, and
+#: ``extraction_confidence`` is a model self-report. They stay in ``MODEL_FIELDS`` so
+#: re-enabling that path needs no schema migration, but shipping them empty would leave
+#: a quarter of every row blank.
+UNSUPPORTED_BY_OCR = tuple(name for name in MODEL_FIELD_NAMES if name.endswith("_roman")) + (
+    "extraction_confidence",
+)
+
+
+def output_columns() -> List[str]:
+    """Columns for the shipped dataset: everything the OCR pipeline actually fills."""
+    return [c for c in PART_COLUMNS if c not in UNSUPPORTED_BY_OCR] + CANONICAL_COLUMNS
+
+
+OUTPUT_COLUMNS = output_columns()
 
 SECTION_COLUMNS = [
     "ac_no",
     "part_no",
     "section_no",
     "section_name",
-    "section_name_roman",
     "section_name_digits",
 ]
 
@@ -282,9 +362,14 @@ def derive_columns(row: Dict[str, Any]) -> Dict[str, Any]:
     Kept deterministic on purpose: digit transliteration is a bijection, so doing it in
     code avoids both the token cost and the failure mode of asking the model for it.
     """
+    ward = row.get("ward_no")
+    address = row.get("ps_address")
     return {
-        "ward_no_num": first_int(row.get("ward_no")),
-        "ps_address_digits": normalize_digits(row.get("ps_address")),
+        # A derived field inherits its source's kind of emptiness: blank in, blank out;
+        # unread in, unread out. Reporting "" as NA would claim a read failure that did
+        # not happen.
+        "ward_no_num": None if ward is None else (first_int(ward) if ward else ""),
+        "ps_address_digits": None if address is None else normalize_digits(address),
     }
 
 
@@ -349,6 +434,17 @@ def build_page1_json_schema() -> Dict[str, Any]:
 PAGE1_JSON_SCHEMA = build_page1_json_schema()
 
 
+#: Bumped when a change alters extracted values, so rows can be traced to the code that
+#: produced them and a partially-rebuilt corpus is never silently mixed.
+PIPELINE_VERSION = "1.0.0"
+
+
 def empty_part_row() -> Dict[str, Any]:
-    """A part row with every column present and empty, so CSV writing never KeyErrors."""
-    return {column: "" for column in PART_COLUMNS}
+    """A part row with every column present and ``None``.
+
+    ``None`` is the correct default because it means *not read*. Fields the form leaves
+    genuinely blank are set to ``""`` explicitly by the parser, which is what keeps the
+    two distinguishable downstream -- an unreadable pincode and an absent ward number
+    are different facts and should not both arrive as empty strings.
+    """
+    return {column: None for column in PART_COLUMNS}

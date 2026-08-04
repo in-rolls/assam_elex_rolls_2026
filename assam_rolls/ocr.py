@@ -223,6 +223,23 @@ def get_engine(name: str = "tesseract", **kwargs) -> Engine:
     return ENGINES[name](**kwargs)
 
 
+def engine_version(name: str = "tesseract") -> str:
+    """A version string for the engine, recorded with every row.
+
+    Worth capturing because the recogniser and its language model move independently:
+    the Tesseract binary is actively maintained while ``asm.traineddata`` has been frozen
+    at ``synth20170629`` since 2017. A row's readings are attributable to both.
+    """
+    if name != "tesseract":
+        return name
+    try:
+        result = subprocess.run(["tesseract", "--version"], capture_output=True, text=True)
+        first = (result.stdout or result.stderr).splitlines()[0].strip()
+        return f"{first} (asm=synth20170629)"
+    except (OSError, IndexError):
+        return "tesseract (version unknown)"
+
+
 # ------------------------------------------------------------------- value extraction
 
 

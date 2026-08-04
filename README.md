@@ -37,9 +37,15 @@ Page 1 is a rigid four-section form, stable across rural and urban constituencie
 
 Output is two tables:
 
-- **`parts.csv`** — one row per part.
+- **`parts.jsonl`** — one JSON object per part, sections nested inside it.
+  **Authoritative**: real integers, `null` distinct from `""`, Assamese unescaped.
+- **`parts.csv`** — the same rows, flat and `utf-8-sig` so Excel renders Assamese.
 - **`part_sections.csv`** — one row per numbered area within a part (the list is
   one-to-many, so it does not belong in a wide row).
+
+CSV cannot represent `null`, so it writes `NA`; where the two formats disagree, the
+JSONL is right. Every row carries the source zip, PDF name and `pdf_sha256` needed to
+stitch it back to the exact bytes it came from. See [`DATA.md`](DATA.md).
 
 ### Text conventions
 
@@ -81,32 +87,36 @@ the extracted values.
 
 ## Install
 
-Requires [poppler](https://poppler.freedesktop.org/) and Python 3.10+.
+Requires [poppler](https://poppler.freedesktop.org/), Tesseract 5 with the Assamese
+language model, and Python 3.10+.
 
 ```bash
-brew install poppler          # macOS; Debian: apt-get install poppler-utils
-make install                  # uv venv + editable install with dev extras
-export ANTHROPIC_API_KEY=...
+brew install poppler tesseract      # Debian: apt-get install poppler-utils tesseract-ocr
+
+curl -L -o "$(brew --prefix)/share/tessdata/asm.traineddata" \
+  https://github.com/tesseract-ocr/tessdata_best/raw/main/asm.traineddata
+
+make install                        # uv venv + editable install with dev extras
 ```
+
+No API key is required.
 
 ## Run
 
 ```bash
-assam-rolls render                      # zips        -> out/pages/{ac}-{part}.png
-assam-rolls extract                     # pages       -> Batch API (50% cheaper)
-assam-rolls collect --wait              # batches     -> out/raw/*.json
-assam-rolls build                       # raw JSON    -> parts.csv + report.json
-assam-rolls review                      # flagged rows-> out/review.html
+assam-rolls render        # zips  -> out/pages/{ac}-{part}.png
+assam-rolls ocr           # pages -> out/cache/*.json          (local, free)
+assam-rolls build         # cache -> parts.jsonl + CSVs + report.json
+assam-rolls review        # flagged rows -> out/review.html
 ```
 
-Every stage is resumable and idempotent, keyed on `{ac:03d}-{part:04d}`. For a quick
-pilot without the batch round trip:
+Every stage is resumable and idempotent, keyed on `{ac:03d}-{part:04d}`. `ocr` skips any
+part whose cached result still matches its source PDF's hash, so an interrupted run
+resumes where it stopped, and a re-issued PDF is re-extracted automatically. Pass
+`--overwrite` to force a clean run, and `--log-file` for a durable record.
 
-```bash
-assam-rolls render  --limit 5
-assam-rolls extract --limit 5 --sync
-assam-rolls build
-```
+**No API key is needed.** The Claude path in `extract.py` is retained but not wired into
+the default flow — see [why it was abandoned](docs/ANALYSIS.md#8-why-the-claude-api-path-was-measured-and-then-abandoned).
 
 ## Development
 
@@ -129,8 +139,8 @@ Full run over the 890 parts currently on disk (AC1, AC10, AC12, AC100), Tesserac
 | `part_no` vs filename | 99.55% (4 misreads) |
 | `male + female + third == total` | **99.89%** (1 misread) |
 | Rows needing review | **5 / 890** |
-| Rows with no failed check at all | 872 / 890 |
-| Throughput | 0.41 s/page → ~3 h statewide |
+| Rows with no failed check at all | 871 / 890 |
+| Throughput | 0.37 s/page → ~3 h statewide |
 | Cost | **$0** |
 
 Field fill rates are 100% for `district`, `block`, `police_station`, `post_office`,
@@ -153,11 +163,18 @@ Numeric fields are verified on every page by the checks above; the text fields a
 and their accuracy is not yet established. That is what the engine bake-off and the gold
 set are for.
 
+## Documentation
+
+- [`DATA.md`](DATA.md) — every column, the null convention, accuracy, and limitations.
+- [`docs/ANALYSIS.md`](docs/ANALYSIS.md) — how the pipeline was arrived at: grid
+  detection, the digit-script trap, per-region upscaling, dictionary thresholds, the
+  Tesseract-vs-Surya bake-off, and the cost analysis that ruled out the API.
+
 ## Status
 
-Page 1 numerics are done and provably correct on the corpus at hand. Next is the
-engine bake-off (Surya-MLX via `savitr`, EasyOCR, PaddleOCR against Tesseract) on the
-Assamese text cells, then a gold set to score them.
+Page 1 is done and its numerics are provably correct on the corpus at hand. The engine
+bake-off is settled — **Tesseract**, on error *shape* rather than raw agreement. What
+remains is a human-labelled gold set: Assamese **text** accuracy is still unmeasured.
 
 Page 2 — polling-station imagery, GPS, facilities — is deliberately sequenced **after**
 page 1 ships; its CAD drawings are non-standard across districts and need a coverage
