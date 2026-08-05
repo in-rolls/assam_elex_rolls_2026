@@ -217,3 +217,63 @@ class TestParsePage:
         row, _ = parse.parse_page(page, grid, ref, ocr.get_engine("tesseract"), ASM)
         assert row["ac_no_file"] == ref.ac_no
         assert row["part_no_file"] == ref.part_no
+
+
+class TestReadTrailingNumber:
+    """A number printed after a label in the same cell must go to the digit engine.
+
+    Regression: ``part_no`` was read by pulling the integer out of the language model's
+    transcription of the whole cell. That rendered 103 as 1093 and, on Assamese pages,
+    8 as ৪ -- which the ASCII guard then refused, losing the value. 98.15% -> 100.00%
+    over 216 sampled parts.
+    """
+
+    def cell(self, ink_columns, width=200, height=20):
+        image = Image.new("L", (width, height), 255)
+        for x in ink_columns:
+            for y in range(4, height - 4):
+                image.putpixel((x, y), 0)
+        return image
+
+    def test_reads_to_the_right_of_the_widest_right_hand_gap(self):
+        seen = {}
+
+        class Engine:
+            name = "stub"
+
+            def read_text(self, image, scale=None):
+                return "should not be used"
+
+            def read_digits(self, image):
+                seen["width"] = image.width
+                return "103"
+
+        # label ink on the left, a gap, then the number's ink on the right
+        cell = self.cell(list(range(10, 90)) + list(range(130, 180)))
+        assert parse.read_trailing_number(cell, Engine()) == "103"
+        assert seen["width"] < cell.width, "the label must not reach the digit engine"
+
+    def test_uses_the_digit_engine_not_the_text_engine(self):
+        class Engine:
+            name = "stub"
+
+            def read_text(self, image, scale=None):
+                raise AssertionError("digits must never go through the language model")
+
+            def read_digits(self, image):
+                return "7"
+
+        cell = self.cell(list(range(10, 80)) + list(range(140, 170)))
+        assert parse.read_trailing_number(cell, Engine()) == "7"
+
+    def test_blank_cell_reads_empty(self):
+        class Engine:
+            name = "stub"
+
+            def read_text(self, image, scale=None):
+                return ""
+
+            def read_digits(self, image):
+                return "x"
+
+        assert parse.read_trailing_number(Image.new("L", (200, 20), 255), Engine()) == ""

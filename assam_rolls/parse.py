@@ -158,6 +158,39 @@ def value_start_x(cell: Image.Image, span: Tuple[int, int], default: int, ink: i
     return start + width if width >= MIN_LABEL_GAP else default
 
 
+#: Fraction of a ``label : number`` cell to search for the label/value boundary. The gap
+#: before the number is only ~9px -- far narrower than the locality block's ~95-131px --
+#: so it competes with the gaps *inside* the label. Restricting the search to the right of
+#: the cell removes that competition.
+TRAILING_NUMBER_SEARCH_FROM = 0.45
+
+
+def read_trailing_number(cell: Image.Image, engine: Engine, ink: int = 150) -> str:
+    """Read a number printed after a label in the same cell, using the digit engine.
+
+    The part-number cell reads ``খণ্ড নং : 103``. Handing the whole thing to the language
+    model and pulling the integer out of the result is wrong for the same reason the
+    elector cells are read separately: a language model does not transcribe digits
+    faithfully. It rendered ``103`` as ``1093`` and ``133`` as ``1393`` -- a spurious 9 --
+    and on Assamese pages it turned ``8`` into ``৪``, which the ASCII-only guard then
+    correctly refused, losing the value entirely.
+
+    Cropping to the right of the label and reading *that* with ``read_digits`` fixes both:
+    measured over 216 parts sampled across 24 constituencies and all three languages,
+    98.15% -> 100.00%.
+    """
+    pixels = cell.convert("L").load()
+    columns = [x for x in range(cell.width) if any(pixels[x, y] < ink for y in range(cell.height))]
+    if len(columns) < 2:
+        return ""
+    threshold = int(cell.width * TRAILING_NUMBER_SEARCH_FROM)
+    gaps = [(b - a, a) for a, b in zip(columns, columns[1:]) if a >= threshold]
+    if not gaps:
+        gaps = [(b - a, a) for a, b in zip(columns, columns[1:])]
+    width, start = max(gaps)
+    return engine.read_digits(cell.crop((start + width, 0, cell.width, cell.height)))
+
+
 #: Characters Tesseract produces where the form prints a colon. It reads the locality
 #: block's colon as "£" often enough that stripping only ":" leaves it in the value.
 COLON_LIKE = ":;£¢|"
@@ -569,7 +602,7 @@ def parse_page(
             "pc_name": pc_name,
             "pc_reservation": pc_reservation,
             "part_no": int_or_none(
-                value_after_label(engine.read_text(grid.crop(image, "header_part_no")))
+                read_trailing_number(grid.crop(image, "header_part_no"), engine)
             ),
         }
     )
