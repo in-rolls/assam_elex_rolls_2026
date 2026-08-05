@@ -266,25 +266,43 @@ def validate_rows(
     return rows
 
 
-def accuracy_report(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
-    """Corpus-level quality summary, driven by the filename ground truth.
-
-    ``ac_no_agreement`` and ``part_no_agreement`` are true accuracy figures -- measured
-    against known values on every page -- not estimates.
-    """
-    rows = list(rows)
-    if not rows:
-        return {"n": 0}
-
+def _summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     def rate(name: str) -> float:
         hits = sum(1 for r in rows if name not in str(r.get("flags", "")).split(";"))
         return round(hits / len(rows), 4)
 
     return {
         "n": len(rows),
+        "grid_detected": round(
+            sum(1 for r in rows if r.get("template_match") is not False) / len(rows), 4
+        ),
         "ac_no_agreement": rate("ac_no_matches_filename"),
         "part_no_agreement": rate("part_no_matches_filename"),
         "gender_sum_agreement": rate("gender_sum_matches_total"),
         "needs_review": sum(1 for r in rows if r.get("needs_review")),
         "clean_rows": sum(1 for r in rows if not str(r.get("flags", "")).strip()),
     }
+
+
+def accuracy_report(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+    """Corpus-level quality summary, driven by the filename ground truth.
+
+    ``ac_no_agreement`` and ``part_no_agreement`` are true accuracy figures -- measured
+    against known values on every page -- not estimates.
+
+    The same figures are also reported **per language**. The corpus is 88% Assamese, so a
+    collapse confined to the 13 Bengali constituencies or the single English one would
+    move the overall numbers by a fraction of a percent and pass unnoticed. Each language
+    is read with its own Tesseract model and its own derived label table, so each can fail
+    independently and has to be measured independently.
+    """
+    rows = list(rows)
+    if not rows:
+        return {"n": 0}
+
+    report = _summary(rows)
+    by_language: Dict[str, Any] = {}
+    for row in rows:
+        by_language.setdefault(str(row.get("lang") or "UNKNOWN"), []).append(row)
+    report["by_language"] = {code: _summary(group) for code, group in sorted(by_language.items())}
+    return report

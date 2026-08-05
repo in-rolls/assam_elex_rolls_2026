@@ -22,6 +22,41 @@ class TestDefaultLogPath:
         assert "Z.log" in log.default_log_path(tmp_path).name
 
 
+class TestWorkerInit:
+    """The pool initializer's signature, pinned.
+
+    Regression: ``render`` passed only ``(log_file,)``. Every worker died on startup with
+    a TypeError, and ``multiprocessing`` respawned them forever -- the run neither
+    progressed nor exited, and the tracebacks scrolled past inside a pipe. A crashing
+    initializer has no natural failure signal, so it gets one here.
+    """
+
+    def test_accepts_the_arguments_the_pools_pass(self, tmp_path):
+        log.worker_init(str(tmp_path / "w.log"), logging.WARNING)
+
+    def test_accepts_a_missing_log_file(self):
+        log.worker_init(None, logging.WARNING)
+
+    def test_every_pool_passes_a_matching_initargs_tuple(self):
+        """Read the source: each initargs tuple must satisfy worker_init's signature."""
+        import inspect
+        import re
+
+        source = inspect.getsource(cli)
+        required = len(
+            [
+                p
+                for p in inspect.signature(log.worker_init).parameters.values()
+                if p.default is inspect.Parameter.empty
+            ]
+        )
+        tuples = re.findall(r"initargs=\(([^)]*)\)", source)
+        assert tuples, "no pool initargs found; did the pools move?"
+        for raw in tuples:
+            supplied = len([part for part in raw.split(",") if part.strip()])
+            assert supplied == required, f"initargs=({raw}) supplies {supplied}, need {required}"
+
+
 class TestOutDirResolution:
     """``--out`` means a directory for most commands and a *file* for ``review``."""
 

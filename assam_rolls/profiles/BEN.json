@@ -1,0 +1,57 @@
+{
+  "code": "BEN",
+  "tesseract_lang": "ben",
+  "stable_h_rules": [
+    124,
+    157,
+    191,
+    225,
+    399,
+    433,
+    483
+  ],
+  "locality_fields": [
+    "main_town_village",
+    "ward_no",
+    "post_office",
+    "police_station",
+    "gram_panchayat",
+    "block",
+    "revenue_circle",
+    "district",
+    "pin_code"
+  ],
+  "locality_labels": [
+    "প্রধান শহর/গ্রাম",
+    "ওয়ার্ড নং",
+    "ডাক ঘর",
+    "পুলিশ থানা",
+    "গ্রাম পঞ্চায়েত",
+    "ব্লক",
+    "রাজস্ব চক্র",
+    "জেলা",
+    "পিনকোড"
+  ],
+  "revision_labels": [
+    "সংশোধনের বছর",
+    "ভিত্তি তারিখ",
+    "সংশোধনের প্রকার",
+    "প্রকাশনের তারিখ"
+  ],
+  "address_label": "ভোট গ্রহন কেন্দ্রের ঠিকানা",
+  "locality_value_x": 320,
+  "revision_value_x": 227,
+  "reservation_map": {
+    "সাধারণ": "GENERAL",
+    "তপশীলি জাতি": "SC",
+    "তপশীলি জনজাতি": "ST"
+  },
+  "ps_type_map": {
+    "সাধারণ": "GENERAL",
+    "সাধারন": "GENERAL",
+    "পুরুষ": "MALE",
+    "মহিলা": "FEMALE"
+  },
+  "derived_from_pages": 40,
+  "min_label_agreement": 0.975
+}

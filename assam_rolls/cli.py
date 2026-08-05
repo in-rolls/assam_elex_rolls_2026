@@ -22,9 +22,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import extract as extract_mod
+from . import languages as lang_mod
 from . import log as _log
 from . import render as render_mod
 from . import review as review_mod
+from . import schema as schema_mod
 from . import validate as validate_mod
 from .schema import PART_COLUMNS, SECTION_COLUMNS
 
@@ -65,24 +67,85 @@ def _client():
 # ---------------------------------------------------------------------------- commands
 
 
+def _render_one(job):
+    """Worker: rasterise one part's page to PNG. Top-level so it pickles."""
+    from . import render as render_mod_w
+
+    zip_path, ref, out_dir, page, overwrite = job
+    target = out_dir / f"{ref.key}.png"
+    if target.exists() and not overwrite:
+        return ref.key, "cached", None
+    try:
+        pdf_bytes = render_mod_w.read_pdf_bytes(zip_path, ref.pdf_name)
+        image = render_mod_w.extract_page_image(pdf_bytes, page=page)
+        target.write_bytes(render_mod_w.encode_png(image))
+    except Exception as exc:
+        return ref.key, None, f"{type(exc).__name__}: {exc}"
+    return ref.key, "done", None
+
+
 def cmd_render(args: argparse.Namespace) -> int:
+    """Rasterise every part's page 1 to PNG.
+
+    Each part is an independent poppler call, so this runs across a process pool -- the
+    statewide corpus is ~31,000 pages and rasterising them one at a time leaves most of
+    the machine idle. Resumable: a part whose PNG already exists is skipped.
+    """
+    import multiprocessing as mp
+
+    from .log import RunSummary
+
+    logger = _log.get_logger(__name__)
     render_mod.require_poppler()
+
     zip_paths = _zip_paths(args.zip_dir)
     if not zip_paths:
-        print(f"no zips found in {args.zip_dir}", file=sys.stderr)
+        logger.error("no zips found in %s", args.zip_dir)
         return 1
 
-    total = 0
+    jobs = []
     for zip_path in zip_paths:
         unknown = render_mod.unrecognized_pdfs(zip_path)
         if unknown:
-            print(f"  warning: {len(unknown)} unrecognized PDF(s) in {zip_path.name}")
-        refs = render_mod.render_zip(
-            zip_path, args.out, page=args.page, limit=args.limit, overwrite=args.overwrite
-        )
-        total += len(refs)
-        print(f"  {zip_path.name}: {len(refs)} parts -> {args.out}")
-    print(f"rendered {total} pages")
+            logger.warning("%s: %d unrecognized PDF(s)", zip_path.name, len(unknown))
+        for ref in render_mod.iter_zip_parts(zip_path):
+            jobs.append((zip_path, ref, args.out, args.page, args.overwrite))
+    if args.limit:
+        jobs = jobs[: args.limit]
+
+    args.out.mkdir(parents=True, exist_ok=True)
+    workers = args.workers or max(1, (os.cpu_count() or 2) - 1)
+    logger.info("render: %d pages, %d workers -> %s", len(jobs), workers, args.out)
+    print(f"{len(jobs)} pages, {workers} workers")
+
+    summary = RunSummary(logger, "render")
+    log_file = str(args.log_file) if args.log_file else None
+
+    def record(result):
+        key, status, error = result
+        if error:
+            summary.failed(key, error)
+        elif status == "cached":
+            summary.was_cached(key)
+        else:
+            summary.succeeded(key)
+
+    if workers == 1:
+        for job in jobs:
+            record(_render_one(job))
+    else:
+        context = mp.get_context("spawn")
+        with context.Pool(
+            workers, initializer=_log.worker_init, initargs=(log_file, logging.WARNING)
+        ) as pool:
+            for result in pool.imap_unordered(_render_one, jobs, chunksize=8):
+                record(result)
+
+    summary.emit()
+    print(
+        f"\n{summary.ok} rendered, {summary.skipped} already present, "
+        f"{len(summary.failures)} failed"
+    )
     return 0
 
 
@@ -196,15 +259,23 @@ def cmd_build_from_model(args: argparse.Namespace) -> int:
     return 0
 
 
+def _profile_for_ref(ref) -> "lang_mod.LanguageProfile":
+    """The language profile a part's PDF filename calls for."""
+    parsed = schema_mod.parse_source_filename(Path(ref.pdf_name).name)
+    return lang_mod.profile_for((parsed or {}).get("lang"))
+
+
 def _ocr_one(job):
     """Worker: read one page into rows and cache the result. Top-level so it pickles."""
     from PIL import Image
 
     from . import cache as cache_mod
+    from . import languages as lang_mod
     from . import layout as layout_mod
     from . import ocr as ocr_mod
     from . import parse as parse_mod
     from . import render as render_mod
+    from . import schema as schema_mod
     from .log import get_logger
 
     ref, image_path, engine_name, zip_path, cache_dir = job
@@ -220,6 +291,17 @@ def _ocr_one(job):
     if cache_mod.is_fresh(cached, pdf_sha):
         return ref.key, "cached", None
 
+    # The publisher names the language in every filename, so it is known before the page
+    # is read and never has to be guessed. An unknown language raises rather than
+    # defaulting: 14 of 126 constituencies are not Assamese, and quietly handing those to
+    # the Assamese model is exactly the failure this is here to prevent.
+    parsed_name = schema_mod.parse_source_filename(Path(ref.pdf_name).name)
+    lang_code = (parsed_name or {}).get("lang")
+    try:
+        profile = lang_mod.profile_for(lang_code)
+    except lang_mod.UnknownLanguage as exc:
+        return ref.key, None, str(exc)
+
     page_bytes = Path(image_path).read_bytes()
     provenance = {
         "source_zip_dir": str(Path(zip_path).parent),
@@ -227,12 +309,12 @@ def _ocr_one(job):
         "pdf_bytes": len(pdf_bytes),
         "page_png": str(image_path),
         "page_sha256": render_mod.sha256_bytes(page_bytes),
-        "engine_version": ocr_mod.engine_version(engine_name),
+        "engine_version": ocr_mod.engine_version(engine_name, profile.tesseract_lang),
     }
 
     image = Image.open(image_path)
     try:
-        grid = layout_mod.build_grid(image)
+        grid = layout_mod.build_grid(image, profile.stable_h_rules)
     except layout_mod.LayoutError as exc:
         worker_log.warning("%s: layout failed: %s", ref.key, exc)
         row = parse_mod.failed_row(ref, engine_name, str(exc), provenance)
@@ -240,8 +322,8 @@ def _ocr_one(job):
         return ref.key, "done", None
 
     try:
-        engine = ocr_mod.get_engine(engine_name)
-        row, sections = parse_mod.parse_page(image, grid, ref, engine, provenance)
+        engine = ocr_mod.get_engine(engine_name, lang=profile.tesseract_lang)
+        row, sections = parse_mod.parse_page(image, grid, ref, engine, profile, provenance)
     except Exception as exc:
         return ref.key, None, f"{type(exc).__name__}: {exc}"
 
@@ -357,7 +439,23 @@ def cmd_build(args: argparse.Namespace) -> int:
         print(f"{name:20s} {n} rows")
     print("\nquality (filename and arithmetic checks are ground truth on every page):")
     for key, value in report.items():
-        print(f"  {key:26s} {value}")
+        if key != "by_language":
+            print(f"  {key:26s} {value}")
+
+    by_language = report.get("by_language") or {}
+    if len(by_language) > 1:
+        print("\nper language (each is read with its own model and label table):")
+        header = ("lang", "parts", "grid", "ac_no", "part_no", "sum", "review")
+        print(
+            f"  {header[0]:5s} {header[1]:>7s} {header[2]:>7s} {header[3]:>7s} "
+            f"{header[4]:>8s} {header[5]:>7s} {header[6]:>7s}"
+        )
+        for code, stats in by_language.items():
+            print(
+                f"  {code:5s} {stats['n']:>7d} {stats['grid_detected']:>7.1%} "
+                f"{stats['ac_no_agreement']:>7.1%} {stats['part_no_agreement']:>8.1%} "
+                f"{stats['gender_sum_agreement']:>7.1%} {stats['needs_review']:>7d}"
+            )
     return 0
 
 
@@ -382,21 +480,29 @@ def cmd_bench(args: argparse.Namespace) -> int:
     results: Dict[str, Dict[Any, Dict[str, Any]]] = {}
     timings: Dict[str, float] = {}
     for name in (args.reference, args.candidate):
-        engine = ocr_mod.get_engine(name)
         rows: Dict[Any, Dict[str, Any]] = {}
         started = time.time()
+        # The sample spans every AC and so every language; the engine is rebuilt per
+        # language rather than per page, since consecutive refs usually share one.
+        engine, engine_lang = None, None
         for i, ref in enumerate(sample, 1):
             image = Image.open(args.pages / f"{ref.key}.png")
             try:
-                grid = layout_mod.build_grid(image)
-                row, _ = parse_mod.parse_page(image, grid, ref, engine)
+                profile = _profile_for_ref(ref)
+                if engine is None or profile.tesseract_lang != engine_lang:
+                    if engine is not None and hasattr(engine, "close"):
+                        engine.close()
+                    engine = ocr_mod.get_engine(name, lang=profile.tesseract_lang)
+                    engine_lang = profile.tesseract_lang
+                grid = layout_mod.build_grid(image, profile.stable_h_rules)
+                row, _ = parse_mod.parse_page(image, grid, ref, engine, profile)
                 rows[(ref.ac_no, ref.part_no)] = row
-            except (layout_mod.LayoutError, ocr_mod.OCRError) as exc:
+            except (layout_mod.LayoutError, ocr_mod.OCRError, lang_mod.UnknownLanguage) as exc:
                 print(f"  {name} {ref.key}: {exc}", file=sys.stderr)
             print(f"  {name}: {i}/{len(sample)}", end="\r", flush=True)
         timings[name] = (time.time() - started) / max(1, len(sample))
         results[name] = rows
-        if hasattr(engine, "close"):
+        if engine is not None and hasattr(engine, "close"):
             engine.close()
         print(f"  {name}: {len(rows)} pages, {timings[name]:.1f}s/page")
 
@@ -421,6 +527,121 @@ def cmd_bench(args: argparse.Namespace) -> int:
     print(f"\nwrote {args.out}\n")
     print(text)
     return 0
+
+
+def cmd_calibrate(args: argparse.Namespace) -> int:
+    """Derive language profiles for the non-Assamese constituencies.
+
+    Assamese is hand-written and covered by tests, so it is skipped unless asked for
+    explicitly -- re-deriving it would replace a known-good table with a measured one.
+    """
+    from PIL import Image
+
+    from . import calibrate as calibrate_mod
+
+    logger = _log.get_logger(__name__)
+
+    refs_by_lang: Dict[str, List[Any]] = {}
+    for ref in _all_refs(args.zip_dir):
+        parsed = schema_mod.parse_source_filename(Path(ref.pdf_name).name)
+        if parsed:
+            refs_by_lang.setdefault(parsed["lang"], []).append(ref)
+
+    wanted = (
+        [args.lang.upper()]
+        if args.lang
+        else [code for code in sorted(refs_by_lang) if code != "ASM"]
+    )
+    if not wanted:
+        logger.error("no non-Assamese constituencies found in %s", args.zip_dir)
+        return 1
+
+    exit_code = 0
+    for code in wanted:
+        refs = refs_by_lang.get(code, [])
+        if not refs:
+            logger.error("%s: no parts found", code)
+            exit_code = 1
+            continue
+
+        # Spread the sample across that language's ACs rather than taking the first N
+        # parts of one, so a single unusual constituency cannot define the labels.
+        by_ac: Dict[int, List[Any]] = {}
+        for ref in refs:
+            by_ac.setdefault(ref.ac_no, []).append(ref)
+        # Take a wide, evenly-spread slice of each AC. It has to be generous: only the
+        # urban minority of parts prints a ward number, and only those have all eight
+        # locality rows, which is what the locality labels are read from.
+        per_ac = max(1, -(-args.sample // len(by_ac)))
+        sample = []
+        for ac in sorted(by_ac):
+            parts = by_ac[ac]
+            step = max(1, len(parts) // per_ac)
+            sample.extend(parts[::step][:per_ac])
+        sample = sample[: args.sample]
+
+        logger.info("%s: calibrating on %d pages across %d ACs", code, len(sample), len(by_ac))
+        print(f"{code}: rendering {len(sample)} sample pages across {len(by_ac)} ACs...")
+
+        images = []
+        for ref in sample:
+            cached = args.pages / f"{ref.key}.png"
+            if cached.exists():
+                images.append(Image.open(cached))
+                continue
+            try:
+                payload = render_mod.read_pdf_bytes(args.zip_dir / ref.zip_name, ref.pdf_name)
+                images.append(render_mod.extract_page_image(payload))
+            except Exception as exc:
+                logger.warning("%s: could not render %s: %s", code, ref.key, exc)
+        if not images:
+            logger.error("%s: no sample pages could be rendered", code)
+            exit_code = 1
+            continue
+
+        result = calibrate_mod.calibrate(code, images)
+        print()
+        print(calibrate_mod.render_report(result))
+        print()
+
+        if result.grids_built == 0:
+            logger.error(
+                "%s: the grid was not found on ANY sample page -- this language's form "
+                "differs from the Assamese one and needs layout work, not calibration",
+                code,
+            )
+            exit_code = 1
+            continue
+
+        for field_name, values in result.unmapped_values.items():
+            logger.warning(
+                "%s: %s value(s) with no vocabulary entry, will read as blank: %s",
+                code,
+                field_name,
+                values,
+            )
+        for row in result.weak_rows:
+            logger.warning(
+                "%s: label %r agreed on only %.0f%% of pages (below %.0f%%)",
+                code,
+                row.label,
+                row.agreement * 100,
+                calibrate_mod.MIN_AGREEMENT * 100,
+            )
+
+        profile_path = lang_mod.write_profile(result.to_profile())
+        record_path = calibrate_mod.write_record(args.out / "calibration", result)
+        lang_mod.clear_cache()
+        logger.info(
+            "%s: wrote %s (min agreement %.0f%%, %d weak row(s))",
+            code,
+            profile_path,
+            result.min_agreement * 100,
+            len(result.weak_rows),
+        )
+        print(f"wrote {profile_path}")
+        print(f"wrote {record_path}")
+    return exit_code
 
 
 def cmd_review(args: argparse.Namespace) -> int:
@@ -455,8 +676,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_render.add_argument("--zip-dir", type=Path, default=Path("data/ac_info"))
     p_render.add_argument("--out", type=Path, default=Path("out/pages"))
     p_render.add_argument("--page", type=int, default=render_mod.PAGE_FORM)
-    p_render.add_argument("--limit", type=int, default=None, help="per zip")
+    p_render.add_argument("--limit", type=int, default=None, help="total pages")
     p_render.add_argument("--overwrite", action="store_true")
+    p_render.add_argument("--workers", type=int, default=None)
     p_render.set_defaults(func=cmd_render)
 
     p_extract = sub.add_parser("extract", help="page PNGs -> Claude")
@@ -506,6 +728,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_bench.add_argument("--pages-per-ac", type=int, default=4)
     p_bench.add_argument("--out", type=Path, default=Path("out/REPORT.md"))
     p_bench.set_defaults(func=cmd_bench)
+
+    p_calibrate = sub.add_parser(
+        "calibrate", help="derive language profiles for the non-Assamese constituencies"
+    )
+    add_common(p_calibrate)
+    p_calibrate.add_argument(
+        "--lang", default=None, help="one language code; default is every non-ASM language found"
+    )
+    p_calibrate.add_argument("--sample", type=int, default=20, help="pages to read per language")
+    p_calibrate.add_argument("--out", type=Path, default=Path("out"))
+    p_calibrate.set_defaults(func=cmd_calibrate)
 
     p_review = sub.add_parser("review", help="HTML review sheet")
     p_review.add_argument("--parts", type=Path, default=Path("out/parts.csv"))

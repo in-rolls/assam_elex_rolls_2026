@@ -1,0 +1,55 @@
+{
+  "code": "ASM",
+  "tesseract_lang": "asm",
+  "stable_h_rules": [
+    124,
+    157,
+    191,
+    225,
+    399,
+    433,
+    483
+  ],
+  "locality_fields": [
+    "main_town_village",
+    "ward_no",
+    "post_office",
+    "police_station",
+    "block",
+    "revenue_circle",
+    "district",
+    "pin_code"
+  ],
+  "locality_labels": [
+    "মূল চহৰ/গাঁও",
+    "ৱাৰ্ড নং",
+    "ডাকঘৰ",
+    "পুলিচ থানা",
+    "ব্লক",
+    "ৰাজহ চক্ৰ",
+    "জিলা",
+    "পিনকোড"
+  ],
+  "revision_labels": [
+    "সংশোধনৰ বছৰ",
+    "ভিত্তি তাৰিখ",
+    "সংশোধনৰ প্ৰকাৰ",
+    "প্ৰকাশনৰ তাৰিখ"
+  ],
+  "address_label": "ভোটগ্ৰহন কেন্দ্ৰৰ ঠিকনা",
+  "locality_value_x": 320,
+  "revision_value_x": 213,
+  "reservation_map": {
+    "সাধাৰণ": "GENERAL",
+    "অনুসূচিত জাতি": "SC",
+    "অনুসূচিত জনজাতি": "ST"
+  },
+  "ps_type_map": {
+    "পুৰুষ": "MALE",
+    "মহিলা": "FEMALE",
+    "সাধাৰণ": "GENERAL",
+    "সাধাৰন": "GENERAL"
+  },
+  "derived_from_pages": 0,
+  "min_label_agreement": 1.0
+}

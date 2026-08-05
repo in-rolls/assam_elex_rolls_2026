@@ -9,7 +9,7 @@ benefits from knowing where each value lives and what its Assamese label reads, 
 than inferring the form's structure afresh on every page.
 """
 
-from .schema import PS_TYPE_FROM_ASSAMESE, RESERVATION_FROM_ASSAMESE
+from .languages import profile_for
 
 SYSTEM_PROMPT = """\
 You extract structured data from a scanned page of the Assam 2026 Final Electoral \
@@ -97,10 +97,15 @@ def _vocab_lines(mapping: dict) -> str:
 
 
 def build_system_prompt() -> str:
-    """Render the system prompt, with the vocabularies drawn from ``schema.py``."""
+    """Render the system prompt, with the vocabularies drawn from the Assamese profile.
+
+    This dormant Claude path was only ever written for Assamese; the OCR pipeline is what
+    handles the Bengali and English constituencies.
+    """
+    assamese = profile_for("ASM")
     return SYSTEM_PROMPT.format(
-        reservation_map=_vocab_lines(RESERVATION_FROM_ASSAMESE),
-        ps_type_map=_vocab_lines(PS_TYPE_FROM_ASSAMESE),
+        reservation_map=_vocab_lines(assamese.reservation_map),
+        ps_type_map=_vocab_lines(assamese.ps_type_map),
     )
 
 

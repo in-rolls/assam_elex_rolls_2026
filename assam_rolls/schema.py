@@ -112,18 +112,9 @@ RESERVATION_VALUES = ["GENERAL", "SC", "ST"]
 PS_TYPE_VALUES = ["MALE", "FEMALE", "GENERAL"]
 CONFIDENCE_VALUES = ["HIGH", "MEDIUM", "LOW"]
 
-# Assamese surface forms, for the prompt and for post-hoc normalization of stragglers.
-RESERVATION_FROM_ASSAMESE = {
-    "সাধাৰণ": "GENERAL",
-    "অনুসূচিত জাতি": "SC",
-    "অনুসূচিত জনজাতি": "ST",
-}
-PS_TYPE_FROM_ASSAMESE = {
-    "পুৰুষ": "MALE",
-    "মহিলা": "FEMALE",
-    "সাধাৰণ": "GENERAL",
-    "সাধাৰন": "GENERAL",  # unnormalized spelling seen in AC1
-}
+# The surface forms that map onto this vocabulary differ by language, so they live in
+# the per-language profiles (``languages.py``) rather than here. The controlled values
+# above are language-independent and are what the dataset actually stores.
 
 # ------------------------------------------------------------------- model-facing fields
 
@@ -172,10 +163,21 @@ MODEL_FIELDS: List[Dict[str, Any]] = [
     {"name": "post_office_roman", "type": "string", "desc": "Romanization."},
     {"name": "police_station", "type": "string", "desc": "পুলিচ থানা, verbatim."},
     {"name": "police_station_roman", "type": "string", "desc": "Romanization."},
+    # Printed only on the Bengali edition of the form (গ্রাম পঞ্চায়েত), between the police
+    # station and the block. Blank -- not null -- on the Assamese and English editions,
+    # which do not print the row at all.
+    {
+        "name": "gram_panchayat",
+        "type": "string",
+        "desc": "গ্রাম পঞ্চায়েত, verbatim (Bengali only).",
+    },
     {"name": "block", "type": "string", "desc": "ব্লক (development block / পৌৰসভা), verbatim."},
     {"name": "block_roman", "type": "string", "desc": "Romanization."},
     {"name": "revenue_circle", "type": "string", "desc": "ৰাজহ চক্ৰ (revenue circle), verbatim."},
     {"name": "revenue_circle_roman", "type": "string", "desc": "Romanization."},
+    # Printed only on the English edition, between the revenue circle (there labelled
+    # "Tehsil") and the district.
+    {"name": "subdivision", "type": "string", "desc": "Subdivision, verbatim (English only)."},
     {"name": "district", "type": "string", "desc": "জিলা, verbatim."},
     {"name": "district_roman", "type": "string", "desc": "Romanization."},
     {"name": "pin_code", "type": "integer", "desc": "পিনকোড, 6 digits."},
@@ -436,7 +438,12 @@ PAGE1_JSON_SCHEMA = build_page1_json_schema()
 
 #: Bumped when a change alters extracted values, so rows can be traced to the code that
 #: produced them and a partially-rebuilt corpus is never silently mixed.
-PIPELINE_VERSION = "1.0.0"
+#:
+#: 2.0.0 -- multi-language support. Each page is read with the Tesseract model and label
+#: table of the language its filename names; the grid is anchored on per-language upper
+#: rules with the lower ones located structurally; ``gram_panchayat`` and ``subdivision``
+#: join the schema. Parsing changed for every language, so 1.x cache entries are stale.
+PIPELINE_VERSION = "2.0.0"
 
 
 def empty_part_row() -> Dict[str, Any]:

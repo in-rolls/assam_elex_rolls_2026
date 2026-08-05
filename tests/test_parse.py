@@ -10,7 +10,9 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from assam_rolls import layout, ocr, parse, render
+from assam_rolls import languages, layout, ocr, parse, render
+
+ASM = languages.profile_for("ASM")
 
 FIXTURE_PDF = (
     Path(__file__).parent / "fixtures" / "2026-EROLLGEN-S03-1-FinalRoll-Revision1-ASM-3-WI_INFO.pdf"
@@ -86,13 +88,13 @@ class TestSplitReservation:
         ],
     )
     def test_extracts_reservation(self, raw, name, code):
-        assert parse.split_reservation(raw) == (name, code)
+        assert parse.split_reservation(raw, ASM) == (name, code)
 
     def test_no_bracket_yields_no_reservation(self):
-        assert parse.split_reservation("যোৰহাট") == ("যোৰহাট", "")
+        assert parse.split_reservation("যোৰহাট", ASM) == ("যোৰহাট", "")
 
     def test_unknown_bracket_is_not_guessed(self):
-        assert parse.split_reservation("X (কিবা)") == ("X", "")
+        assert parse.split_reservation("X (কিবা)", ASM) == ("X", "")
 
 
 class TestNormalizePsType:
@@ -101,10 +103,10 @@ class TestNormalizePsType:
         [("পুৰুষ", "MALE"), ("মহিলা", "FEMALE"), ("সাধাৰণ", "GENERAL"), ("সাধাৰন", "GENERAL")],
     )
     def test_maps_to_controlled_vocabulary(self, raw, code):
-        assert parse.normalize_ps_type(raw) == code
+        assert parse.normalize_ps_type(raw, ASM) == code
 
     def test_unknown_value_is_blank(self):
-        assert parse.normalize_ps_type("???") == ""
+        assert parse.normalize_ps_type("???", ASM) == ""
 
 
 class TestTextRows:
@@ -151,7 +153,7 @@ class TestLabelSimilarity:
     def test_distinguishes_labels_within_a_block(self):
         """Forgiving is fine; confusing জিলা with ডাকঘৰ is not."""
         seen = "জিলা"
-        best = max(parse.LOCALITY_LABELS, key=lambda lab: parse.label_similarity(seen, lab))
+        best = max(ASM.locality_labels, key=lambda lab: parse.label_similarity(seen, lab))
         assert best == "জিলা"
 
     def test_unrelated_text_scores_low(self):
@@ -160,10 +162,10 @@ class TestLabelSimilarity:
 
 class TestLabelsMatchFields:
     def test_locality_labels_align_with_fields(self):
-        assert len(parse.LOCALITY_LABELS) == len(parse.LOCALITY_FIELDS)
+        assert len(ASM.locality_labels) == len(parse.LOCALITY_FIELDS)
 
     def test_revision_labels_align_with_fields(self):
-        assert len(parse.REVISION_LABELS) == len(parse.REVISION_FIELDS)
+        assert len(ASM.revision_labels) == len(parse.REVISION_FIELDS)
 
 
 class TestLeadingSerial:
@@ -189,7 +191,7 @@ class TestParsePage:
     def test_reads_the_fixture_end_to_end(self, page):
         grid = layout.build_grid(page)
         ref = render.PartRef("AC1.zip", "x.pdf", ac_no=1, part_no=3)
-        row, sections = parse.parse_page(page, grid, ref, ocr.get_engine("tesseract"))
+        row, sections = parse.parse_page(page, grid, ref, ocr.get_engine("tesseract"), ASM)
 
         # Constant across the corpus, so safe to assert exactly.
         assert row["revision_year"] == 2026
@@ -212,6 +214,6 @@ class TestParsePage:
         """ac_no/part_no in the output must be the authoritative filename values."""
         grid = layout.build_grid(page)
         ref = render.PartRef("AC1.zip", "x.pdf", ac_no=1, part_no=3)
-        row, _ = parse.parse_page(page, grid, ref, ocr.get_engine("tesseract"))
+        row, _ = parse.parse_page(page, grid, ref, ocr.get_engine("tesseract"), ASM)
         assert row["ac_no_file"] == ref.ac_no
         assert row["part_no_file"] == ref.part_no

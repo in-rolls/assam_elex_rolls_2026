@@ -26,8 +26,28 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from PIL import Image, ImageDraw
 
-#: Rules present on every page observed, used to verify a page matches the template.
-STABLE_H_RULES: Tuple[int, ...] = (124, 157, 191, 225, 399, 433, 483, 816, 850, 896)
+#: The **upper** rules, present on every Assamese page observed, used to verify a page
+#: matches the template. Bengali shares these exactly; English does not (its rows are
+#: taller, putting them at 133, 185, 243, 295, 488, 540, 596). Each language carries its
+#: own set in its ``LanguageProfile``; this is the Assamese one and the default.
+#:
+#: The rule at y=171 is deliberately excluded: it appears on some Assamese pages and not
+#: others, so requiring it would reject valid pages.
+UPPER_H_RULES: Tuple[int, ...] = (124, 157, 191, 225, 399, 433, 483)
+
+#: Kept as the name earlier versions used, for anything still importing it.
+STABLE_H_RULES = UPPER_H_RULES
+
+#: Indices into the matched upper rules. Named because the cells below read far better
+#: as ``upper[S1_TOP]`` than as ``upper[3]``.
+HEADER_TOP, HEADER_MID, HEADER_BOTTOM = 0, 1, 2
+S1_TOP, S1_BOTTOM = 3, 4
+S2_TOP = 6  # index 5 is a stability anchor only, not a cell boundary
+
+#: The three rules between section 2 and section 4: the bottom of the area list, and the
+#: pair bracketing the polling-station name. Located from the end of the rule list rather
+#: than by pixel, since they shift with page content and with language.
+LOWER_RULE_COUNT = 3
 
 #: The elector table is always the last five horizontal rules.
 S4_RULE_COUNT = 5
@@ -147,8 +167,13 @@ def _column(v_rules: Sequence[int], expected: int, fallback: int) -> int:
 # ------------------------------------------------------------------------------- grid
 
 
-def build_grid(image: Image.Image) -> Grid:
+def build_grid(image: Image.Image, stable_rules: Sequence[int] = UPPER_H_RULES) -> Grid:
     """Detect the grid and map it to named cells.
+
+    ``stable_rules`` are the upper anchors for the language the page is printed in, taken
+    from its ``LanguageProfile``. Only the *upper* rules are language-specific; everything
+    below section 2 is located structurally, because its position depends on how much text
+    the page carries rather than on the language.
 
     Raises ``LayoutError`` when the stable rules are absent, which is the signal that a
     page is not the standard info-page template and should go to review rather than
@@ -157,36 +182,47 @@ def build_grid(image: Image.Image) -> Grid:
     width, height = image.size
     h_rules = detect_h_rules(image)
 
-    anchors: Dict[int, int] = {}
+    upper: List[int] = []
     missing: List[int] = []
-    for expected in STABLE_H_RULES:
+    for expected in stable_rules:
         found = _match(h_rules, expected)
         if found is None:
             missing.append(expected)
         else:
-            anchors[expected] = found
+            upper.append(found)
     if missing:
         raise LayoutError(
             f"page does not match the info-page template; missing rules at {missing} "
             f"(found {len(h_rules)}: {h_rules[:16]})"
         )
 
-    if len(h_rules) < len(STABLE_H_RULES) + S4_RULE_COUNT:
+    if len(h_rules) < len(stable_rules) + LOWER_RULE_COUNT + S4_RULE_COUNT:
         raise LayoutError(
-            f"expected at least {len(STABLE_H_RULES) + S4_RULE_COUNT} rules, got {len(h_rules)}"
+            f"expected at least {len(stable_rules) + LOWER_RULE_COUNT + S4_RULE_COUNT} "
+            f"rules, got {len(h_rules)}"
         )
 
     # Section 4 is anchored from the end: its header, two header rows, then the values.
     s4_rules = h_rules[-S4_RULE_COUNT:]
     s4_top, value_top, value_bottom = s4_rules[0], s4_rules[-2], s4_rules[-1]
 
-    top = anchors  # shorthand for the stable rules
+    # The three rules between section 2's top and section 4 -- the bottom of the area
+    # list and the two that bracket the polling-station name. They are located by
+    # position from the end rather than by absolute pixel, because they move: on English
+    # pages three variants appear 16px apart depending on how far the address wraps, and
+    # Bengali sits 24px below Assamese throughout. Anchoring them to the end of the rule
+    # list makes one rule work for every language and every variant.
+    lower = h_rules[-(S4_RULE_COUNT + LOWER_RULE_COUNT) : -S4_RULE_COUNT]
+    if lower[0] <= upper[-1]:
+        raise LayoutError(f"section-2 block is empty or inverted: rules {upper[-1]}..{lower[0]}")
 
     # Vertical rules are detected per band; the page-wide scan misses short dividers.
-    header_v = detect_v_rules(image, top[124], top[157])
-    s1_v = detect_v_rules(image, top[225], top[399])
-    s2_v = detect_v_rules(image, top[483], top[816])
-    s3_v = detect_v_rules(image, top[850], top[896])
+    # Measured identical to within 3px across all three languages, so they need no
+    # per-language table -- `_column` snaps to whatever is detected anyway.
+    header_v = detect_v_rules(image, upper[HEADER_TOP], upper[HEADER_MID])
+    s1_v = detect_v_rules(image, upper[S1_TOP], upper[S1_BOTTOM])
+    s2_v = detect_v_rules(image, upper[S2_TOP], lower[0])
+    s3_v = detect_v_rules(image, lower[1], lower[2])
     s4_v = detect_v_rules(image, value_top, value_bottom)
 
     part_split = _column(header_v, 947, 947)
@@ -201,20 +237,26 @@ def build_grid(image: Image.Image) -> Grid:
 
     cells: Dict[str, Box] = {
         # header
-        "header_ac": Box(FRAME_LEFT, top[124], part_split, top[157]),
-        "header_part_no": Box(part_split, top[124], FRAME_RIGHT, top[157]),
-        "header_pc": Box(FRAME_LEFT, top[157], FRAME_RIGHT, top[191]),
+        "header_ac": Box(FRAME_LEFT, upper[HEADER_TOP], part_split, upper[HEADER_MID]),
+        "header_part_no": Box(part_split, upper[HEADER_TOP], FRAME_RIGHT, upper[HEADER_MID]),
+        "header_pc": Box(FRAME_LEFT, upper[HEADER_MID], FRAME_RIGHT, upper[HEADER_BOTTOM]),
         # section 1 -- revision
-        "s1_revision": Box(FRAME_LEFT, top[225], s1_split, top[399]),
-        "s1_description": Box(s1_split, top[225], FRAME_RIGHT, top[399]),
+        "s1_revision": Box(FRAME_LEFT, upper[S1_TOP], s1_split, upper[S1_BOTTOM]),
+        "s1_description": Box(s1_split, upper[S1_TOP], FRAME_RIGHT, upper[S1_BOTTOM]),
         # section 2 -- areas and locality
-        "s2_areas": Box(FRAME_LEFT, top[483], s2_split, top[816]),
-        "s2_locality": Box(s2_split, top[483], FRAME_RIGHT, top[816]),
+        "s2_areas": Box(FRAME_LEFT, upper[S2_TOP], s2_split, lower[0]),
+        "s2_locality": Box(s2_split, upper[S2_TOP], FRAME_RIGHT, lower[0]),
         # section 3 -- polling station
-        "s3_ps_name": Box(FRAME_LEFT, top[850], s3_split, top[896]),
-        "s3_type_value": Box(s3_right, top[850], FRAME_RIGHT, top[896]),
-        "s3_address": Box(FRAME_LEFT, top[896], s3_split, s4_top),
-        "s3_aux_value": Box(s3_right, top[896], FRAME_RIGHT, s4_top),
+        # The left-hand station cell spans the whole block, label rows included. The
+        # right-hand column is divided at lower[2], but the left is not -- the name and
+        # address run continuously beneath their labels. Splitting the left side at that
+        # divider only works if it happens to fall in whitespace, which it does in
+        # Assamese and does not in English, where it cuts the station name in half.
+        # `parse_station` finds the label rows by reading them, which does not care.
+        "s3_ps_name": Box(FRAME_LEFT, lower[1], s3_split, lower[2]),
+        "s3_type_value": Box(s3_right, lower[1], FRAME_RIGHT, lower[2]),
+        "s3_address": Box(FRAME_LEFT, lower[1], s3_split, s4_top),
+        "s3_aux_value": Box(s3_right, lower[2], FRAME_RIGHT, s4_top),
         # section 4 -- electors (pure digits)
         "s4_start_serial": Box(cols[0], value_top, cols[1], value_bottom),
         "s4_end_serial": Box(cols[1], value_top, cols[2], value_bottom),

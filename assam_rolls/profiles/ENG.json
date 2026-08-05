@@ -1,0 +1,60 @@
+{
+  "code": "ENG",
+  "tesseract_lang": "eng",
+  "stable_h_rules": [
+    133,
+    185,
+    243,
+    295,
+    488,
+    540,
+    596
+  ],
+  "locality_fields": [
+    "main_town_village",
+    "ward_no",
+    "post_office",
+    "police_station",
+    "block",
+    "revenue_circle",
+    "subdivision",
+    "district",
+    "pin_code"
+  ],
+  "locality_labels": [
+    "Main Town or Village",
+    "Ward No.",
+    "Post Office",
+    "Police Station",
+    "Block",
+    "Tehsil",
+    "Subdivision",
+    "District",
+    "Pin code"
+  ],
+  "revision_labels": [
+    "Year of Revision",
+    "Qualifying Date",
+    "Type of revision",
+    "Date of Publication"
+  ],
+  "address_label": "Address of Polling Station",
+  "locality_value_x": 323,
+  "revision_value_x": 230,
+  "reservation_map": {
+    "GENERAL": "GENERAL",
+    "General": "GENERAL",
+    "SC": "SC",
+    "ST": "ST"
+  },
+  "ps_type_map": {
+    "GENERAL": "GENERAL",
+    "General": "GENERAL",
+    "MALE": "MALE",
+    "Male": "MALE",
+    "FEMALE": "FEMALE",
+    "Female": "FEMALE"
+  },
+  "derived_from_pages": 40,
+  "min_label_agreement": 1.0
+}

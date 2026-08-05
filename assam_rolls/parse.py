@@ -26,13 +26,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image
 
+from .languages import LanguageProfile
 from .layout import Grid
 from .ocr import MULTILINE_TEXT_SCALE, Engine, int_or_none, value_after_label
 from .render import PartRef
 from .schema import (
     PIPELINE_VERSION,
-    PS_TYPE_FROM_ASSAMESE,
-    RESERVATION_FROM_ASSAMESE,
     clean_text,
     derive_columns,
     empty_part_row,
@@ -40,9 +39,12 @@ from .schema import (
     parse_source_filename,
 )
 
-#: Row order of the section-2 locality block, top to bottom, with the label the form
-#: prints beside each. The label is what makes the mapping checkable: if row 3 does not
-#: read as "পুলিচ থানা", the rows have shifted and every field below it is suspect.
+#: Row order of the section-2 locality block, top to bottom. The label the form prints
+#: beside each row comes from the page's ``LanguageProfile`` -- it differs by language,
+#: while the row *order* does not. The label is what makes the mapping checkable: if row
+#: 3 does not read as the police-station label, the rows have shifted and every field
+#: below it is suspect.
+#: The Assamese edition's rows -- the core eight, printed by every language.
 LOCALITY_FIELDS = (
     "main_town_village",
     "ward_no",
@@ -53,15 +55,25 @@ LOCALITY_FIELDS = (
     "district",
     "pin_code",
 )
-LOCALITY_LABELS = (
-    "মূল চহৰ/গাঁও",
-    "ৱাৰ্ড নং",
-    "ডাকঘৰ",
-    "পুলিচ থানা",
-    "ব্লক",
-    "ৰাজহ চক্ৰ",
-    "জিলা",
-    "পিনকোড",
+
+#: Every locality field any edition prints. The core eight are common to all three; the
+#: Bengali form adds ``gram_panchayat`` after the police station and the English form adds
+#: ``subdivision`` after the revenue circle (which it labels "Tehsil"). Confirmed against
+#: the rendered pages, not inferred from OCR.
+#:
+#: A language that does not print a row leaves it **blank**, not null: the absence is a
+#: property of the form, not a failure to read it.
+ALL_LOCALITY_FIELDS = (
+    "main_town_village",
+    "ward_no",
+    "post_office",
+    "police_station",
+    "gram_panchayat",
+    "block",
+    "revenue_circle",
+    "subdivision",
+    "district",
+    "pin_code",
 )
 
 #: Row order of the section-1 revision block.
@@ -71,22 +83,14 @@ REVISION_FIELDS = (
     "revision_type",
     "publication_date",
 )
-REVISION_LABELS = (
-    "সংশোধনৰ বছৰ",
-    "ভিত্তি তাৰিখ",
-    "সংশোধনৰ প্ৰকাৰ",
-    "প্ৰকাশনৰ তাৰিখ",
-)
 
 #: Minimum similarity for an OCR'd label to be accepted as a given field's label.
 #: Tesseract mangles labels (ব্লক -> বক), so this is deliberately forgiving; it only has
 #: to be sharp enough to tell one label from the seven others in its block.
 LABEL_MATCH_THRESHOLD = 0.55
 
-#: Fallback X offset where values begin, used when a row has no label/value gap wide
-#: enough to locate (which is what an empty value looks like).
-LOCALITY_VALUE_X = 320
-REVISION_VALUE_X = 213
+#: How far short of the value column to stop when counting label rows.
+LABEL_STRIP_MARGIN = 14
 
 #: A label is separated from its value by a wide run of whitespace; word spaces inside a
 #: label are far narrower. Measured gaps are ~95-131px against ~10px word spacing.
@@ -99,10 +103,23 @@ NUMBERED_NAME_RE = re.compile(r"^\s*(\d+)\s*[-–]\s*(.*?)\s*$")
 
 
 def text_rows(
-    image: Image.Image, gap: int = 4, min_ink: int = 2, ink: int = 150
+    image: Image.Image,
+    gap: int = 4,
+    min_ink: int = 2,
+    ink: int = 150,
+    right: Optional[int] = None,
 ) -> List[Tuple[int, int]]:
-    """Y extents of each text row in a cell, found from the horizontal ink profile."""
+    """Y extents of each text row in a cell, found from the horizontal ink profile.
+
+    ``right`` limits the scan to a left-hand strip. Passing the value column's x makes
+    this count **label** rows only, which is what a stacked block actually has: on the
+    English form a long value wraps to a second line, and scanning the whole cell counts
+    that wrap as its own row -- giving 9, 10 or 11 rows for the same 9 fields and making
+    positional mapping impossible. The label column never wraps.
+    """
     width, height = image.size
+    if right is not None:
+        width = max(1, min(width, right))
     pixels = image.convert("L").load()
     hits = [
         y for y in range(height) if sum(1 for x in range(width) if pixels[x, y] < ink) > min_ink
@@ -168,17 +185,17 @@ def split_numbered_name(value: str) -> Tuple[Optional[int], str]:
     return int(match.group(1)), clean_text(match.group(2))
 
 
-def split_reservation(name: str) -> Tuple[str, str]:
+def split_reservation(name: str, profile: LanguageProfile) -> Tuple[str, str]:
     """Separate a trailing ``(reservation)`` from a constituency name."""
     match = re.match(r"^(.*?)\s*\(([^)]*)\)\s*$", name or "")
     if not match:
         return clean_text(name), ""
     bare, bracket = clean_text(match.group(1)), clean_text(match.group(2))
-    return bare, RESERVATION_FROM_ASSAMESE.get(bracket, "")
+    return bare, profile.reservation_map.get(bracket, "")
 
 
-def normalize_ps_type(value: str) -> str:
-    return PS_TYPE_FROM_ASSAMESE.get(clean_text(value), "")
+def normalize_ps_type(value: str, profile: LanguageProfile) -> str:
+    return profile.ps_type_map.get(clean_text(value), "")
 
 
 # ------------------------------------------------------------------------------ blocks
@@ -287,7 +304,11 @@ def _stacked_block(
     located by comparing pages. The locality block instead has a fixed colon column, and
     a dynamic boundary there would land *before* the colon and pull it into the value.
     """
-    spans = text_rows(cell)
+    # Rows are counted from the label column only, stopping short of the printed colon.
+    # A wrapped value continues at the value column, and scanning as far as that column
+    # lets its continuation line register as a row of its own -- English part 1 came back
+    # with 11 rows for 9 fields that way.
+    spans = text_rows(cell, right=max(20, default_x - LABEL_STRIP_MARGIN))
     notes: List[str] = []
 
     if len(spans) == len(fields):
@@ -304,10 +325,19 @@ def _stacked_block(
     return crops, notes
 
 
-def parse_locality(cell: Image.Image, engine: Engine) -> Tuple[Dict[str, Any], List[str]]:
-    crops, notes = _stacked_block(cell, engine, LOCALITY_FIELDS, LOCALITY_LABELS, LOCALITY_VALUE_X)
-    # Fields whose row was never detected stay None: not read, as opposed to read blank.
-    parsed: Dict[str, Any] = {name: None for name in LOCALITY_FIELDS}
+def parse_locality(
+    cell: Image.Image, engine: Engine, profile: LanguageProfile
+) -> Tuple[Dict[str, Any], List[str]]:
+    crops, notes = _stacked_block(
+        cell, engine, profile.locality_fields, profile.locality_labels, profile.locality_value_x
+    )
+    # Every locality field in the schema starts as "" -- the form for this language simply
+    # does not print it (gram_panchayat outside Bengali, subdivision outside English), which
+    # is blank rather than unread. Rows this language *does* print but that were not
+    # detected become None below, which is the honest "could not read".
+    parsed: Dict[str, Any] = {name: "" for name in ALL_LOCALITY_FIELDS}
+    for name in profile.locality_fields:
+        parsed[name] = None
     for name, crop in crops.items():
         # The pincode is printed in Latin digits, so read it with the digit engine
         # rather than the Assamese one, which can render an 8 as ৪.
@@ -320,9 +350,16 @@ def parse_locality(cell: Image.Image, engine: Engine) -> Tuple[Dict[str, Any], L
     return parsed, notes
 
 
-def parse_revision(cell: Image.Image, engine: Engine) -> Tuple[Dict[str, Any], List[str]]:
+def parse_revision(
+    cell: Image.Image, engine: Engine, profile: LanguageProfile
+) -> Tuple[Dict[str, Any], List[str]]:
     crops, notes = _stacked_block(
-        cell, engine, REVISION_FIELDS, REVISION_LABELS, REVISION_VALUE_X, dynamic=True
+        cell,
+        engine,
+        REVISION_FIELDS,
+        profile.revision_labels,
+        profile.revision_value_x,
+        dynamic=True,
     )
     values = {name: engine.read_text(crop) for name, crop in crops.items()}
     return {
@@ -333,16 +370,15 @@ def parse_revision(cell: Image.Image, engine: Engine) -> Tuple[Dict[str, Any], L
     }, notes
 
 
-#: The address label row, used to split the station name from its address.
-ADDRESS_LABEL = "ভোটগ্ৰহন কেন্দ্ৰৰ ঠিকনা"
-
 #: A leading "<n> - " on the station-name line, where <n> may be garbled by OCR. The
 #: number is discarded (it is the part number, known authoritatively from the filename),
 #: but the prefix must be stripped or the garbage lands in the name.
 LEADING_SERIAL_RE = re.compile(r"^\s*\S{0,6}?\s*[-–]\s*")
 
 
-def parse_station(grid: Grid, image: Image.Image, engine: Engine) -> Tuple[Dict[str, Any], list]:
+def parse_station(
+    grid: Grid, image: Image.Image, engine: Engine, profile: LanguageProfile
+) -> Tuple[Dict[str, Any], list]:
     """Polling station name and address.
 
     Both wrap. The name is printed *below* its label so it lands in the address cell,
@@ -365,23 +401,32 @@ def parse_station(grid: Grid, image: Image.Image, engine: Engine) -> Tuple[Dict[
     # Locate the address label row. Only this row is read individually; the name and
     # address are then read as whole regions.
     lines = [engine.read_text(_row_crop(cell, span)) for span in spans]
-    label_index = next(
-        (
-            i
-            for i, line in enumerate(lines)
-            if label_similarity(line.split(":")[0], ADDRESS_LABEL) >= LABEL_MATCH_THRESHOLD
-        ),
-        None,
-    )
-    if label_index is None:
+
+    # The *best* match, not the first one over the threshold. The cell also opens with the
+    # station-name label, and the two labels are similar enough to be confused -- Assamese
+    # prints "ভোটকেন্দ্ৰৰ নং আৰু নাম" above "ভোটগ্ৰহন কেন্দ্ৰৰ ঠিকনা", English "No. and Name of
+    # Polling Station" above "Address of Polling Station". Taking the first match over the
+    # line put the whole record into ps_address and left ps_name empty.
+    scores = [
+        (label_similarity(line.split(":")[0], profile.address_label), i)
+        for i, line in enumerate(lines)
+    ]
+    best_score, label_index = max(scores)
+    if best_score < LABEL_MATCH_THRESHOLD:
         label_index = next((i for i, line in enumerate(lines) if ":" in line), 1)
         notes.append("address_label_not_found")
+
+    # The cell opens with the station-name label ("No. and Name of Polling Station :"),
+    # printed above the name it introduces. Skip it, or it lands in ps_name.
+    name_top = 0
+    if label_index > 0 and ":" in lines[0]:
+        name_top = spans[0][1] + 2
 
     # Read each side as ONE region rather than row by row. Assamese hangs glyphs below
     # the headline, so a boundary drawn from the ink profile can slice through
     # descenders and render a line unreadable -- observed on AC12 part 47, where the
     # first address line OCR'd to an empty string and the address lost its opening.
-    name = _read_region(cell, engine, 0, spans[label_index][0] - 2)
+    name = _read_region(cell, engine, name_top, spans[label_index][0] - 2)
     address_tail = value_after_label(lines[label_index]) if label_index < len(lines) else ""
     below = _read_region(cell, engine, spans[label_index][1] + 2, cell.height)
     address = " ".join(part for part in (address_tail, below) if part)
@@ -462,9 +507,15 @@ def parse_page(
     grid: Grid,
     ref: PartRef,
     engine: Engine,
+    profile: LanguageProfile,
     provenance: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """Read one page into a part row plus its section rows.
+
+    ``profile`` says which language the page is printed in, which decides the labels the
+    row-alignment fallback matches against and the vocabulary the categorical fields map
+    through. It is required rather than defaulted: 14 of the 126 constituencies are not
+    Assamese, and defaulting would read them with the wrong model in silence.
 
     ``provenance`` carries the source hashes and run metadata the caller has but the
     parser does not (it never sees the PDF bytes or the page file). Everything needed to
@@ -503,11 +554,11 @@ def parse_page(
     ac_no, ac_rest = split_numbered_name(
         value_after_label(engine.read_text(grid.crop(image, "header_ac")))
     )
-    ac_name, ac_reservation = split_reservation(ac_rest)
+    ac_name, ac_reservation = split_reservation(ac_rest, profile)
     pc_no, pc_rest = split_numbered_name(
         value_after_label(engine.read_text(grid.crop(image, "header_pc")))
     )
-    pc_name, pc_reservation = split_reservation(pc_rest)
+    pc_name, pc_reservation = split_reservation(pc_rest, profile)
 
     row.update(
         {
@@ -525,7 +576,7 @@ def parse_page(
 
     notes: List[str] = []
 
-    revision, revision_notes = parse_revision(grid.crop(image, "s1_revision"), engine)
+    revision, revision_notes = parse_revision(grid.crop(image, "s1_revision"), engine, profile)
     row.update(revision)
     notes += revision_notes
 
@@ -534,17 +585,17 @@ def parse_page(
     years = [int(y.group()) for y in YEAR_RE.finditer(description)]
     row["mother_roll_year"] = min(years) if years else None
 
-    locality, locality_notes = parse_locality(grid.crop(image, "s2_locality"), engine)
+    locality, locality_notes = parse_locality(grid.crop(image, "s2_locality"), engine, profile)
     row.update(locality)
     notes += locality_notes
 
-    station, station_notes = parse_station(grid, image, engine)
+    station, station_notes = parse_station(grid, image, engine, profile)
     row.update(station)
     notes += station_notes
 
     # The station number always equals the part number; see parse_station.
     row["ps_no"] = ref.part_no
-    row["ps_type"] = normalize_ps_type(engine.read_text(grid.crop(image, "s3_type_value")))
+    row["ps_type"] = normalize_ps_type(engine.read_text(grid.crop(image, "s3_type_value")), profile)
     row["auxiliary_ps_count"] = int_or_none(engine.read_digits(grid.crop(image, "s3_aux_value")))
 
     for cell_name, field in (

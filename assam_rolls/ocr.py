@@ -217,27 +217,49 @@ def strip_html(text: str) -> str:
 ENGINES: Dict[str, type] = {"tesseract": TesseractEngine, "surya": SuryaEngine}
 
 
-def get_engine(name: str = "tesseract", **kwargs) -> Engine:
+def get_engine(name: str = "tesseract", lang: Optional[str] = None, **kwargs) -> Engine:
+    """Build an engine, optionally for a specific Tesseract language model.
+
+    ``lang`` is the model the *page* needs -- ``asm``, ``ben`` or ``eng`` -- and comes
+    from the page's ``LanguageProfile``. It only affects text reading; digits are always
+    read with ``eng`` regardless, since the digit-script trap is a property of the
+    Indic models rather than of any one language.
+    """
     if name not in ENGINES:
         raise OCRError(f"unknown engine {name!r}; available: {sorted(ENGINES)}")
+    if lang and name == "tesseract":
+        kwargs["lang"] = lang
     return ENGINES[name](**kwargs)
 
 
-def engine_version(name: str = "tesseract") -> str:
+#: Vintage of each traineddata file, for provenance. Read off the files themselves::
+#:
+#:     $ strings asm.traineddata | grep -m1 '^[0-9]'
+#:     4.00.00alpha:asm:synth20170629
+#:
+#: All three models this corpus needs carry the **same 2017 synthetic vintage** -- the
+#: English one is no fresher than the Indic ones. Knowing which model read a page is part
+#: of knowing how much to trust it, so it goes into every row's provenance.
+TRAINEDDATA_VINTAGE = {"asm": "synth20170629", "ben": "synth20170629", "eng": "synth20170629"}
+
+
+def engine_version(name: str = "tesseract", lang: str = "asm") -> str:
     """A version string for the engine, recorded with every row.
 
     Worth capturing because the recogniser and its language model move independently:
     the Tesseract binary is actively maintained while ``asm.traineddata`` has been frozen
-    at ``synth20170629`` since 2017. A row's readings are attributable to both.
+    at ``synth20170629`` since 2017. A row's readings are attributable to both -- and
+    with three languages in the corpus, to *which* model actually read the page.
     """
     if name != "tesseract":
         return name
+    vintage = TRAINEDDATA_VINTAGE.get(lang, "unknown")
     try:
         result = subprocess.run(["tesseract", "--version"], capture_output=True, text=True)
         first = (result.stdout or result.stderr).splitlines()[0].strip()
-        return f"{first} (asm=synth20170629)"
+        return f"{first} ({lang}={vintage})"
     except (OSError, IndexError):
-        return "tesseract (version unknown)"
+        return f"tesseract ({lang}={vintage}, version unknown)"
 
 
 # ------------------------------------------------------------------- value extraction
