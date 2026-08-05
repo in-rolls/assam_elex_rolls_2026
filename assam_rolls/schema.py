@@ -444,10 +444,10 @@ PAGE1_JSON_SCHEMA = build_page1_json_schema()
 #: rules with the lower ones located structurally; ``gram_panchayat`` and ``subdivision``
 #: join the schema. Parsing changed for every language, so 1.x cache entries are stale.
 #:
-#: 2.1.0 -- a digit cell holding a single glyph is retried as a single character. Without
-#: it the lone "0" in the third-gender column read as unreadable on 36% of Bengali parts,
-#: failing the elector-sum check.
-PIPELINE_VERSION = "2.1.0"
+#: 2.1.0 -- a digit cell holding a single glyph is retried as a single character.
+#: 2.2.0 -- that retry now varies the *scale*, which is what actually decides a lone
+#: digit. 2.1.0 fixed the lone "0" but left 6.6% of Bengali parts with no start serial.
+PIPELINE_VERSION = "2.2.0"
 
 
 def empty_part_row() -> Dict[str, Any]:

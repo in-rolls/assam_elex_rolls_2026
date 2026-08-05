@@ -53,16 +53,20 @@ DEFAULT_DIGIT_SCALE = 2
 DEFAULT_TEXT_SCALE = 2
 MULTILINE_TEXT_SCALE = 3
 
-#: ``psm 6`` ("uniform block") beat 7/8/13 on isolated numbers across the Assamese
-#: corpus. It is *not* reliable on a lone digit, though the Assamese sample suggested it
-#: was: on Bengali pages it misses the lone "0" in the third-gender column about a third
-#: of the time, where psm 7 reads it -- and on Assamese the reverse. ``read_digits``
-#: therefore falls back rather than relying on any single mode.
+#: ``psm 6`` ("uniform block") beat 7/8/13 on isolated numbers across the Assamese corpus
+#: and is kept for multi-digit cells. It has nothing to do with the lone-digit failure:
+#: at the default scale *no* mode reads those, and at any other scale they all do. See
+#: ``read_digits`` -- the fallback varies scale, not mode.
 DEFAULT_PSM = 6
 
-#: "Treat the image as a single character." The fallback for a digit cell holding one
-#: glyph, which no single psm reads reliably across languages.
+#: "Treat the image as a single character." Used by the digit fallback.
 SINGLE_CHAR_PSM = 10
+
+#: Scales the digit fallback tries, in order, when the default returns nothing. Scale 2
+#: is the default because it is best on multi-digit cells, and is the single value that
+#: cannot resolve a lone digit -- see ``read_digits``. Both of these recover every failing
+#: cell measured; two are kept because the retry is free unless the first pass failed.
+DIGIT_FALLBACK_SCALES = (3, 1)
 
 ASCII_DIGITS = re.compile(r"[0-9]+")
 ANY_DIGITS = re.compile(r"\d+")
@@ -138,30 +142,46 @@ class TesseractEngine:
         return re.sub(r"\s+", " ", raw).strip()
 
     def read_digits(self, image: Image.Image) -> str:
-        """Read a digit-only cell, retrying a lone digit as a single character.
+        """Read a digit-only cell, retrying a lone digit at a different scale.
 
-        A single digit standing alone in a wide cell is the fragile case, and no one
-        ``--psm`` handles it everywhere. ``psm 6`` reads the lone ``0`` in the
-        third-gender column on Assamese pages but returns empty on many Bengali ones;
-        ``psm 7`` is the other way round. Measured over Bengali samples, ``psm 6`` at the
-        default scale missed 3 of 5 lone zeros while ``psm 10`` -- "treat the image as a
-        single character" -- read all 5, and it also reads the Assamese ones.
+        A single digit alone in a wide cell is the fragile case, and **the upscale factor
+        decides it, not the page-segmentation mode.** Measured over every numeric cell the
+        corpus failed to read -- 234 Bengali ``start_serial`` cells holding a lone ``1``
+        and 5 ``third_gender`` cells holding a lone ``0``:
 
-        So the primary mode is unchanged and a second pass runs only when the first
-        returns nothing. Cells that hold several digits never reach it, and a genuinely
-        empty cell costs one extra call and still returns "".
+        =====  =========  =========  ==========  ==========
+        scale  ``psm 6``  ``psm 7``  ``psm 10``  ``psm 13``
+        =====  =========  =========  ==========  ==========
+        1      27/27      27/27      27/27       0/27
+        2      **0/27**   **0/27**   **0/27**    0/27
+        3      27/27      27/27      27/27       0/27
+        4      27/27      27/27      27/27       0/27
+        =====  =========  =========  ==========  ==========
 
-        Left unguarded this silently zeroed nothing -- it produced ``None``, which failed
-        the elector-sum check on 36% of Bengali parts. Visible, but wrong.
+        Scale 2 -- the default, and the best value for multi-digit cells -- is the one
+        that cannot resolve these glyphs under any mode. So the retry changes *scale*.
+
+        The primary read is untouched and the retries fire only when it returns nothing,
+        so a multi-digit cell never reaches them and a genuinely empty cell still ends up
+        "". Running only where the first pass failed means this can add readings but never
+        alter one already made.
+
+        Unguarded it produced ``None`` rather than a wrong number, so the rows were
+        flagged rather than silently corrupt -- but 6.6% of Bengali parts lost their start
+        serial, and before this 36% failed the elector-sum check.
         """
         text = re.sub(r"\D", "", self._run(image, "eng", DIGIT_WHITELIST, self.digit_scale))
         if text:
             return text
-        return re.sub(
-            r"\D",
-            "",
-            self._run(image, "eng", DIGIT_WHITELIST, self.digit_scale, psm=SINGLE_CHAR_PSM),
-        )
+        for scale in DIGIT_FALLBACK_SCALES:
+            text = re.sub(
+                r"\D",
+                "",
+                self._run(image, "eng", DIGIT_WHITELIST, scale, psm=SINGLE_CHAR_PSM),
+            )
+            if text:
+                return text
+        return ""
 
 
 class SuryaEngine:

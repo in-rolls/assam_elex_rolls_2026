@@ -108,30 +108,40 @@ class TestLoneDigitFallback:
     rather than silent, but wrong.
     """
 
-    def test_falls_back_to_single_character_mode(self, monkeypatch):
+    def test_retries_at_a_different_scale(self):
+        """Scale is the lever: scale 2 cannot resolve a lone digit under any psm."""
         calls = []
 
-        def fake_run(self, image, lang, whitelist, scale, psm=None):
-            calls.append(psm)
-            return "" if psm is None else "0"
+        class Engine(ocr.TesseractEngine):
+            def _run(self, image, lang, whitelist, scale, psm=None):
+                calls.append(scale)
+                return "1" if scale != self.digit_scale else ""
 
-        monkeypatch.setattr(ocr.TesseractEngine, "_run", fake_run)
-        assert ocr.TesseractEngine().read_digits(Image.new("L", (40, 20), 255)) == "0"
-        assert calls == [None, ocr.SINGLE_CHAR_PSM]
+        assert Engine().read_digits(Image.new("L", (40, 20), 255)) == "1"
+        assert calls[0] == ocr.DEFAULT_DIGIT_SCALE
+        assert calls[1] in ocr.DIGIT_FALLBACK_SCALES
+        assert (
+            ocr.DEFAULT_DIGIT_SCALE not in ocr.DIGIT_FALLBACK_SCALES
+        ), "retrying the scale that just failed cannot help"
 
-    def test_a_confident_first_read_is_not_retried(self, monkeypatch):
+    def test_tries_every_fallback_scale_before_giving_up(self):
         calls = []
 
-        def fake_run(self, image, lang, whitelist, scale, psm=None):
-            calls.append(psm)
-            return "1234"
+        class Engine(ocr.TesseractEngine):
+            def _run(self, image, lang, whitelist, scale, psm=None):
+                calls.append(scale)
+                return ""
 
-        monkeypatch.setattr(ocr.TesseractEngine, "_run", fake_run)
-        assert ocr.TesseractEngine().read_digits(Image.new("L", (40, 20), 255)) == "1234"
-        assert calls == [None], "a multi-digit read must not pay for a second pass"
+        assert Engine().read_digits(Image.new("L", (40, 20), 255)) == ""
+        assert calls == [ocr.DEFAULT_DIGIT_SCALE, *ocr.DIGIT_FALLBACK_SCALES]
 
-    def test_a_truly_empty_cell_still_reads_empty(self, monkeypatch):
-        monkeypatch.setattr(
-            ocr.TesseractEngine, "_run", lambda self, image, lang, wl, scale, psm=None: ""
-        )
-        assert ocr.TesseractEngine().read_digits(Image.new("L", (40, 20), 255)) == ""
+    def test_a_confident_first_read_is_not_retried(self):
+        calls = []
+
+        class Engine(ocr.TesseractEngine):
+            def _run(self, image, lang, whitelist, scale, psm=None):
+                calls.append(scale)
+                return "1234"
+
+        assert Engine().read_digits(Image.new("L", (40, 20), 255)) == "1234"
+        assert calls == [ocr.DEFAULT_DIGIT_SCALE], "a multi-digit read must not pay again"
