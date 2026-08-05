@@ -53,9 +53,16 @@ DEFAULT_DIGIT_SCALE = 2
 DEFAULT_TEXT_SCALE = 2
 MULTILINE_TEXT_SCALE = 3
 
-#: ``psm 6`` ("uniform block") beat 7/8/13 on isolated numbers -- notably it is the only
-#: mode that reliably reads a lone "0", which 7 returns as empty.
+#: ``psm 6`` ("uniform block") beat 7/8/13 on isolated numbers across the Assamese
+#: corpus. It is *not* reliable on a lone digit, though the Assamese sample suggested it
+#: was: on Bengali pages it misses the lone "0" in the third-gender column about a third
+#: of the time, where psm 7 reads it -- and on Assamese the reverse. ``read_digits``
+#: therefore falls back rather than relying on any single mode.
 DEFAULT_PSM = 6
+
+#: "Treat the image as a single character." The fallback for a digit cell holding one
+#: glyph, which no single psm reads reliably across languages.
+SINGLE_CHAR_PSM = 10
 
 ASCII_DIGITS = re.compile(r"[0-9]+")
 ANY_DIGITS = re.compile(r"\d+")
@@ -99,7 +106,14 @@ class TesseractEngine:
     text_scale: int = DEFAULT_TEXT_SCALE
     psm: int = DEFAULT_PSM
 
-    def _run(self, image: Image.Image, lang: str, whitelist: Optional[str], scale: int) -> str:
+    def _run(
+        self,
+        image: Image.Image,
+        lang: str,
+        whitelist: Optional[str],
+        scale: int,
+        psm: Optional[int] = None,
+    ) -> str:
         if shutil.which("tesseract") is None:
             raise OCRError("tesseract not found (macOS: brew install tesseract)")
         grey = image.convert("L")
@@ -111,7 +125,7 @@ class TesseractEngine:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "cell.png")
             grey.save(path)
-            command = ["tesseract", path, "stdout", "-l", lang, "--psm", str(self.psm)]
+            command = ["tesseract", path, "stdout", "-l", lang, "--psm", str(psm or self.psm)]
             if whitelist:
                 command += ["-c", f"tessedit_char_whitelist={whitelist}"]
             result = subprocess.run(command, capture_output=True, text=True)
@@ -124,7 +138,30 @@ class TesseractEngine:
         return re.sub(r"\s+", " ", raw).strip()
 
     def read_digits(self, image: Image.Image) -> str:
-        return re.sub(r"\D", "", self._run(image, "eng", DIGIT_WHITELIST, self.digit_scale))
+        """Read a digit-only cell, retrying a lone digit as a single character.
+
+        A single digit standing alone in a wide cell is the fragile case, and no one
+        ``--psm`` handles it everywhere. ``psm 6`` reads the lone ``0`` in the
+        third-gender column on Assamese pages but returns empty on many Bengali ones;
+        ``psm 7`` is the other way round. Measured over Bengali samples, ``psm 6`` at the
+        default scale missed 3 of 5 lone zeros while ``psm 10`` -- "treat the image as a
+        single character" -- read all 5, and it also reads the Assamese ones.
+
+        So the primary mode is unchanged and a second pass runs only when the first
+        returns nothing. Cells that hold several digits never reach it, and a genuinely
+        empty cell costs one extra call and still returns "".
+
+        Left unguarded this silently zeroed nothing -- it produced ``None``, which failed
+        the elector-sum check on 36% of Bengali parts. Visible, but wrong.
+        """
+        text = re.sub(r"\D", "", self._run(image, "eng", DIGIT_WHITELIST, self.digit_scale))
+        if text:
+            return text
+        return re.sub(
+            r"\D",
+            "",
+            self._run(image, "eng", DIGIT_WHITELIST, self.digit_scale, psm=SINGLE_CHAR_PSM),
+        )
 
 
 class SuryaEngine:

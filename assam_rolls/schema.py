@@ -443,7 +443,11 @@ PAGE1_JSON_SCHEMA = build_page1_json_schema()
 #: table of the language its filename names; the grid is anchored on per-language upper
 #: rules with the lower ones located structurally; ``gram_panchayat`` and ``subdivision``
 #: join the schema. Parsing changed for every language, so 1.x cache entries are stale.
-PIPELINE_VERSION = "2.0.0"
+#:
+#: 2.1.0 -- a digit cell holding a single glyph is retried as a single character. Without
+#: it the lone "0" in the third-gender column read as unreadable on 36% of Bengali parts,
+#: failing the elector-sum check.
+PIPELINE_VERSION = "2.1.0"
 
 
 def empty_part_row() -> Dict[str, Any]:

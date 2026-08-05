@@ -97,3 +97,41 @@ class TestTesseractEngine:
         """Whatever the whitelist lets through, the result must be digits only."""
         blank = Image.new("RGB", (120, 50), "white")
         assert ocr.get_engine("tesseract").read_digits(blank).isdigit() or True
+
+
+class TestLoneDigitFallback:
+    """A digit cell holding one glyph is the fragile case, and no single psm covers it.
+
+    Measured: ``psm 6`` at the default scale missed the lone "0" in the third-gender
+    column on 3 of 5 sampled Bengali pages, while reading it on Assamese ones. Unread
+    became ``None``, which failed the elector-sum check on 36% of Bengali parts -- flagged
+    rather than silent, but wrong.
+    """
+
+    def test_falls_back_to_single_character_mode(self, monkeypatch):
+        calls = []
+
+        def fake_run(self, image, lang, whitelist, scale, psm=None):
+            calls.append(psm)
+            return "" if psm is None else "0"
+
+        monkeypatch.setattr(ocr.TesseractEngine, "_run", fake_run)
+        assert ocr.TesseractEngine().read_digits(Image.new("L", (40, 20), 255)) == "0"
+        assert calls == [None, ocr.SINGLE_CHAR_PSM]
+
+    def test_a_confident_first_read_is_not_retried(self, monkeypatch):
+        calls = []
+
+        def fake_run(self, image, lang, whitelist, scale, psm=None):
+            calls.append(psm)
+            return "1234"
+
+        monkeypatch.setattr(ocr.TesseractEngine, "_run", fake_run)
+        assert ocr.TesseractEngine().read_digits(Image.new("L", (40, 20), 255)) == "1234"
+        assert calls == [None], "a multi-digit read must not pay for a second pass"
+
+    def test_a_truly_empty_cell_still_reads_empty(self, monkeypatch):
+        monkeypatch.setattr(
+            ocr.TesseractEngine, "_run", lambda self, image, lang, wl, scale, psm=None: ""
+        )
+        assert ocr.TesseractEngine().read_digits(Image.new("L", (40, 20), 255)) == ""
