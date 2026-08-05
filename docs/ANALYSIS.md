@@ -397,3 +397,100 @@ reasoning that a blank ward number drops a row. That was inference, not measurem
 was wrong: the label row is printed even when its value is empty, so Assamese is 8 rows on
 every page sampled. The fallback is rare on Assamese — and, because of wrapping, essential
 on English. The direction of the error was the opposite of what I assumed.
+
+---
+
+## 11. Three digit bugs, none of which a corpus-wide average would have shown
+
+Adding two languages surfaced three separate defects in how numbers were read. They are
+worth recording together because they share a shape: **each was invisible in the headline
+figure and obvious the moment accuracy was broken out by language**, and each was found by
+checking a *running* job rather than by waiting for it to finish.
+
+### The pattern that found them
+
+| # | symptom | how it surfaced | scope |
+|---|---|---|---|
+| 1 | lone `0` unread | Bengali elector-sum 64% vs Assamese 99.7% | 36% of Bengali parts |
+| 2 | lone `1` unread | Bengali `serial_order` failing 6.7% | 234 Bengali parts |
+| 3 | `part_no` misread | characterising the residual 1% | ~1% of all parts |
+
+Averaged over a corpus that is 88% Assamese, the first reads as roughly 96% — unremarkable.
+Broken out, it is 64% and impossible to ignore. That is the entire argument for the
+per-language breakdown in `report.json`.
+
+### Bugs 1 and 2: the upscale factor, not the segmentation mode
+
+A single digit standing alone in a wide cell is the fragile case. The obvious lever is
+`--psm`, and it is the wrong one. Measured over every numeric cell the corpus failed to
+read (234 `start_serial` holding a lone `1`, 5 `third_gender` holding a lone `0`):
+
+| scale | psm 6 | psm 7 | psm 10 | psm 13 |
+|---|--:|--:|--:|--:|
+| 1 | 27/27 | 27/27 | 27/27 | 0/27 |
+| **2** | **0/27** | **0/27** | **0/27** | 0/27 |
+| 3 | 27/27 | 27/27 | 27/27 | 0/27 |
+| 4 | 27/27 | 27/27 | 27/27 | 0/27 |
+
+**Scale 2 — the default, and genuinely the best value for multi-digit cells — is the one
+value that cannot resolve these glyphs under any mode.** The mode never mattered.
+
+This was got wrong once on the way. The first fix retried under `psm 10` and did repair
+the lone `0`, which looked like confirmation; it left 6.6% of Bengali parts with no start
+serial, because it kept the failing scale. A fix that improves the symptom you were
+looking at is not evidence that you found the cause.
+
+`read_digits` now retries at scales 3 then 1, and only when the first pass returns nothing
+— so multi-digit cells never pay for it, and the fallback can add readings but never alter
+one already made.
+
+### Bug 3: digits read by a language model
+
+`part_no` was read by transcribing the whole `খণ্ড নং : 103` cell with the Assamese model
+and pulling the integer out of the result — precisely the mistake the elector cells are
+structured to avoid ([§2](#2-the-digit-script-trap-assamese-ocr-reads-western-8-as-an-assamese-4)).
+Two failure modes:
+
+- a spurious `9`: `103` → `1093`, `133` → `1393`;
+- the `8` → `৪` trap: of 32 parts whose `part_no` read as `None`, **100% contained an `8`**
+  and no other digit appeared at all — 13.9× its rate in the corpus. The ASCII-only guard
+  was working exactly as designed; the value was simply lost rather than corrupted.
+
+Cropping right of the label and reading *that* with `read_digits` took `part_no` from
+98.15% to 100.00% over 216 parts sampled across 24 constituencies and all three languages.
+
+The gap before the number is only ~9px — against ~95–131px in the locality block — so the
+search has to be restricted to the right of the cell, or it competes with the gaps inside
+the label itself.
+
+### What was checked and found clean
+
+Not every suspicion survived. `pc_no` is constant within a constituency and disagrees in
+**0 of 62**, so it does not share the defect. `total_pages` varies within a constituency —
+but by design, since it counts that part's own roll, so its variation is not evidence of
+misreading. Both were checked rather than assumed, one of them after an initial wrong
+guess.
+
+### The residual, and why it is left alone
+
+`part_no` settles at ~99.6%, the same figure the original four-constituency corpus showed.
+The remaining failures are a hard OCR effect (a trailing `1` read as `14`: `191` → `1914`),
+not a structural bug. One further refinement was tried — anchoring on the rightmost wide
+gap instead of the widest — and it was **no better on a 292-part sample and broke cases
+that already worked** (`116` → `16`), because a gap threshold wide enough to clear the
+colon is sometimes wide enough to fall between two digits.
+
+It is left as-is deliberately:
+
+- `part_no_file`, taken from the filename, is the dataset's key and is correct on **every**
+  affected row. Joins and stitching are unaffected.
+- every mismatch is **flagged**; the failure mode is over-flagging, which is the safe
+  direction for a review queue.
+
+### Cost
+
+The fallback fires up to two extra Tesseract calls on any cell the first pass cannot read,
+which roughly doubles the digit work: throughput went from 0.37 s/page to 0.70 s/page,
+about 4.8 hours for the statewide corpus instead of 3. That is the price of the 36% of
+Bengali parts, and worth paying — but it is a real cost and belongs in the estimate rather
+than being discovered later.
