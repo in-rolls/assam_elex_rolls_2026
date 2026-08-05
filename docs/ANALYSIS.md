@@ -4,7 +4,9 @@ Findings from building the extractor, with the measurements that justify each de
 Recorded here because they are the reusable part of this work: most are properties of
 Assamese OCR and of ECI's roll PDFs, not of this repository.
 
-Every number below is measured on the 890 parts of AC1, AC10, AC12 and AC100.
+Sections 1-9 were measured on the 890 parts of AC1, AC10, AC12 and AC100, all Assamese.
+Section 10 covers the full 126-constituency corpus, which turned out not to be
+monolingual.
 
 ---
 
@@ -268,3 +270,130 @@ Stated plainly, because the fill rates in `README.md` invite the opposite conclu
 
 Closing these requires a human-labelled gold set. Nothing in the pipeline substitutes for
 one, and no number reported here should be read as if one existed.
+
+---
+
+## 10. The roll is printed in three languages, and the form is not the same in each
+
+The full download settled a question the four-AC sample could not raise: **the Assam roll
+is not monolingual.** The publisher's own filenames say so.
+
+| language | ACs | parts | which |
+|---|--:|--:|---|
+| Assamese | 112 | 27,683 | 1–112 |
+| Bengali | 13 | 3,542 | 114–126 (Barak Valley) |
+| English | 1 | 261 | 113 |
+
+That the language is *stated in the filename* is the load-bearing fact. It is known before
+a page is opened, so it never has to be detected, and a wrong guess is impossible. The
+pipeline refuses to read a page whose language has no profile rather than defaulting to
+Assamese — defaulting is precisely how 3,803 parts would have been read with the wrong
+model and nobody would have seen a single error message.
+
+### What transfers between languages, and what does not
+
+The initial evidence was encouraging and turned out to be shallow. All three editions are
+595×842 pt, one 1187×1679 image per page, two pages, zero font objects — the same
+generator. It was tempting to conclude the grid detector would transfer unchanged.
+
+It did not. Measured against rendered pages:
+
+| | Assamese | Bengali | English |
+|---|---|---|---|
+| upper rules | 124, 157, 191, 225, 399, 433, 483 | **identical** | 133, 185, 243, 295, 488, 540, 596 |
+| lower rules | 816, 850, 896 | 840, 874, 920 (+24) | varies: 953/969/985 … |
+| locality rows | 8 | **9** | 9 |
+| vertical rules | — | within 3px | within 3px |
+
+Three separate lessons:
+
+**Only the upper rules are language-specific.** English rows are simply taller. Bengali's
+lower block sits 24px below Assamese's. But the rules *below* section 2 move with page
+content in every language — English has three variants 16px apart depending on how far the
+address wraps — so hardcoding them was always wrong and merely happened to work on
+Assamese. They are now found from the end of the rule list, which is one rule for all
+three languages and for every variant.
+
+**Vertical rules need no table at all.** Measured across all three, they agree to within
+3px, and the column snapper already tolerates that.
+
+**The field set differs.** This is the one that would have corrupted data.
+
+### The extra rows
+
+The Bengali form prints a **ninth** locality row, `গ্রাম পঞ্চায়েত` (Gram Panchayat), between
+the police station and the block. The English form prints **Subdivision** after the revenue
+circle — which it labels *Tehsil*, the same slot between Block and District, so it is the
+same field under a different translation.
+
+Mapping Assamese's eight fields onto Bengali's nine rows would have shifted **block,
+revenue circle, district and pincode each down by one** on all 3,542 Bengali parts. Every
+value would have been a real value, in the wrong column, on every page — no exception, no
+empty field, nothing to notice. The row-count check is what caught it.
+
+Both extras are now columns of their own, blank on the editions that do not print them.
+The core eight are identical across all three languages, so the dataset is one schema:
+every row has the same columns whatever language its constituency was printed in.
+
+### Wrapping breaks row counting, and the fix is to look at the labels
+
+English values wrap. `NEW SANGBAR DEVELOPMENT BLOCK` runs onto a second line, and an ink
+profile taken across the whole cell counts that continuation as a row of its own — 9, 10 or
+11 rows for the same 9 fields, which makes positional mapping impossible.
+
+The label column never wraps. Counting rows in a left-hand strip that stops short of the
+printed colon gives exactly 9 on every English page. A generic fix, and it removed the need
+for any continuation-folding logic.
+
+The same class of assumption broke the station name. The left-hand station cell had been
+split at a horizontal rule that only divides the *right-hand* column; on Assamese pages
+that rule happens to land in whitespace, on English it cut the station name in half. The
+cell now spans the whole block and the label rows are found by reading them.
+
+### Recovering the labels instead of typing them
+
+The row-alignment fallback matches against the printed labels, so Bengali and English
+labels had to be known exactly. Typing them from memory would have been guessing.
+
+They are recovered from the corpus instead. A label is *printed*, not filled in, so it is
+identical on every page of a language: OCR the label column across a sample and take the
+**modal reading per row**. Random per-page errors are outvoted, and the agreement fraction
+says how much to trust each result. Both languages came out at 98–100% with no weak rows.
+
+Three things had to be got right for that to work, each found by looking at the output:
+
+- **Crop to the gap, not to the label.** A crop only as wide as the text is too small a
+  strip for Tesseract — Bengali `ব্লক` (~45px) read as `a`.
+- **Stop short of the colon.** Including it adds a glyph transcribed inconsistently as
+  `H`, `1`, `(` or `]`, which differs across pages and destroys the consensus outright.
+- **Find the value by measurement, not by offset.** A fixed clearance past the colon is
+  either too small (the colon lands in the value as a stray `'` or `>`, and a blank field
+  reads as unread rather than empty) or too large (`HAFLONG` became `4~AFLONG`). Walking
+  past the colon's ink to the next whitespace is exact.
+
+The strongest evidence that this works: the **Bengali value offset was derived as 320** —
+the same number that had been hand-tuned for Assamese months earlier, arrived at
+independently from pixels.
+
+What consensus cannot do is catch a *systematic* misreading: if the model mangles a glyph
+the same way on every page, the mode is mangled too. That is why per-language accuracy is
+reported separately — see below.
+
+### Why accuracy is reported per language
+
+The corpus is 88% Assamese. A total collapse confined to the 13 Bengali constituencies
+would move the corpus-wide figure by about one percent, and one confined to the single
+English constituency by less than one part in a hundred. Both would look like noise.
+
+Each language is read with its own Tesseract model, its own label table and its own rule
+anchors, so each can fail independently — and the four hard checks are language-independent,
+so each language has the same free ground truth on every page. `report.json` therefore
+carries the full breakdown by language, and that is the number to look at first.
+
+### A correction worth recording
+
+While planning this I claimed the label-alignment fallback fires on 82% of Assamese pages,
+reasoning that a blank ward number drops a row. That was inference, not measurement, and it
+was wrong: the label row is printed even when its value is empty, so Assamese is 8 rows on
+every page sampled. The fallback is rare on Assamese — and, because of wrapping, essential
+on English. The direction of the error was the opposite of what I assumed.

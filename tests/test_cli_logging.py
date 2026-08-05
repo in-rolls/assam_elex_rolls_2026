@@ -57,8 +57,13 @@ class TestWorkerInit:
             assert supplied == required, f"initargs=({raw}) supplies {supplied}, need {required}"
 
 
-class TestOutDirResolution:
-    """``--out`` means a directory for most commands and a *file* for ``review``."""
+class TestLogLocation:
+    """``--out`` means something different per command, so logs do not follow it.
+
+    Regressions this pins: ``review --out out/review.html`` created a *directory* where
+    the HTML belonged, and ``render --out out/pages`` dropped a ``logs/`` directory in
+    among 31,486 PNGs.
+    """
 
     def resolve(self, argv, tmp_path, monkeypatch):
         """Run ``main`` far enough to fix the log path, without running the command.
@@ -79,17 +84,23 @@ class TestOutDirResolution:
         assert cli.main(argv) == 0
         return captured["log_file"]
 
-    def test_directory_out_gets_a_logs_subdirectory(self, tmp_path, monkeypatch):
+    def test_logs_go_to_a_fixed_directory(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         path = self.resolve(["build", "--out", "dataset"], tmp_path, monkeypatch)
-        assert path.parent == Path("dataset/logs")
+        assert path.parent == Path("out/logs")
 
-    def test_file_out_logs_beside_it_not_inside_it(self, tmp_path, monkeypatch):
-        """Regression: ``review --out out/review.html`` created a *directory* there."""
+    def test_a_file_out_does_not_become_a_directory(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         path = self.resolve(["review", "--out", "out/review.html"], tmp_path, monkeypatch)
         assert path.parent == Path("out/logs")
         assert not Path("out/review.html").is_dir()
+
+    def test_a_data_directory_out_stays_clean(self, tmp_path, monkeypatch):
+        """`render --out out/pages` must not put logs among the rendered pages."""
+        monkeypatch.chdir(tmp_path)
+        path = self.resolve(["render", "--out", "out/pages"], tmp_path, monkeypatch)
+        assert path.parent == Path("out/logs")
+        assert not (Path("out/pages") / "logs").exists()
 
     def test_explicit_log_file_is_respected(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)

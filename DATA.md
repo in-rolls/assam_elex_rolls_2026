@@ -3,8 +3,20 @@
 One row per **part** (polling-station area) of the Assam 2026 Final Electoral Roll,
 read from page 1 of each part's info page.
 
-Current release covers **AC1, AC10, AC12 and AC100 — 890 parts, 1,269 sections**. The
-pipeline is unchanged for the full 126-AC corpus.
+Covers **all 126 constituencies — 31,486 parts**.
+
+The roll is printed in three languages, and the language of each constituency is stated in
+the publisher's own filenames:
+
+| language | ACs | parts | which |
+|---|--:|--:|---|
+| Assamese | 112 | 27,683 | 1–112 |
+| Bengali | 13 | 3,542 | 114–126 (Barak Valley) |
+| English | 1 | 261 | 113 |
+
+Each is read with its own Tesseract model and its own label table, and each is scored
+separately (see [Accuracy](#accuracy)). **Every row has the same columns regardless of
+language** — the core fields are identical across the three editions.
 
 ## Files
 
@@ -113,12 +125,26 @@ Reservation is normalised to `GENERAL` / `SC` / `ST`.
 
 Dates are ISO `YYYY-MM-DD`. `roll_description` is the verbatim identification paragraph.
 
-### Section 2 — locality (8)
+### Section 2 — locality (10)
 
-`main_town_village`, `ward_no`, `post_office`, `police_station`, `block`,
-`revenue_circle`, `district`, `pin_code`
+`main_town_village`, `ward_no`, `post_office`, `police_station`, `gram_panchayat`,
+`block`, `revenue_circle`, `subdivision`, `district`, `pin_code`
 
-Verbatim Assamese. `ward_no` is blank on rural parts (see the null convention above).
+Verbatim, in the language the constituency is printed in. `ward_no` is blank on rural
+parts (see the null convention above).
+
+Eight of these are printed by all three editions. Two are not, and are **blank** (`""`,
+not `NA`) where the form does not print them — the absence is a property of the form, not
+a failure to read it:
+
+| column | printed by | note |
+|---|---|---|
+| `gram_panchayat` | Bengali only | `গ্রাম পঞ্চায়েত`, between the police station and the block |
+| `subdivision` | English only | after the revenue circle |
+
+The English form labels the revenue circle **Tehsil**. It occupies the identical slot —
+between Block and District — in all three editions, so it is stored as `revenue_circle`
+rather than as a fourth column, keeping the revenue unit joinable across languages.
 
 ### Section 3 — polling station (5)
 
@@ -215,10 +241,21 @@ is still correctly keyed and joinable. What is lost on AC12/270 is one elector c
 
 ## Limitations
 
-**Numeric accuracy is measured; Assamese text accuracy is not.** The four checks above
-verify numbers on every page. There is no human-labelled gold set for the text, and
-cross-engine agreement (86.7% with Surya) is not accuracy — both engines can share a
-failure. Fill rate is not accuracy either: a field can be 100% filled and wrong.
+**Numeric accuracy is measured; text accuracy is not, in any language.** The four checks
+above verify numbers on every page. There is no human-labelled gold set for the text, and
+cross-engine agreement (86.7% with Surya, on Assamese only) is not accuracy — both engines
+can share a failure. Fill rate is not accuracy either: a field can be 100% filled and wrong.
+
+**Bengali and English carry their own unquantified error profiles.** They are read with
+`ben` and `eng` traineddata, neither of which has been characterised here the way the
+Assamese failures below have. All three models share the same 2017 synthetic vintage
+(`synth20170629`) — the English one is no fresher than the Indic ones.
+
+**The Bengali and English label tables are machine-derived.** They were recovered by
+consensus across sampled pages rather than typed, at 98–100% agreement with no weak rows,
+and are checked in under `assam_rolls/profiles/` with their audit records in
+`out/calibration/`. Consensus outvotes random error but cannot detect a *systematic*
+misreading of a label. The per-language accuracy table above is the backstop.
 
 **Known text failure modes:**
 

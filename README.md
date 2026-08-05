@@ -18,9 +18,22 @@ $ pdffonts part.pdf              # no fonts
 $ pdfimages -list part.pdf       # 1 image per page, 1187x1679, 144 dpi
 ```
 
-So extraction runs a vision model over the page image rather than parsing text. The
-text is Assamese (Bengali-Assamese script) with mixed Western (`2026`, `783350`) and
-Assamese (`৫৯০`, `১`) numerals.
+So extraction runs OCR over the page image rather than parsing text, with mixed Western
+(`2026`, `783350`) and Bengali-Assamese (`৫৯০`, `১`) numerals.
+
+The roll is **not monolingual**. The publisher names the language of every constituency
+in its filenames:
+
+| language | ACs | parts | which |
+|---|--:|--:|---|
+| Assamese | 112 | 27,683 | 1–112 |
+| Bengali | 13 | 3,542 | 114–126 (Barak Valley) |
+| English | 1 | 261 | 113 |
+
+Each is read with its own Tesseract model, its own grid anchors and its own label table,
+derived by `assam-rolls calibrate` from the form's own printed labels. The three editions
+are not pixel-identical and do not print quite the same fields — see
+[`docs/ANALYSIS.md`](docs/ANALYSIS.md#10-the-roll-is-printed-in-three-languages-and-the-form-is-not-the-same-in-each).
 
 ## What gets extracted
 
@@ -87,14 +100,16 @@ the extracted values.
 
 ## Install
 
-Requires [poppler](https://poppler.freedesktop.org/), Tesseract 5 with the Assamese
-language model, and Python 3.10+.
+Requires [poppler](https://poppler.freedesktop.org/), Tesseract 5 with the Assamese,
+Bengali and English language models, and Python 3.10+.
 
 ```bash
 brew install poppler tesseract      # Debian: apt-get install poppler-utils tesseract-ocr
 
-curl -L -o "$(brew --prefix)/share/tessdata/asm.traineddata" \
-  https://github.com/tesseract-ocr/tessdata_best/raw/main/asm.traineddata
+for lang in asm ben eng; do
+  curl -L -o "$(brew --prefix)/share/tessdata/$lang.traineddata" \
+    "https://github.com/tesseract-ocr/tessdata_best/raw/main/$lang.traineddata"
+done
 
 make install                        # uv venv + editable install with dev extras
 ```
@@ -104,11 +119,14 @@ No API key is required.
 ## Run
 
 ```bash
+assam-rolls calibrate     # derive the Bengali and English label tables (once)
 assam-rolls render        # zips  -> out/pages/{ac}-{part}.png
 assam-rolls ocr           # pages -> out/cache/*.json          (local, free)
 assam-rolls build         # cache -> parts.jsonl + CSVs + report.json
 assam-rolls review        # flagged rows -> out/review.html
 ```
+
+`render` and `ocr` both run across a process pool.
 
 Every stage is resumable and idempotent, keyed on `{ac:03d}-{part:04d}`. `ocr` skips any
 part whose cached result still matches its source PDF's hash, so an interrupted run

@@ -30,6 +30,10 @@ from . import schema as schema_mod
 from . import validate as validate_mod
 from .schema import PART_COLUMNS, SECTION_COLUMNS
 
+#: Where run logs go when ``--log-file`` is not given. Fixed, not derived from any
+#: command's ``--out``.
+LOG_DIR = Path("out")
+
 
 def _zip_paths(zip_dir: Path) -> List[Path]:
     return sorted(zip_dir.glob("*.zip"))
@@ -756,15 +760,14 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # A statewide run is hours long; without a file log a failure leaves no record of
     # which page failed or why.
-    out_dir = getattr(args, "out", None)
-    if not isinstance(out_dir, Path):
-        out_dir = Path("out")
-    elif out_dir.suffix:
-        # `review --out out/review.html` names a file, not a directory; putting the log
-        # under it would create a directory where the HTML belongs.
-        out_dir = out_dir.parent
+    #
+    # Logs go to a fixed directory rather than one derived from each command's `--out`.
+    # `--out` means something different per command -- a page directory for `render`, an
+    # HTML file for `review` -- and deriving from it put a `logs/` directory inside
+    # `out/pages` and, before that, turned `out/review.html` into a directory. A constant
+    # is predictable and cannot contaminate a data directory. `--log-file` overrides it.
     if args.log_file is None:
-        args.log_file = _log.default_log_path(out_dir)
+        args.log_file = _log.default_log_path(LOG_DIR)
     level = logging.DEBUG if args.verbose else (logging.ERROR if args.quiet else logging.INFO)
     _log.setup_logging(level=level, log_file=args.log_file)
     logger = _log.get_logger(__name__)
