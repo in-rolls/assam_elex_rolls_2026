@@ -71,6 +71,11 @@ FOOTER_HEIGHT = 100
 #: Native page size of these scans; used by tests and as a sanity hint.
 EXPECTED_SIZE_HINT = (1187, 1679)
 
+#: Width every pixel constant in this module is expressed against. A page issued at a
+#: different size is read at its own resolution with the constants scaled, never rescaled
+#: to match them -- see ``render.normalize_page`` for what resampling costs.
+CANONICAL_WIDTH = 1187
+
 
 class LayoutError(RuntimeError):
     """Raised when a page does not match the info-page template."""
@@ -103,6 +108,12 @@ class Grid:
     h_rules: Tuple[int, ...]
     cells: Dict[str, Box]
 
+    #: Page width relative to the canonical 1187px. The publisher issues some pages at
+    #: 0.80x, and they are read at their own resolution rather than rescaled -- resampling
+    #: either invents pixels or discards them, and both corrupt digits. Callers with their
+    #: own pixel offsets (the parser's value columns) must scale them by this.
+    scale: float = 1.0
+
     def crop(self, image: Image.Image, name: str, inset: int = 2) -> Image.Image:
         box = self.cells[name].pad(inset)
         return image.crop((box.x0, box.y0, box.x1, box.y1))
@@ -122,12 +133,13 @@ def _group(indices: Sequence[int], gap: int = 2) -> List[int]:
     return [sum(group) // len(group) for group in groups]
 
 
-def detect_h_rules(image: Image.Image) -> List[int]:
+def detect_h_rules(image: Image.Image, scale: float = 1.0) -> List[int]:
     """Y positions of full-width horizontal rules."""
     grey = image.convert("L")
     width, height = grey.size
     pixels = grey.load()
-    left, right = FRAME_LEFT, min(FRAME_RIGHT, width)
+    left = int(round(FRAME_LEFT * scale))
+    right = min(int(round(FRAME_RIGHT * scale)), width)
     step = 3
     samples = len(range(left, right, step))
     hits = [
@@ -152,15 +164,21 @@ def detect_v_rules(image: Image.Image, y0: int, y1: int) -> List[int]:
     return _group(hits)
 
 
-def _match(rules: Sequence[int], expected: int) -> Optional[int]:
-    """The detected rule closest to ``expected``, within tolerance."""
-    candidates = [r for r in rules if abs(r - expected) <= RULE_TOLERANCE]
+def _match(rules: Sequence[int], expected: int, scale: float = 1.0) -> Optional[int]:
+    """The detected rule closest to ``expected``, within tolerance.
+
+    The tolerance scales with the page: a 4px allowance on a 1187px page is 3px on a
+    949px one, and holding it fixed would make the smaller pages match more loosely than
+    intended rather than equivalently.
+    """
+    tolerance = max(2, round(RULE_TOLERANCE * scale))
+    candidates = [r for r in rules if abs(r - expected) <= tolerance]
     return min(candidates, key=lambda r: abs(r - expected)) if candidates else None
 
 
-def _column(v_rules: Sequence[int], expected: int, fallback: int) -> int:
+def _column(v_rules: Sequence[int], expected: int, fallback: int, scale: float = 1.0) -> int:
     """Snap to a detected vertical rule, falling back to the template position."""
-    match = _match(v_rules, expected)
+    match = _match(v_rules, expected, scale)
     return match if match is not None else fallback
 
 
@@ -180,12 +198,15 @@ def build_grid(image: Image.Image, stable_rules: Sequence[int] = UPPER_H_RULES) 
     silently produce garbage cells.
     """
     width, height = image.size
-    h_rules = detect_h_rules(image)
+    scale = width / CANONICAL_WIDTH
+    px = lambda value: int(round(value * scale))  # noqa: E731 -- canonical px -> this page
+
+    h_rules = detect_h_rules(image, scale)
 
     upper: List[int] = []
     missing: List[int] = []
     for expected in stable_rules:
-        found = _match(h_rules, expected)
+        found = _match(h_rules, px(expected), scale)
         if found is None:
             missing.append(expected)
         else:
@@ -225,27 +246,27 @@ def build_grid(image: Image.Image, stable_rules: Sequence[int] = UPPER_H_RULES) 
     s3_v = detect_v_rules(image, lower[1], lower[2])
     s4_v = detect_v_rules(image, value_top, value_bottom)
 
-    part_split = _column(header_v, 947, 947)
-    s1_split = _column(s1_v, 497, 497)
-    s2_split = _column(s2_v, 502, 502)
-    s3_split = _column(s3_v, 497, 497)
-    s3_right = _column(s3_v, 947, 947)
+    part_split = _column(header_v, px(947), px(947), scale)
+    s1_split = _column(s1_v, px(497), px(497), scale)
+    s2_split = _column(s2_v, px(502), px(502), scale)
+    s3_split = _column(s3_v, px(497), px(497), scale)
+    s3_right = _column(s3_v, px(947), px(947), scale)
 
     # Six elector columns; fall back to template positions if a divider is faint.
     defaults = (24, 156, 286, 497, 723, 947, 1162)
-    cols = [_column(s4_v, expected, expected) for expected in defaults]
+    cols = [_column(s4_v, px(expected), px(expected), scale) for expected in defaults]
 
     cells: Dict[str, Box] = {
         # header
-        "header_ac": Box(FRAME_LEFT, upper[HEADER_TOP], part_split, upper[HEADER_MID]),
-        "header_part_no": Box(part_split, upper[HEADER_TOP], FRAME_RIGHT, upper[HEADER_MID]),
-        "header_pc": Box(FRAME_LEFT, upper[HEADER_MID], FRAME_RIGHT, upper[HEADER_BOTTOM]),
+        "header_ac": Box(px(FRAME_LEFT), upper[HEADER_TOP], part_split, upper[HEADER_MID]),
+        "header_part_no": Box(part_split, upper[HEADER_TOP], px(FRAME_RIGHT), upper[HEADER_MID]),
+        "header_pc": Box(px(FRAME_LEFT), upper[HEADER_MID], px(FRAME_RIGHT), upper[HEADER_BOTTOM]),
         # section 1 -- revision
-        "s1_revision": Box(FRAME_LEFT, upper[S1_TOP], s1_split, upper[S1_BOTTOM]),
-        "s1_description": Box(s1_split, upper[S1_TOP], FRAME_RIGHT, upper[S1_BOTTOM]),
+        "s1_revision": Box(px(FRAME_LEFT), upper[S1_TOP], s1_split, upper[S1_BOTTOM]),
+        "s1_description": Box(s1_split, upper[S1_TOP], px(FRAME_RIGHT), upper[S1_BOTTOM]),
         # section 2 -- areas and locality
-        "s2_areas": Box(FRAME_LEFT, upper[S2_TOP], s2_split, lower[0]),
-        "s2_locality": Box(s2_split, upper[S2_TOP], FRAME_RIGHT, lower[0]),
+        "s2_areas": Box(px(FRAME_LEFT), upper[S2_TOP], s2_split, lower[0]),
+        "s2_locality": Box(s2_split, upper[S2_TOP], px(FRAME_RIGHT), lower[0]),
         # section 3 -- polling station
         # The left-hand station cell spans the whole block, label rows included. The
         # right-hand column is divided at lower[2], but the left is not -- the name and
@@ -253,10 +274,10 @@ def build_grid(image: Image.Image, stable_rules: Sequence[int] = UPPER_H_RULES) 
         # divider only works if it happens to fall in whitespace, which it does in
         # Assamese and does not in English, where it cuts the station name in half.
         # `parse_station` finds the label rows by reading them, which does not care.
-        "s3_ps_name": Box(FRAME_LEFT, lower[1], s3_split, lower[2]),
-        "s3_type_value": Box(s3_right, lower[1], FRAME_RIGHT, lower[2]),
-        "s3_address": Box(FRAME_LEFT, lower[1], s3_split, s4_top),
-        "s3_aux_value": Box(s3_right, lower[2], FRAME_RIGHT, s4_top),
+        "s3_ps_name": Box(px(FRAME_LEFT), lower[1], s3_split, lower[2]),
+        "s3_type_value": Box(s3_right, lower[1], px(FRAME_RIGHT), lower[2]),
+        "s3_address": Box(px(FRAME_LEFT), lower[1], s3_split, s4_top),
+        "s3_aux_value": Box(s3_right, lower[2], px(FRAME_RIGHT), s4_top),
         # section 4 -- electors (pure digits)
         "s4_start_serial": Box(cols[0], value_top, cols[1], value_bottom),
         "s4_end_serial": Box(cols[1], value_top, cols[2], value_bottom),
@@ -265,10 +286,10 @@ def build_grid(image: Image.Image, stable_rules: Sequence[int] = UPPER_H_RULES) 
         "s4_third_gender": Box(cols[4], value_top, cols[5], value_bottom),
         "s4_total": Box(cols[5], value_top, cols[6], value_bottom),
         # footer -- "মুঠ পৃষ্ঠা <N> - পৃষ্ঠা 1" sits in the last inch of the page
-        "footer": Box(FRAME_LEFT, height - FOOTER_HEIGHT, FRAME_RIGHT, height),
+        "footer": Box(px(FRAME_LEFT), height - px(FOOTER_HEIGHT), px(FRAME_RIGHT), height),
     }
 
-    return Grid(width=width, height=height, h_rules=tuple(h_rules), cells=cells)
+    return Grid(width=width, height=height, h_rules=tuple(h_rules), cells=cells, scale=scale)
 
 
 #: Cells whose content is digits only -- OCR'd with a digit whitelist and verified by

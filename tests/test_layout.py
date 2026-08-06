@@ -114,3 +114,37 @@ class TestDebugOverlay:
         overlay = layout.debug_overlay(page, layout.build_grid(page))
         assert overlay.size == page.size
         assert overlay.mode == "RGB"
+
+
+class TestNonCanonicalPageSize:
+    """Pages issued at another size are read at their own resolution, not rescaled.
+
+    Resampling was tried and measured worse in both directions: an interpolating filter
+    invented a digit (LANCZOS turned a thin "1" into "4" on 2,598 pages, passing every
+    check), and a non-interpolating one discarded detail (NEAREST cost 5.6 points of
+    elector agreement). Scaling the grid constants costs neither.
+    """
+
+    def test_canonical_pages_have_unit_scale(self, page):
+        assert layout.build_grid(page).scale == 1.0
+
+    def test_a_smaller_page_reports_its_scale(self, page):
+        small = page.resize((949, 1343))
+        grid = layout.build_grid(small)
+        assert 0.79 < grid.scale < 0.81
+
+    def test_cells_land_inside_a_smaller_page(self, page):
+        """Every cell must be within bounds, or crops raise rather than read."""
+        small = page.resize((949, 1343))
+        grid = layout.build_grid(small)
+        for name, box in grid.cells.items():
+            assert 0 <= box.x0 < box.x1 <= small.width, f"{name} x out of bounds"
+            assert 0 <= box.y0 < box.y1 <= small.height, f"{name} y out of bounds"
+
+    def test_cells_keep_their_relative_position(self, page):
+        """A cell should cover the same fraction of a small page as of a canonical one."""
+        big, small = layout.build_grid(page), layout.build_grid(page.resize((949, 1343)))
+        for name in ("header_ac", "s2_locality", "s4_total"):
+            a, b = big.cells[name], small.cells[name]
+            assert abs(a.x0 / big.width - b.x0 / small.width) < 0.02, name
+            assert abs(a.y0 / big.height - b.y0 / small.height) < 0.02, name

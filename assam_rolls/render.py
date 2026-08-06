@@ -144,12 +144,12 @@ def extract_page_image(pdf_bytes: bytes, page: int = PAGE_FORM) -> Image.Image:
         images = sorted(tmp.glob("img-*.png"))
         if result.returncode == 0 and len(images) == 1:
             with Image.open(images[0]) as handle:
-                return normalize_page(handle.convert("RGB").copy())
+                return handle.convert("RGB").copy()
 
         # Zero or several embedded images: rasterize at the native 144 dpi instead.
         rasterized = _rasterize_page(pdf_path, tmp, page)
         if rasterized is not None:
-            return normalize_page(rasterized)
+            return rasterized
 
         raise RenderError(
             f"could not extract page {page}: pdfimages rc={result.returncode}, "
@@ -173,7 +173,21 @@ CANONICAL_PAGE_SIZE = (1187, 1679)
 
 
 def normalize_page(image: Image.Image) -> Image.Image:
-    """Scale a page to the canonical size, if the publisher issued it at another.
+    """Scale a page to the canonical size. **Not used by the pipeline** -- see below.
+
+    Kept because the measurement it produced is the point: rescaling is the wrong answer,
+    and the numbers say so in both directions. Over 30 of the affected pages,
+
+        filter     grid    start=1   balances
+        LANCZOS   30/30      0/30      30/30
+        NEAREST   30/30     30/30      29/30    (92.8% balancing at corpus scale)
+        native    30/30     30/30      30/30
+
+    LANCZOS invents pixels: its ringing thickens a thin "1" until Tesseract reads "4",
+    and it did so on 2,598 pages while passing every check, because the elector sum does
+    not involve the start serial. NEAREST invents nothing but discards detail, and lost
+    5.6 points of elector agreement. Reading the page at its own resolution with the
+    grid constants scaled instead costs neither.
 
     Most constituencies embed a 1187x1679 image at 144 dpi, but **ACs 64-73 are issued at
     949x1343** -- a uniform 0.80x, about 115 dpi. Nothing else about them differs: the same
@@ -185,10 +199,8 @@ def normalize_page(image: Image.Image) -> Image.Image:
     they already assume. One conversion instead of a dozen, and it keeps a single set of
     measured constants rather than a set plus a scaling rule.
 
-    Left unhandled, these pages failed grid detection outright -- 1,554 flagged rows before
-    the block was even finished. A safe failure, but a whole-constituency hole.
-
-    See ``RESAMPLING`` for why the filter matters as much as the rescale itself.
+    ``layout.build_grid`` scales its constants by the page's own width instead, so the
+    2,601 pages the publisher issues at 0.80x are read exactly as they were scanned.
     """
     if image.size == CANONICAL_PAGE_SIZE:
         return image

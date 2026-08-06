@@ -159,7 +159,9 @@ def _row_crop(cell: Image.Image, span: Tuple[int, int], x0: int = 0, pad: int = 
     return cell.crop((max(0, x0), top, cell.width, bottom))
 
 
-def value_start_x(cell: Image.Image, span: Tuple[int, int], default: int, ink: int = 150) -> int:
+def value_start_x(
+    cell: Image.Image, span: Tuple[int, int], default: int, ink: int = 150, scale: float = 1.0
+) -> int:
     """Where the value begins on a ``label   value`` row.
 
     Found from the widest run of whitespace in the row: a label is separated from its
@@ -175,7 +177,7 @@ def value_start_x(cell: Image.Image, span: Tuple[int, int], default: int, ink: i
     if len(columns) < 2:
         return default
     width, start = max(((b - a, a) for a, b in zip(columns, columns[1:])), default=(0, 0))
-    return start + width if width >= MIN_LABEL_GAP else default
+    return start + width if width >= MIN_LABEL_GAP * scale else default
 
 
 #: The section-4 cells, in the order the elector table prints them.
@@ -447,6 +449,7 @@ def _stacked_block(
     labels: Tuple[str, ...],
     default_x: int,
     dynamic: bool = False,
+    scale: float = 1.0,
 ) -> Tuple[Dict[str, Image.Image], List[str]]:
     """Crop a stacked label/value block to one value image per field.
 
@@ -463,7 +466,7 @@ def _stacked_block(
     # A wrapped value continues at the value column, and scanning as far as that column
     # lets its continuation line register as a row of its own -- English part 1 came back
     # with 11 rows for 9 fields that way.
-    spans = text_rows(cell, right=max(20, default_x - LABEL_STRIP_MARGIN))
+    spans = text_rows(cell, right=max(20, default_x - round(LABEL_STRIP_MARGIN * scale)))
     notes: List[str] = []
 
     if len(spans) == len(fields):
@@ -475,16 +478,21 @@ def _stacked_block(
 
     crops: Dict[str, Image.Image] = {}
     for field, span in by_field.items():
-        x0 = value_start_x(cell, span, default_x) if dynamic else default_x
+        x0 = value_start_x(cell, span, default_x, scale=scale) if dynamic else default_x
         crops[field] = _row_crop(cell, span, x0)
     return crops, notes
 
 
 def parse_locality(
-    cell: Image.Image, engine: Engine, profile: LanguageProfile
+    cell: Image.Image, engine: Engine, profile: LanguageProfile, scale: float = 1.0
 ) -> Tuple[Dict[str, Any], List[str]]:
     crops, notes = _stacked_block(
-        cell, engine, profile.locality_fields, profile.locality_labels, profile.locality_value_x
+        cell,
+        engine,
+        profile.locality_fields,
+        profile.locality_labels,
+        round(profile.locality_value_x * scale),
+        scale=scale,
     )
     # Every locality field in the schema starts as "" -- the form for this language simply
     # does not print it (gram_panchayat outside Bengali, subdivision outside English), which
@@ -506,15 +514,16 @@ def parse_locality(
 
 
 def parse_revision(
-    cell: Image.Image, engine: Engine, profile: LanguageProfile
+    cell: Image.Image, engine: Engine, profile: LanguageProfile, scale: float = 1.0
 ) -> Tuple[Dict[str, Any], List[str]]:
     crops, notes = _stacked_block(
         cell,
         engine,
         REVISION_FIELDS,
         profile.revision_labels,
-        profile.revision_value_x,
+        round(profile.revision_value_x * scale),
         dynamic=True,
+        scale=scale,
     )
     values = {name: engine.read_text(crop) for name, crop in crops.items()}
     return {
@@ -731,7 +740,9 @@ def parse_page(
 
     notes: List[str] = []
 
-    revision, revision_notes = parse_revision(grid.crop(image, "s1_revision"), engine, profile)
+    revision, revision_notes = parse_revision(
+        grid.crop(image, "s1_revision"), engine, profile, grid.scale
+    )
     row.update(revision)
     notes += revision_notes
 
@@ -740,7 +751,9 @@ def parse_page(
     years = [int(y.group()) for y in YEAR_RE.finditer(description)]
     row["mother_roll_year"] = min(years) if years else None
 
-    locality, locality_notes = parse_locality(grid.crop(image, "s2_locality"), engine, profile)
+    locality, locality_notes = parse_locality(
+        grid.crop(image, "s2_locality"), engine, profile, grid.scale
+    )
     row.update(locality)
     notes += locality_notes
 
