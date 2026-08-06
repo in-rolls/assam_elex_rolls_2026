@@ -144,17 +144,43 @@ def extract_page_image(pdf_bytes: bytes, page: int = PAGE_FORM) -> Image.Image:
         images = sorted(tmp.glob("img-*.png"))
         if result.returncode == 0 and len(images) == 1:
             with Image.open(images[0]) as handle:
-                return handle.convert("RGB").copy()
+                return normalize_page(handle.convert("RGB").copy())
 
         # Zero or several embedded images: rasterize at the native 144 dpi instead.
         rasterized = _rasterize_page(pdf_path, tmp, page)
         if rasterized is not None:
-            return rasterized
+            return normalize_page(rasterized)
 
         raise RenderError(
             f"could not extract page {page}: pdfimages rc={result.returncode}, "
             f"{len(images)} image(s) found. stderr={result.stderr.strip()[:200]}"
         )
+
+
+#: The page size every downstream pixel constant is expressed in -- the rule positions in
+#: ``layout``, the value-column offsets in the language profiles, the column defaults.
+CANONICAL_PAGE_SIZE = (1187, 1679)
+
+
+def normalize_page(image: Image.Image) -> Image.Image:
+    """Scale a page to the canonical size, if the publisher issued it at another.
+
+    Most constituencies embed a 1187x1679 image at 144 dpi, but **ACs 64-73 are issued at
+    949x1343** -- a uniform 0.80x, about 115 dpi. Nothing else about them differs: the same
+    form, the same generator, the same rules in the same *relative* places.
+
+    Every pixel constant downstream is expressed against the canonical size, so rather than
+    scaling all of them per page (rule positions, frame bounds, six column defaults, the
+    per-language value offsets, the label search width), the page is brought to the size
+    they already assume. One conversion instead of a dozen, and it keeps a single set of
+    measured constants rather than a set plus a scaling rule.
+
+    Left unhandled, these pages failed grid detection outright -- 1,554 flagged rows before
+    the block was even finished. A safe failure, but a whole-constituency hole.
+    """
+    if image.size == CANONICAL_PAGE_SIZE:
+        return image
+    return image.resize(CANONICAL_PAGE_SIZE, Image.Resampling.LANCZOS)
 
 
 def _rasterize_page(pdf_path: Path, workdir: Path, page: int) -> Optional[Image.Image]:

@@ -138,3 +138,29 @@ class TestRenderZip:
 
     def test_limit_caps_work(self, zip_with_fixture, tmp_path):
         assert render.render_zip(zip_with_fixture, tmp_path / "pages", limit=0) == []
+
+
+class TestNormalizePage:
+    """ACs 64-73 are issued at 949x1343 rather than 1187x1679 -- a uniform 0.80x.
+
+    Every pixel constant downstream assumes the canonical size, so an un-normalised page
+    fails grid detection outright: 1,554 rows were flagged before the block finished.
+    """
+
+    def test_canonical_pages_are_returned_untouched(self):
+        """The common path must not resample: most pages are already the right size."""
+        page = Image.new("RGB", render.CANONICAL_PAGE_SIZE, "white")
+        assert render.normalize_page(page) is page
+
+    def test_a_smaller_page_is_scaled_up(self):
+        page = Image.new("RGB", (949, 1343), "white")
+        assert render.normalize_page(page).size == render.CANONICAL_PAGE_SIZE
+
+    def test_a_larger_page_is_scaled_down(self):
+        page = Image.new("RGB", (2374, 3358), "white")
+        assert render.normalize_page(page).size == render.CANONICAL_PAGE_SIZE
+
+    def test_the_observed_variant_is_a_uniform_scale(self):
+        """Both axes scale by the same factor, so the form is not distorted."""
+        wide, high = 949 / render.CANONICAL_PAGE_SIZE[0], 1343 / render.CANONICAL_PAGE_SIZE[1]
+        assert abs(wide - high) < 0.001, "a non-uniform scale would need more than a resize"
