@@ -147,23 +147,40 @@ make ci-docker   # the above in a standard python:3.12 image
 
 ## Measured results
 
-Full run over the 890 parts currently on disk (AC1, AC10, AC12, AC100), Tesseract
-`asm`, 9 workers, **no API calls**:
+Full run over all **126 constituencies — 31,486 parts, 47,290 area entries, 24,958,139
+electors** — Tesseract, 9 workers, **no API calls**:
 
 | Metric | Result |
 |---|---|
-| Grid detected | 890 / 890 |
-| `ac_no` vs filename | **100%** |
-| `part_no` vs filename | 99.55% (4 misreads) |
-| `male + female + third == total` | **99.89%** (1 misread) |
-| Rows needing review | **5 / 890** |
-| Rows with no failed check at all | 871 / 890 |
-| Throughput | 0.37 s/page → ~3 h statewide |
+| Grid detected | **31,486 / 31,486** |
+| `ac_no` vs filename | **100.00%** |
+| `part_no` vs filename | 99.41% |
+| `male + female + third == total` | **100.00%** |
+| Rows needing review | **185 / 31,486** (0.59%) |
+| Rows with no failed check at all | 30,695 (97.49%) |
+| Unread numeric fields | **0** |
 | Cost | **$0** |
 
-Field fill rates are 100% for `district`, `block`, `police_station`, `post_office`,
-`revenue_circle`, `ps_name`, `ps_type`, `pin_code`, `ac_name` and `total_pages`;
-99.9% for `ps_address`, 99.6% for `main_town_village`.
+Per language, since each has its own model, label table and grid anchors:
+
+| language | parts | grid | `ac_no` | `part_no` | elector sum | flagged |
+|---|--:|--:|--:|--:|--:|--:|
+| Assamese | 27,683 | 100% | 100% | 99.3% | **100%** | 183 |
+| Bengali | 3,542 | 100% | 100% | **100%** | **100%** | 1 |
+| English | 261 | 100% | 100% | 99.6% | **100%** | 1 |
+
+The corpus is 88% Assamese, so a defect confined to one of the others barely moves the
+overall figure — at one point Bengali's elector sum was 64% while the corpus-wide number
+read 96%. `report.json` carries the breakdown, and it is the number to read first.
+
+Field fill rates are 100% for `district`, `ac_name` and `total_pages`, and 99.9%+ for
+`revenue_circle`, `police_station`, `post_office`, `pin_code`, `ps_type`, `ps_name` and
+`block`. `gram_panchayat` and `subdivision` are low overall by design — only the Bengali
+and English editions print them.
+
+`scripts/verify_dataset.py` re-reads the shipped files and checks coverage, provenance, a
+stitching round trip back to each source PDF's bytes, encoding, the null convention and
+the arithmetic. It passes.
 
 ### Where it still gets things wrong
 

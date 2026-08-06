@@ -20,13 +20,15 @@ language** — the core fields are identical across the three editions.
 
 ## Files
 
-| file | grain | rows | notes |
-|---|---|--:|---|
-| `parts.jsonl` | one part | 890 | **authoritative** — real types, real nulls, sections nested |
-| `parts.csv` | one part | 890 | flat, `utf-8-sig` |
-| `part_sections.csv` | one section | 1,269 | joins on `(ac_no, part_no)` |
-| `report.json` | — | — | accuracy figures for the run |
-| `review.html` | flagged parts | 5 | page image beside extracted values |
+| file | grain | rows | size | notes |
+|---|---|--:|--:|---|
+| `parts.jsonl` | one part | 31,486 | 98 MB | **authoritative** — real types, real nulls, sections nested |
+| `parts.csv` | one part | 31,486 | 52 MB | flat, `utf-8-sig` |
+| `part_sections.csv` | one section | 47,290 | 4 MB | joins on `(ac_no, part_no)` |
+| `report.json` | — | — | — | accuracy figures, overall and per language |
+| `review.html` | flagged parts | 185 | — | page image beside extracted values |
+
+Covering **24,958,139 electors** across 126 constituencies.
 
 **`parts.jsonl` is authoritative.** Where it and the CSVs disagree, JSONL is right — CSV
 cannot represent `null`, and rounds a missing value and a blank one toward each other.
@@ -210,32 +212,47 @@ checks per page.
 
 | check | result |
 |---|---|
-| Grid detected | **890 / 890** |
-| `ac_no` vs filename | **100%** |
-| `part_no` vs filename | 99.55% (4 misreads) |
-| `male + female + third == total` | **99.89%** (1 misread) |
-| Rows needing review | **5 / 890** |
-| Rows with no failed check at all | 871 / 890 |
-| Throughput | 0.37 s/page, 9 workers |
+| Grid detected | **31,486 / 31,486** |
+| `ac_no` vs filename | **100.00%** |
+| `part_no` vs filename | 99.41% |
+| `male + female + third == total` | **100.00%** |
+| Rows needing review | **185 / 31,486** (0.59%) |
+| Rows with no failed check at all | 30,695 (97.49%) |
 | Cost | **$0** |
 
-The five flagged parts, and what each actually is:
+Per language — each is read with its own Tesseract model, its own derived label table and
+its own grid anchors, so each can fail independently:
 
-| part | read as | diagnosis |
-|---|---|---|
-| AC1 / 8 | `null` | the `8`→`৪` script trap. The ASCII-only guard refused it rather than returning `4`. |
-| AC12 / 8 | `null` | same |
-| AC100 / 103 | `1093` | a spurious inserted digit |
-| AC100 / 163 | `1693` | same |
-| AC12 / 270 | — | `335 + 825 + 0 ≠ 660`; the female count is a misread (`325` read as `825`) |
+| language | parts | grid | `ac_no` | `part_no` | elector sum | flagged |
+|---|--:|--:|--:|--:|--:|--:|
+| Assamese | 27,683 | 100% | 100% | 99.3% | **100%** | 183 |
+| Bengali | 3,542 | 100% | 100% | **100%** | **100%** | 1 |
+| English | 261 | 100% | 100% | 99.6% | **100%** | 1 |
 
-The first two are the digit-script trap described in
-[`docs/ANALYSIS.md`](docs/ANALYSIS.md#2-the-digit-script-trap-assamese-ocr-reads-western-8-as-an-assamese-4)
-working as designed: the guard turns a silent wrong number into a visible missing one.
-The last three are ordinary digit misreads.
+This breakdown is not decoration. The corpus is 88% Assamese, so a defect confined to
+Bengali moves the overall figure by a fraction of a point: at one stage the Bengali elector
+sum was **64%** while the corpus-wide number read a healthy 96%. Look at the per-language
+table first.
 
-**`part_no_file` is correct on all five** — only the OCR-read copy is affected, so the row
-is still correctly keyed and joinable. What is lost on AC12/270 is one elector count.
+### Field fill rates
+
+100% for `district`, `ac_name` and `total_pages`; 99.9%+ for `revenue_circle`,
+`police_station`, `post_office`, `pin_code`, `ps_type`, `ps_name` and `block`; 99.5% for
+`main_town_village` and 98.9% for `ps_address`.
+
+`gram_panchayat` (10.1%) and `subdivision` (0.8%) are low **by design** — only the Bengali
+and English editions print them. Within their own language they are 89.8% and 100%.
+
+**Fill rate is not accuracy.** A field can be fully populated and wrong; see the
+limitations below.
+
+### The 185 flagged rows
+
+All are `part_no` disagreements — the OCR reading of the part number differs from the
+filename. `part_no_file`, taken from the filename, is the dataset's key and is correct on
+every one of them, so joins and stitching are unaffected. The residual is a hard OCR
+effect on particular digit strings, described in
+[`docs/ANALYSIS.md`](docs/ANALYSIS.md#11-three-digit-bugs-none-of-which-a-corpus-wide-average-would-have-shown).
 
 ---
 
