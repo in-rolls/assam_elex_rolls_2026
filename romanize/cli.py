@@ -59,8 +59,16 @@ def cmd_fill(args: argparse.Namespace) -> int:
         words = backend.romanize_many((e.native, e.lang) for e in todo)
         for entry in todo:
             roman = backend.join(entry.native, words)
-            if roman and roman != entry.native:
-                filled[entry.key] = (roman, backend.name)
+            if not roman:
+                continue
+            # An unchanged result is only a failure when there was native script to
+            # convert. The English constituency's values -- "HAFLONG", "HARANGAJAO ITDP
+            # BLOCK" -- are already Latin, so unchanged is the correct answer, and
+            # treating it as a miss left 40 of them permanently empty.
+            if roman == entry.native and guards.NATIVE_SCRIPT.search(entry.native):
+                continue
+            source = backend.name if roman != entry.native else "already-latin"
+            filled[entry.key] = (roman, source)
     else:
         from .backends.aksharamukha import AksharamukhaBackend
 

@@ -85,3 +85,42 @@ class TestLookupKeepsHandReview:
             lookup.Row("district", "c", 50, "done", "indicxlit"),
         ]
         assert [r.native for r in lookup.pending(rows)] == ["b", "a"]
+
+
+class TestScriptRunTokenization:
+    """Split on script runs, not whitespace.
+
+    Splitting on whitespace left native characters in the roman column of 112 entries
+    covering 2,426 rows, because ``চক্ৰ(অংশ)`` and ``চিদলা-চৰাং`` are each one whitespace
+    token: IndicXlit received them whole and converted only part.
+    """
+
+    def test_punctuation_separates_runs(self):
+        from romanize.backends.indicxlit import SCRIPT_RUN
+
+        assert SCRIPT_RUN.findall("চিদলা-চৰাং") == ["চিদলা", "চৰাং"]
+        assert SCRIPT_RUN.findall("চক্ৰ(অংশ)") == ["চক্ৰ", "অংশ"]
+
+    def test_native_digits_are_not_sent_to_the_model(self):
+        """They are a pure bijection, so they convert directly rather than being guessed."""
+        from romanize.backends.indicxlit import SCRIPT_RUN
+
+        assert "১" not in "".join(SCRIPT_RUN.findall("অংশ-১"))
+
+    def test_rejoin_keeps_every_separator(self):
+        from romanize.backends.indicxlit import IndicXlitBackend
+
+        got = IndicXlitBackend.join(
+            "চিদলা-চৰাং (অংশ-১)", {"চিদলা": ["sidla"], "চৰাং": ["sorang"], "অংশ": ["ansh"]}
+        )
+        assert got == "sidla-sorang (ansh-1)"
+
+    def test_already_latin_text_passes_through(self):
+        from romanize.backends.indicxlit import IndicXlitBackend
+
+        assert IndicXlitBackend.join("HARANGAJAO ITDP BLOCK", {}) == "HARANGAJAO ITDP BLOCK"
+
+    def test_leaked_native_script_is_caught(self):
+        assert guards.leaked_native("চিদলা-sorang")
+        assert not guards.leaked_native("sidla-sorang")
+        assert not guards.leaked_native("HAFLONG")

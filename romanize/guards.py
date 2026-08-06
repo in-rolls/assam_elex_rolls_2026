@@ -65,6 +65,18 @@ RULES: Tuple[Rule, ...] = (
 )
 
 
+#: Any Bengali-Assamese character. None may survive into a romanization -- if one does,
+#: the value is half-converted rather than transliterated. This happened: splitting on
+#: whitespace alone left native characters in 112 entries covering 2,426 rows, because
+#: ``চক্ৰ(অংশ)`` and ``চিদলা-চৰাং`` are each a single whitespace token.
+NATIVE_SCRIPT = re.compile(r"[\u0980-\u09FF]")
+
+
+def leaked_native(roman: str) -> bool:
+    """Whether a romanization still contains native script."""
+    return bool(roman) and bool(NATIVE_SCRIPT.search(roman))
+
+
 def violations(native: str, roman: str) -> List[Rule]:
     """Rules broken by one romanization. Empty when it is a faithful transliteration."""
     return [rule for rule in RULES if rule.violated_by(native, roman)]
@@ -74,6 +86,11 @@ def check(entries: Iterable[Tuple[str, str, str]]) -> List[str]:
     """Check a whole table of ``(field, native, roman)``. Empty result means clean."""
     problems: List[str] = []
     for field, native, roman in entries:
+        if leaked_native(roman):
+            problems.append(
+                f"{field}: {native!r} -> {roman!r} still contains native script "
+                f"(half-transliterated)"
+            )
         for rule in violations(native, roman):
             problems.append(
                 f"{field}: {native!r} -> {roman!r} translates {rule.english!r}; "

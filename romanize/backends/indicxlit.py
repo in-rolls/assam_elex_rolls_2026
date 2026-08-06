@@ -24,12 +24,28 @@ target. That is why its output seeds a reviewable table instead of shipping dire
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
 NAME = "indicxlit"
+
+#: Runs of Bengali-script letters. Everything else -- spaces, hyphens, parentheses,
+#: apostrophes, digits, stray punctuation -- is a separator kept verbatim.
+#:
+#: Splitting on whitespace alone was wrong and measurably so: ``চক্ৰ(অংশ)``,
+#: ``চিদলা-চৰাং`` and ``রা'ঈরখাড়া`` are each a single whitespace token, so IndicXlit got
+#: them whole, transliterated part and returned the rest in native script. That left
+#: native characters in the roman column of 112 entries covering 2,426 rows.
+SCRIPT_RUN = re.compile(r"[\u0980-\u09E5\u09F0-\u09FF]+")
+
+#: Bengali-Assamese digits are a pure bijection to Latin, so they are converted directly
+#: rather than sent to a model -- exact, free and testable, the same call the extraction
+#: pipeline makes. They are excluded from ``SCRIPT_RUN`` so a lone ``১`` is not handed to a
+#: word transliterator that has never seen one.
+DIGITS = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
 
 #: IndicXlit language codes, by the corpus's language code.
 XLIT_LANG = {"ASM": "as", "BEN": "bn", "ENG": None}
@@ -88,18 +104,17 @@ class IndicXlitBackend:
     def romanize_many(self, items: Iterable[Tuple[str, str]]) -> Dict[str, List[str]]:
         """``items`` is ``(text, lang)``. Returns ``{text: [candidates]}``.
 
-        Multi-word values are transliterated word by word and rejoined, which is how
-        IndicXlit is meant to be used -- it is a *word* transliterator, and a phrase fed
-        in whole comes back mangled.
+        Values are split into **runs of native script** and transliterated run by run.
+        IndicXlit is a *word* transliterator: a phrase fed in whole comes back mangled,
+        and a run glued to punctuation comes back half-converted.
         """
         by_lang: Dict[str, set] = {}
         for text, lang in items:
             code = XLIT_LANG.get(lang)
             if code is None:
                 continue
-            for token in text.split():
-                if token.strip():
-                    by_lang.setdefault(code, set()).add(token)
+            for run in SCRIPT_RUN.findall(text.translate(DIGITS)):
+                by_lang.setdefault(code, set()).add(run)
         if not by_lang:
             return {}
 
@@ -123,15 +138,20 @@ class IndicXlitBackend:
 
     @staticmethod
     def join(text: str, words: Dict[str, List[str]], rank: int = 0) -> str:
-        """Rebuild a phrase from its per-word candidates, keeping punctuation-only tokens."""
-        parts = []
-        for token in text.split():
-            candidates = words.get(token)
+        """Rebuild a value, replacing each native run and keeping every separator.
+
+        A string with no native run -- the English constituency's ``HAFLONG``,
+        ``HARANGAJAO ITDP BLOCK`` -- comes back unchanged, which is the right answer: it
+        is already Latin and there is nothing to transliterate.
+        """
+
+        def replace(match: "re.Match") -> str:
+            candidates = words.get(match.group())
             if isinstance(candidates, dict) or not candidates:
-                parts.append(token)  # error or unknown: keep the original
-            else:
-                parts.append(candidates[min(rank, len(candidates) - 1)])
-        return " ".join(parts)
+                return match.group()  # error or unknown: leave the original
+            return candidates[min(rank, len(candidates) - 1)]
+
+        return SCRIPT_RUN.sub(replace, text.translate(DIGITS))
 
 
 def available() -> bool:
