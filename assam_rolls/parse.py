@@ -99,6 +99,10 @@ LABEL_MATCH_THRESHOLD = 0.55
 #: How far short of the value column to stop when counting label rows.
 LABEL_STRIP_MARGIN = 14
 
+#: A column inked down at least this share of a cell's height is a rule, not text. The
+#: tallest glyph in this corpus covers well under half a cell; a border covers all of it.
+VERTICAL_RULE_FRACTION = 0.8
+
 #: A label is separated from its value by a wide run of whitespace; word spaces inside a
 #: label are far narrower. Measured gaps are ~95-131px against ~10px word spacing.
 MIN_LABEL_GAP = 40
@@ -128,9 +132,18 @@ def text_rows(
     if right is not None:
         width = max(1, min(width, right))
     pixels = image.convert("L").load()
-    hits = [
-        y for y in range(height) if sum(1 for x in range(width) if pixels[x, y] < ink) > min_ink
+
+    # A cell border that survives the crop inset is ink on *every* row, so it makes the
+    # whole cell read as one continuous text row: six parts came back with their entire
+    # locality block unread because a vertical rule sat inside the left edge. Columns that
+    # are inked down almost the full height are rules, not glyphs -- no letter is -- so
+    # they are excluded before rows are counted.
+    columns = [
+        x
+        for x in range(width)
+        if sum(1 for y in range(height) if pixels[x, y] < ink) < height * VERTICAL_RULE_FRACTION
     ]
+    hits = [y for y in range(height) if sum(1 for x in columns if pixels[x, y] < ink) > min_ink]
     groups: List[List[int]] = []
     for y in hits:
         if groups and y - groups[-1][-1] <= gap:

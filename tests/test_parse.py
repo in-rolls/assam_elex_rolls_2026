@@ -396,3 +396,42 @@ class TestBalanceElectors:
 
         out = parse.balance_electors(Grid(), None, Engine(), self.row(400, 379, 0, 7719))
         assert out is None, "no balancing candidate exists, so nothing may be substituted"
+
+
+class TestTextRowsIgnoresRules:
+    """A cell border inside the crop must not merge every row into one.
+
+    Six parts came back with their whole locality block unread because a vertical rule
+    survived the crop inset: it is ink on every row, so the ink profile saw one continuous
+    row of text where there were eight.
+    """
+
+    def cell_with_left_rule(self, rows=3, height=90, width=120):
+        image = Image.new("L", (width, height), 255)
+        for y in range(height):  # a full-height border, as on the real pages
+            for x in (0, 1):
+                image.putpixel((x, y), 0)
+        for i in range(rows):  # short text rows, well clear of the border
+            for y in range(6 + i * 25, 16 + i * 25):
+                for x in range(20, 90):
+                    image.putpixel((x, y), 0)
+        return image
+
+    def test_a_full_height_rule_does_not_merge_rows(self):
+        assert len(parse.text_rows(self.cell_with_left_rule(rows=3))) == 3
+
+    def test_rows_are_still_found_without_a_rule(self):
+        image = Image.new("L", (120, 90), 255)
+        for i in range(3):
+            for y in range(6 + i * 25, 16 + i * 25):
+                for x in range(20, 90):
+                    image.putpixel((x, y), 0)
+        assert len(parse.text_rows(image)) == 3
+
+    def test_a_tall_glyph_is_not_mistaken_for_a_rule(self):
+        """The threshold must not eat real text: no glyph spans a whole cell."""
+        image = Image.new("L", (120, 90), 255)
+        for y in range(10, 50):  # 44% of the height -- tall, but text
+            for x in range(20, 30):
+                image.putpixel((x, y), 0)
+        assert len(parse.text_rows(image)) == 1
