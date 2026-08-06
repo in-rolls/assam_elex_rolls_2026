@@ -157,6 +157,16 @@ def extract_page_image(pdf_bytes: bytes, page: int = PAGE_FORM) -> Image.Image:
         )
 
 
+#: Resampling filter for the rescale. **Not** a cosmetic choice: measured over 30 of the
+#: affected pages, LANCZOS read ``start_serial`` correctly on **0 of 30** while NEAREST got
+#: **30 of 30**. Its ringing thickens the thin "1" glyph enough that Tesseract calls it a
+#: "4" -- and because the elector sum does not involve the start serial, the error passed
+#: every check. LANCZOS balanced 30/30 while being wrong on every one.
+#:
+#: An interpolating filter invents intermediate pixels; on a 144 dpi scan of printed text
+#: that invention is indistinguishable from ink. NEAREST adds nothing that was not there.
+RESAMPLING = Image.Resampling.NEAREST
+
 #: The page size every downstream pixel constant is expressed in -- the rule positions in
 #: ``layout``, the value-column offsets in the language profiles, the column defaults.
 CANONICAL_PAGE_SIZE = (1187, 1679)
@@ -177,10 +187,12 @@ def normalize_page(image: Image.Image) -> Image.Image:
 
     Left unhandled, these pages failed grid detection outright -- 1,554 flagged rows before
     the block was even finished. A safe failure, but a whole-constituency hole.
+
+    See ``RESAMPLING`` for why the filter matters as much as the rescale itself.
     """
     if image.size == CANONICAL_PAGE_SIZE:
         return image
-    return image.resize(CANONICAL_PAGE_SIZE, Image.Resampling.LANCZOS)
+    return image.resize(CANONICAL_PAGE_SIZE, RESAMPLING)
 
 
 def _rasterize_page(pdf_path: Path, workdir: Path, page: int) -> Optional[Image.Image]:

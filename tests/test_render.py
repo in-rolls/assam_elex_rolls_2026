@@ -164,3 +164,26 @@ class TestNormalizePage:
         """Both axes scale by the same factor, so the form is not distorted."""
         wide, high = 949 / render.CANONICAL_PAGE_SIZE[0], 1343 / render.CANONICAL_PAGE_SIZE[1]
         assert abs(wide - high) < 0.001, "a non-uniform scale would need more than a resize"
+
+
+class TestResamplingFilter:
+    """The filter is load-bearing, not cosmetic.
+
+    Measured over 30 affected pages, LANCZOS read start_serial correctly on 0 of 30 and
+    NEAREST on 30 of 30: its ringing thickens the thin "1" until Tesseract calls it "4".
+    The elector sum does not involve the start serial, so the error passed every check --
+    LANCZOS balanced 30/30 while being wrong on all 30.
+    """
+
+    def test_uses_a_non_interpolating_filter(self):
+        """Interpolation invents pixels, and invented pixels look like ink."""
+        assert render.RESAMPLING is Image.Resampling.NEAREST
+
+    def test_a_thin_stroke_survives_upscaling(self):
+        """A one-pixel vertical stroke must not gain neighbours it never had."""
+        small = Image.new("L", (20, 20), 255)
+        for y in range(4, 16):
+            small.putpixel((10, y), 0)
+        big = small.resize((40, 40), render.RESAMPLING)
+        # every pixel is either the original ink or the original paper, nothing between
+        assert set(big.getdata()) <= {0, 255}
