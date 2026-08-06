@@ -277,3 +277,53 @@ class TestReadTrailingNumber:
                 return "x"
 
         assert parse.read_trailing_number(Image.new("L", (200, 20), 255), Engine()) == ""
+
+
+class TestReadTextRetrying:
+    """Text reads retry at other scales, for the same reason digit reads do.
+
+    A row flush against the top of its cell reads at scale 1 and returns empty at the
+    default scale 2. Across the corpus that lost ~600 legible values -- 364 block, 162
+    post_office, 24 main_town_village and 52 whole section lists.
+    """
+
+    class Engine:
+        """Returns text only at the scales it is told to succeed at."""
+
+        name = "stub"
+
+        def __init__(self, good_scales, default=2):
+            self.good, self.default, self.calls = good_scales, default, []
+
+        def read_text(self, image, scale=None):
+            scale = scale or self.default
+            self.calls.append(scale)
+            return "value" if scale in self.good else ""
+
+        def read_digits(self, image):
+            return ""
+
+    def test_retries_when_the_default_scale_reads_nothing(self):
+        engine = self.Engine(good_scales={1})
+        assert parse.read_text_retrying(engine, Image.new("L", (40, 20), 255)) == "value"
+        assert engine.calls[0] == 2, "the default is tried first"
+        assert 1 in engine.calls
+
+    def test_a_successful_read_is_never_retried(self):
+        engine = self.Engine(good_scales={2})
+        assert parse.read_text_retrying(engine, Image.new("L", (40, 20), 255)) == "value"
+        assert engine.calls == [2], "a value that already read must not be re-read"
+
+    def test_gives_up_cleanly_when_no_scale_works(self):
+        engine = self.Engine(good_scales=set())
+        assert parse.read_text_retrying(engine, Image.new("L", (40, 20), 255)) == ""
+
+    def test_blank_and_unreadable_stay_distinct(self):
+        """The retry must not turn a genuinely blank cell into an unread one."""
+        blank = Image.new("L", (40, 20), 255)
+        assert parse.read_value(self.Engine(good_scales=set()), blank) == ""
+        inked = Image.new("L", (40, 20), 255)
+        for x in range(5, 30):
+            for y in range(5, 15):
+                inked.putpixel((x, y), 0)
+        assert parse.read_value(self.Engine(good_scales=set()), inked) is None

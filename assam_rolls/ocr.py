@@ -68,6 +68,13 @@ SINGLE_CHAR_PSM = 10
 #: cell measured; two are kept because the retry is free unless the first pass failed.
 DIGIT_FALLBACK_SCALES = (3, 1)
 
+#: Scales a *text* read retries at when the default returns nothing. The same lesson as
+#: the digit fallback, on the other kind of cell: a row sitting flush against the top of
+#: its cell -- the first entry of an area list, a short locality value -- reads at scale 1
+#: and returns empty at scale 2. Measured across the corpus this silently lost ~600 values
+#: (364 `block`, 162 `post_office`, 52 whole section lists) that are plainly legible.
+TEXT_FALLBACK_SCALES = (1, 3)
+
 ASCII_DIGITS = re.compile(r"[0-9]+")
 ANY_DIGITS = re.compile(r"\d+")
 

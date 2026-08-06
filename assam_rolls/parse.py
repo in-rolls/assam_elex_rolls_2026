@@ -28,7 +28,13 @@ from PIL import Image
 
 from .languages import LanguageProfile
 from .layout import Grid
-from .ocr import MULTILINE_TEXT_SCALE, Engine, int_or_none, value_after_label
+from .ocr import (
+    MULTILINE_TEXT_SCALE,
+    TEXT_FALLBACK_SCALES,
+    Engine,
+    int_or_none,
+    value_after_label,
+)
 from .render import PartRef
 from .schema import (
     PIPELINE_VERSION,
@@ -255,13 +261,37 @@ def has_ink(image: Image.Image, ink: int = 150, min_pixels: int = 6) -> bool:
     return False
 
 
+def read_text_retrying(engine: Engine, crop: Image.Image, scale: Optional[int] = None) -> str:
+    """Read a text crop, retrying at other scales when the first attempt is empty.
+
+    The same failure the digit cells have, on text: a row flush against the top of its
+    cell reads cleanly at scale 1 and returns **empty** at the default scale 2. It is not
+    a marginal glyph -- ``1-কলিয়াগাওঁ`` is plainly legible, and scale 2 returns "".
+
+    The retries fire only when the first read yields nothing, so a value that already read
+    is never re-read and never changed. Left unhandled this lost ~600 values across the
+    corpus: 364 ``block``, 162 ``post_office``, 24 ``main_town_village`` and 52 whole
+    section lists, all of them present on the page.
+    """
+    text = clean_text(engine.read_text(crop, scale=scale) if scale else engine.read_text(crop))
+    if text:
+        return text
+    for fallback in TEXT_FALLBACK_SCALES:
+        if fallback == scale:
+            continue
+        text = clean_text(engine.read_text(crop, scale=fallback))
+        if text:
+            return text
+    return ""
+
+
 def read_value(engine: Engine, crop: Image.Image, scale: Optional[int] = None):
     """Read one value crop, distinguishing "unreadable" from "blank".
 
     Returns ``""`` when the crop holds no ink, ``None`` when it holds ink but yields no
     text, and the text otherwise.
     """
-    text = clean_text(engine.read_text(crop, scale=scale) if scale else engine.read_text(crop))
+    text = read_text_retrying(engine, crop, scale)
     if text:
         return text
     return None if has_ink(crop) else ""
@@ -475,7 +505,7 @@ def parse_sections(grid: Grid, image: Image.Image, engine: Engine) -> List[Dict[
     cell = grid.crop(image, "s2_areas")
     rows: List[Dict[str, Any]] = []
     for index, span in enumerate(text_rows(cell), start=1):
-        line = clean_text(engine.read_text(_row_crop(cell, span)))
+        line = read_text_retrying(engine, _row_crop(cell, span))
         if not line:
             continue
         number, name = split_numbered_name(line)
