@@ -1,0 +1,40 @@
+{
+  "n": 31486,
+  "grid_detected": 1.0,
+  "ac_no_agreement": 1.0,
+  "part_no_agreement": 0.9941,
+  "gender_sum_agreement": 1.0,
+  "needs_review": 185,
+  "clean_rows": 30695,
+  "by_language": {
+    "ASM": {
+      "n": 27683,
+      "grid_detected": 1.0,
+      "ac_no_agreement": 1.0,
+      "part_no_agreement": 0.9934,
+      "gender_sum_agreement": 1.0,
+      "needs_review": 183,
+      "clean_rows": 27010
+    },
+    "BEN": {
+      "n": 3542,
+      "grid_detected": 1.0,
+      "ac_no_agreement": 1.0,
+      "part_no_agreement": 0.9997,
+      "gender_sum_agreement": 1.0,
+      "needs_review": 1,
+      "clean_rows": 3425
+    },
+    "ENG": {
+      "n": 261,
+      "grid_detected": 1.0,
+      "ac_no_agreement": 1.0,
+      "part_no_agreement": 0.9962,
+      "gender_sum_agreement": 1.0,
+      "needs_review": 1,
+      "clean_rows": 260
+    }
+  },
+  "dictionary_substitutions": 690,
+  "dictionary_contested": 1
+}

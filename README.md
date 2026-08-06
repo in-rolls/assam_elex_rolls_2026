@@ -7,6 +7,42 @@ in every assembly constituency.
 These are **not** the elector lists. Each part's roll opens with a two-page cover sheet
 describing the polling station; this repository parses that cover sheet.
 
+## Get the data
+
+The built dataset is in [`dataset/`](dataset/) — **31,486 parts, all 126 constituencies,
+24,958,139 electors**. Gzipped, ~12 MB total; every archive is verified to decompress
+byte-identical to what the pipeline wrote.
+
+| file | rows | what it is |
+|---|--:|---|
+| `parts.jsonl.gz` | 31,486 | **authoritative** — real integers, `null` distinct from `""`, sections nested per part |
+| `parts.csv.gz` | 31,486 | the same rows, flat, `utf-8-sig` so Excel renders Assamese |
+| `part_sections.csv.gz` | 47,290 | one row per numbered area, joins on `(ac_no, part_no)` |
+| `report.json` | — | accuracy, overall and per language |
+| `SHA256SUMS` | — | check a download |
+
+No decompression step needed:
+
+```python
+import gzip, json
+import pandas as pd
+
+parts = pd.read_csv("dataset/parts.csv.gz", keep_default_na=False, na_values=["NA"])
+
+# or the authoritative form, which keeps types and the null/blank distinction
+with gzip.open("dataset/parts.jsonl.gz", "rt", encoding="utf-8") as fh:
+    parts = [json.loads(line) for line in fh]
+```
+
+```r
+parts <- read.csv(gzfile("dataset/parts.csv.gz"), fileEncoding = "UTF-8-BOM")
+```
+
+`keep_default_na=False` matters in pandas: without it an empty cell is read as missing,
+which destroys the distinction between *the form prints nothing here* (`""`) and *this
+could not be read* (`NA`). See [`DATA.md`](DATA.md) for every column, the null convention
+and the known limitations, and [Measured results](#measured-results) for accuracy.
+
 ## Why this needs OCR
 
 The source PDFs carry **no text layer**. Each page is a single embedded 1187×1679 RGB

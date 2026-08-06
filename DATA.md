@@ -313,3 +313,25 @@ assam-rolls review        # flagged rows -> out/review.html
 `ocr` is resumable and skips any part whose cached entry still matches its source PDF's
 hash — interrupt it freely. A re-issued PDF is re-extracted automatically because its
 hash changed. `--overwrite` forces a clean run.
+
+---
+
+## Source and attribution
+
+Derived from the **Election Commission of India's** published 2026 Assam final electoral
+roll *info pages* — the two-page cover sheet that opens each part's roll. These are not
+the elector lists; no individual elector's details appear anywhere in this dataset.
+
+The extraction code is MIT licensed (see `LICENSE`). The underlying records are a public
+government record; this repository reproduces them, it does not originate them.
+
+**Values are reproduced verbatim, including the source's own errors.** Seventeen parts in
+AC47 carry the pin code `748113`, which is outside Assam's 78xxxx/79xxxx range — the page
+prints it, on every part of that locality, so it is almost certainly a typo in the
+published roll. It is recorded as printed and flagged, not silently changed to `784113`.
+Correcting it here would mean publishing a number the source does not contain, which is
+the opposite of what this dataset is for.
+
+If you find a discrepancy, check it against the source PDF first: every row carries
+`source_zip`, `source_pdf` and `pdf_sha256`, which locate and verify the exact bytes it
+came from.
