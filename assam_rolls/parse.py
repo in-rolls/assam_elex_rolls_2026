@@ -29,6 +29,7 @@ from PIL import Image
 from .languages import LanguageProfile
 from .layout import Grid
 from .ocr import (
+    ELECTOR_RETRY_SCALES,
     MULTILINE_TEXT_SCALE,
     TEXT_FALLBACK_SCALES,
     Engine,
@@ -162,6 +163,84 @@ def value_start_x(cell: Image.Image, span: Tuple[int, int], default: int, ink: i
         return default
     width, start = max(((b - a, a) for a, b in zip(columns, columns[1:])), default=(0, 0))
     return start + width if width >= MIN_LABEL_GAP else default
+
+
+#: The section-4 cells, in the order the elector table prints them.
+S4_CELLS = (
+    ("s4_start_serial", "start_serial"),
+    ("s4_end_serial", "end_serial"),
+    ("s4_male", "electors_male"),
+    ("s4_female", "electors_female"),
+    ("s4_third_gender", "electors_third_gender"),
+    ("s4_total", "electors_total"),
+)
+
+
+def electors_balance(values: Dict[str, Any]) -> bool:
+    """Whether ``male + female + third == total`` for a set of readings."""
+    parts = [
+        values.get(k)
+        for k in ("electors_male", "electors_female", "electors_third_gender", "electors_total")
+    ]
+    if any(v is None for v in parts):
+        return False
+    return parts[0] + parts[1] + parts[2] == parts[3]
+
+
+def balance_electors(grid: Grid, image: Image.Image, engine: Engine, row: Dict[str, Any]):
+    """Re-read the elector table at another scale when its arithmetic does not hold.
+
+    This is the one place the pipeline can tell a *wrong* reading from a right one without
+    a human, because the four numbers must sum. That makes a retry safe in a way it is not
+    elsewhere: a candidate reading is accepted **only if it balances**, so a second guess
+    can never replace a correct row with a plausible wrong one.
+
+    It is needed because the failure here is a wrong value rather than an empty one, which
+    the empty-read fallbacks cannot see. Tesseract renders the printed ``779`` as ``7719``
+    at every scale above 1 -- deterministically, on 37 parts across eleven unrelated
+    constituencies, always the same misread of the same string. Scale 1 reads it correctly
+    and reads the controls correctly too.
+
+    Returns the corrected fields, or ``None`` when the row already balances or no rescaled
+    reading does -- in which case the row keeps its original values and stays flagged.
+    """
+    if electors_balance(row):
+        return None
+
+    readings = [{field: row.get(field) for _, field in S4_CELLS}]
+    for scale in ELECTOR_RETRY_SCALES:
+        readings.append(
+            {
+                field: int_or_none(engine.read_digits(grid.crop(image, cell), scale=scale))
+                for cell, field in S4_CELLS
+            }
+        )
+
+    # A whole reading from one scale, first. This is the common case and the safest: every
+    # number comes from the same pass.
+    for candidate in readings[1:]:
+        if electors_balance(candidate):
+            return candidate
+
+    # Otherwise the misread may be confined to one side. A scale can resolve the total and
+    # mangle a component, or the reverse -- one page reads 779 correctly at scale 1 while
+    # turning 411 into 4. Pairing the components from one pass with the total from another
+    # is still gated on the arithmetic holding, so a mixed reading is only accepted when
+    # the three components independently sum to the total read. That is a far stronger
+    # constraint than either half satisfies alone.
+    components = ("electors_male", "electors_female", "electors_third_gender")
+    for triple in readings:
+        if any(triple.get(k) is None for k in components):
+            continue
+        summed = sum(triple[k] for k in components)
+        for other in readings:
+            if other.get("electors_total") != summed:
+                continue
+            merged = {**triple, "electors_total": summed}
+            merged["start_serial"] = triple.get("start_serial") or other.get("start_serial")
+            merged["end_serial"] = triple.get("end_serial") or other.get("end_serial")
+            return merged
+    return None
 
 
 #: Fraction of a ``label : number`` cell to search for the label/value boundary. The gap
@@ -661,15 +740,12 @@ def parse_page(
     row["ps_type"] = normalize_ps_type(engine.read_text(grid.crop(image, "s3_type_value")), profile)
     row["auxiliary_ps_count"] = int_or_none(engine.read_digits(grid.crop(image, "s3_aux_value")))
 
-    for cell_name, field in (
-        ("s4_start_serial", "start_serial"),
-        ("s4_end_serial", "end_serial"),
-        ("s4_male", "electors_male"),
-        ("s4_female", "electors_female"),
-        ("s4_third_gender", "electors_third_gender"),
-        ("s4_total", "electors_total"),
-    ):
+    for cell_name, field in S4_CELLS:
         row[field] = int_or_none(engine.read_digits(grid.crop(image, cell_name)))
+    reread = balance_electors(grid, image, engine, row)
+    if reread:
+        row.update(reread)
+        notes.append("electors_rescaled")
 
     row["total_pages"] = int_or_none(engine.read_text(grid.crop(image, "footer")))
     row["template_match"] = True

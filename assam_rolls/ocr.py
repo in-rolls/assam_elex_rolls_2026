@@ -75,6 +75,11 @@ DIGIT_FALLBACK_SCALES = (3, 1)
 #: (364 `block`, 162 `post_office`, 52 whole section lists) that are plainly legible.
 TEXT_FALLBACK_SCALES = (1, 3)
 
+#: Scales the elector table is re-read at when its arithmetic does not hold. Unlike the
+#: other fallbacks this fires on a *wrong* value rather than an empty one, which is only
+#: safe because the four numbers must sum -- a candidate is accepted only if it balances.
+ELECTOR_RETRY_SCALES = (1, 3, 4)
+
 ASCII_DIGITS = re.compile(r"[0-9]+")
 ANY_DIGITS = re.compile(r"\d+")
 
@@ -96,7 +101,7 @@ class Engine(Protocol):
         """
         ...
 
-    def read_digits(self, image: Image.Image) -> str:
+    def read_digits(self, image: Image.Image, scale: Optional[int] = None) -> str:
         """Transcribe a cell containing only Latin digits."""
         ...
 
@@ -148,7 +153,7 @@ class TesseractEngine:
         raw = self._run(image, self.lang, None, scale or self.text_scale)
         return re.sub(r"\s+", " ", raw).strip()
 
-    def read_digits(self, image: Image.Image) -> str:
+    def read_digits(self, image: Image.Image, scale: Optional[int] = None) -> str:
         """Read a digit-only cell, retrying a lone digit at a different scale.
 
         A single digit alone in a wide cell is the fragile case, and **the upscale factor
@@ -177,7 +182,8 @@ class TesseractEngine:
         flagged rather than silently corrupt -- but 6.6% of Bengali parts lost their start
         serial, and before this 36% failed the elector-sum check.
         """
-        text = re.sub(r"\D", "", self._run(image, "eng", DIGIT_WHITELIST, self.digit_scale))
+        primary = scale or self.digit_scale
+        text = re.sub(r"\D", "", self._run(image, "eng", DIGIT_WHITELIST, primary))
         if text:
             return text
         for scale in DIGIT_FALLBACK_SCALES:
@@ -252,7 +258,7 @@ class SuryaEngine:
             raise OCRError(reply["error"])
         return strip_html(reply.get("text", ""))
 
-    def read_digits(self, image: Image.Image) -> str:
+    def read_digits(self, image: Image.Image, scale: Optional[int] = None) -> str:
         return self._digits.read_digits(image)
 
     def close(self) -> None:

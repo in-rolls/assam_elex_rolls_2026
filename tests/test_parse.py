@@ -327,3 +327,72 @@ class TestReadTextRetrying:
             for y in range(5, 15):
                 inked.putpixel((x, y), 0)
         assert parse.read_value(self.Engine(good_scales=set()), inked) is None
+
+
+class TestBalanceElectors:
+    """The elector table is re-read when its arithmetic fails, and only then.
+
+    This is the one place a *wrong* reading is distinguishable from a right one without a
+    human, because the four numbers must sum. Tesseract renders a printed 779 as 7719 at
+    every scale above 1 -- deterministically, on 37 parts across eleven unrelated
+    constituencies. An empty-read fallback cannot see that; the invariant can.
+    """
+
+    def row(self, m, f, t3, total):
+        return {
+            "electors_male": m,
+            "electors_female": f,
+            "electors_third_gender": t3,
+            "electors_total": total,
+        }
+
+    def test_balance_recognises_a_good_row(self):
+        assert parse.electors_balance(self.row(400, 379, 0, 779))
+
+    def test_balance_rejects_a_bad_row(self):
+        assert not parse.electors_balance(self.row(400, 379, 0, 7719))
+
+    def test_balance_rejects_an_unread_field(self):
+        assert not parse.electors_balance(self.row(400, 379, None, 779))
+
+    def test_a_balancing_row_is_never_re_read(self):
+        """The safety property: a correct row must not be exposed to a second guess."""
+        calls = []
+
+        class Engine:
+            name = "stub"
+
+            def read_text(self, image, scale=None):
+                return ""
+
+            def read_digits(self, image, scale=None):
+                calls.append(scale)
+                return "1"
+
+        assert parse.balance_electors(None, None, Engine(), self.row(400, 379, 0, 779)) is None
+        assert calls == [], "a balancing row must not trigger any re-read"
+
+    def test_a_candidate_is_accepted_only_when_it_balances(self):
+        """A second guess that also fails to balance must not replace the original."""
+
+        class Grid:
+            def crop(self, image, name, inset=2):
+                return name
+
+        class Engine:
+            name = "stub"
+
+            def read_text(self, image, scale=None):
+                return ""
+
+            def read_digits(self, image, scale=None):
+                # every scale reads a different, still-inconsistent set
+                return {
+                    "s4_male": "1",
+                    "s4_female": "2",
+                    "s4_third_gender": "0",
+                    "s4_total": "99",
+                }.get(image, "0")
+
+        out = parse.balance_electors(Grid(), None, Engine(), self.row(400, 379, 0, 7719))
+        assert out is None, "no balancing candidate exists, so nothing may be substituted"
