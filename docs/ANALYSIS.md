@@ -494,3 +494,59 @@ which roughly doubles the digit work: throughput went from 0.37 s/page to 0.70 s
 about 4.8 hours for the statewide corpus instead of 3. That is the price of the 36% of
 Bengali parts, and worth paying — but it is a real cost and belongs in the estimate rather
 than being discovered later.
+
+---
+
+## 12. The publisher issues some pages at a different resolution
+
+Late in the statewide run the log produced its first warnings: grid detection failing, in
+bulk, on constituencies that had never been sampled during development.
+
+The detected rules were a clean **0.80×** of the expected ones — 99/124, 126/157, 153/191,
+180/225, all the same ratio. Not a different form: **the same form at a different size.**
+Those pages embed a 949×1343 image rather than 1187×1679, about 115 dpi against 144.
+
+### It is a per-page property, and that matters
+
+The first scoping of this was wrong, and wrong in an instructive way. Sampling **one page
+per constituency** suggested ACs 64–73 — ten constituencies, 2,413 parts. Scanning every
+rendered page instead gave:
+
+- **2,601 pages, 8.3% of the corpus**
+- across **28** constituencies, not 10
+- **19 of which are mixed** — AC82 has a single non-canonical page out of 181; AC73 has 161
+  out of 206
+
+A per-AC sample cannot see a property that varies per page. The instrument has to match the
+grain of the thing being measured, and here the cost of getting that wrong was a blast
+radius understated by nearly 3×.
+
+### Normalise the page, not the constants
+
+Every pixel constant downstream is expressed against the canonical size: the rule positions
+in `layout`, the frame bounds, the six elector column defaults, each language's
+value-column offsets, the label search width. Two options:
+
+1. scale all of them per page, which means maintaining a measured set *plus* a scaling rule
+   and keeping the two in step forever;
+2. scale the page once, on the way in.
+
+The second is one conversion against a dozen, and it keeps a single set of measured
+constants. `render.normalize_page` resizes anything that is not canonical and returns
+canonical pages untouched, so the common path does no resampling at all.
+
+Because it is a no-op for pages that were already the right size, **no rows already
+extracted are affected** — which is why this needed no pipeline-version bump, only a
+targeted re-render of the pages that had failed.
+
+### What this says about the failure design
+
+Unhandled, this was 2,601 parts — a whole block of the state — that produced **flagged rows
+with intact provenance** rather than plausible-looking wrong values. `build_grid` raising
+`LayoutError` on an unrecognised page is what made a surprise recoverable instead of
+silently corrupt, and it is the single design decision from the first day of this work that
+paid off most.
+
+It also says something about monitoring. A watcher that reported only progress would have
+shown a healthy-looking 78% while 2,601 pages failed. The warnings *were* the detector; the
+percentage was not.
