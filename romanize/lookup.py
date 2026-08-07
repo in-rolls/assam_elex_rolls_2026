@@ -4,9 +4,23 @@
 outlives whichever tool produced the first guess, and outlives the tool being swapped.
 
 The rule that makes it improve rather than churn: a row whose ``source`` is ``manual`` is
-never overwritten by a re-run. Machine output fills gaps and refreshes machine rows; hand
-review is permanent. Without that, every re-run would silently undo the reviewing, which is
-the expensive part.
+never overwritten by a **machine guess**. Machine output fills gaps and refreshes machine
+rows; hand review is permanent. Without that, every re-run would silently undo the reviewing,
+which is the expensive part.
+
+Hand review is not the top of the order, though. An **official gazetteer entry outranks it**:
+India Post spells it *Sibsagar* and *Mangaldai* where hand review wrote *Sivasagar* and
+*Mangaldoi*, and a published authority beats one person's recollection. The displaced
+spelling is not lost -- it moves to ``variant``, because "official" is genuinely not a single
+thing here and a reader may want the conventional form. ``authority`` records which source
+the value in ``roman`` actually came from.
+
+Precedence, highest first::
+
+    gazetteer  matched against an official list, scoped by pincode or district
+    manual     written by hand
+    lexicon    every token hand-checked
+    indicxlit  model output
 """
 
 from __future__ import annotations
@@ -21,10 +35,13 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 TABLE = Path("dataset/transliteration.csv.gz")
 
-COLUMNS = ("field", "native", "frequency", "roman", "source", "note")
+COLUMNS = ("field", "native", "frequency", "roman", "source", "variant", "authority", "note")
 
-#: A row with this source is hand-reviewed and is never machine-overwritten.
+#: A row with this source is hand-reviewed and is never overwritten by a machine guess.
 MANUAL = "manual"
+
+#: Sources that are official gazetteers rather than guesses. These outrank hand review.
+AUTHORITIES = frozenset({"indiapost", "lgd"})
 
 
 @dataclass(frozen=True)
@@ -34,6 +51,10 @@ class Row:
     frequency: int
     roman: str = ""
     source: str = ""
+    #: The spelling this one displaced, when an authority disagreed with hand review.
+    variant: str = ""
+    #: Which source ``roman`` came from. Same as ``source`` unless an authority won.
+    authority: str = ""
     note: str = ""
 
     @property
@@ -43,6 +64,11 @@ class Row:
     @property
     def is_manual(self) -> bool:
         return self.source == MANUAL
+
+    @property
+    def is_official(self) -> bool:
+        """Whether this row was matched against a published gazetteer."""
+        return self.source in AUTHORITIES
 
     @property
     def is_filled(self) -> bool:
@@ -61,6 +87,8 @@ def read(path: Path = TABLE) -> Dict[Tuple[str, str], Row]:
                 frequency=int(r["frequency"] or 0),
                 roman=r.get("roman", ""),
                 source=r.get("source", ""),
+                variant=r.get("variant", "") or "",
+                authority=r.get("authority", "") or "",
                 note=r.get("note", ""),
             )
             for r in csv.DictReader(handle)
@@ -91,6 +119,8 @@ def write(rows: Iterable[Row], path: Path = TABLE) -> int:
                         "frequency": row.frequency,
                         "roman": row.roman,
                         "source": row.source,
+                        "variant": row.variant,
+                        "authority": row.authority,
                         "note": row.note,
                     }
                 )
@@ -122,7 +152,7 @@ def merge(
     for entry in entries:
         key = entry.key
         prior = existing.get(key)
-        if prior is not None and prior.is_manual:
+        if prior is not None and (prior.is_manual or prior.is_official):
             out.append(replace(prior, frequency=entry.frequency))
             continue
         roman, source = filled.get(key, ("", ""))
@@ -135,10 +165,40 @@ def merge(
                 frequency=entry.frequency,
                 roman=roman,
                 source=source,
+                variant=prior.variant if prior else "",
+                authority=source,
                 note=prior.note if prior else "",
             )
         )
     return out
+
+
+def adopt(row: Row, official: str, authority: str) -> Row:
+    """Take an official spelling, keeping the displaced one in ``variant``.
+
+    This is the only path by which hand review is overwritten, and it never destroys: if the
+    reviewer wrote *Sivasagar* and India Post says *Sibsagar*, both survive and ``authority``
+    says which one ``roman`` now holds.
+    """
+    if not official or official == row.roman:
+        return row
+    return replace(
+        row,
+        roman=official,
+        variant=row.roman,
+        source=authority,
+        authority=authority,
+    )
+
+
+def confirm(row: Row, authority: str) -> Row:
+    """Record that an official source agreed with the spelling already there.
+
+    Worth storing separately from a correction. "Nobody has checked this" and "India Post
+    independently spells it the same way" are very different claims about a row, and only
+    one of them is visible if agreement is silent.
+    """
+    return row if row.authority == authority else replace(row, authority=authority)
 
 
 def pending(rows: Iterable[Row]) -> List[Row]:

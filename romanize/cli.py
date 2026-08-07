@@ -3,6 +3,7 @@
 python -m romanize vocab                 what needs transliterating, and how much
 python -m romanize fill --backend ...    fill the lookup table
 python -m romanize audit                 side-by-side comparison -> docs/ROMANIZATION.md
+python -m romanize anchor                official gazetteer overrides guessed spellings
 python -m romanize check                 transliteration-not-translation guard
 """
 
@@ -120,6 +121,159 @@ def cmd_fill(args: argparse.Namespace) -> int:
     return 0
 
 
+def _scopes(rows, gaz):
+    """The candidate list each value may be matched against, and why it is small.
+
+    Every scope comes from a key the corpus already carries. Nothing is ever compared
+    against the whole gazetteer, because at that size a best match is meaningless.
+    """
+    from collections import defaultdict
+
+    pins = defaultdict(set)  # post office value -> the pincodes it is printed with
+    districts = defaultdict(set)  # any value    -> the official districts it occurs in
+    for row in rows:
+        pin = str(row.get("pin_code") or "").strip()
+        official = {o.district for o in gaz.offices(pin) if o.district}
+        for field in ("post_office", "district", "block", "main_town_village"):
+            value = row.get(field)
+            if not value:
+                continue
+            districts[(field, value)] |= official
+            if pin:
+                pins[value].add(pin)
+
+    def candidates(field: str, native: str):
+        if field == "post_office":
+            return sorted({o.name for pin in pins.get(native, ()) for o in gaz.offices(pin)})
+        if field == "district":
+            return gaz.districts
+        if field == "block":
+            seen = districts.get((field, native), set())
+            return sorted({b for d in seen for b in gaz.blocks_by_district.get(d, ())})
+        if field == "main_town_village":
+            # A village and the post office serving it usually share a name, so the offices
+            # under the village's own pincodes are a fair candidate pool. Weaker evidence
+            # than a post-office match, which is why the acceptance bar does the work.
+            return sorted({o.name for pin in pins.get(native, ()) for o in gaz.offices(pin)})
+        return []
+
+    return candidates
+
+
+def cmd_anchor(args: argparse.Namespace) -> int:
+    """Replace guessed spellings with official ones, wherever an official one can be found."""
+    import collections
+    import csv as _csv
+    import gzip as _gzip
+    import json as _json
+
+    from . import anchor, gazetteer, normalize
+    from .backends.indicxlit import IndicXlitBackend
+
+    table = lookup.read(args.table)
+    if not table:
+        print(f"no table at {args.table}", file=sys.stderr)
+        return 1
+
+    with _gzip.open(args.dataset, "rt", encoding="utf-8") as handle:
+        rows = [_json.loads(line) for line in handle if line.strip()]
+    pincodes = {str(r.get("pin_code") or "").strip() for r in rows}
+
+    print(f"loading gazetteer for {len(pincodes - {''}):,} pincodes...")
+    gaz = gazetteer.load(pincodes, progress=print)
+    print(f"  {len(gaz):,} official post offices, {len(gaz.districts)} districts")
+
+    words = IndicXlitBackend().romanize_many([])  # cache only; never starts the model
+    candidates_for = _scopes(rows, gaz)
+
+    # Calibrate before applying: on values already hand-checked, the right answer is known.
+    known = [
+        (r.native, r.roman, candidates_for(r.field, r.native))
+        for r in table.values()
+        if (r.is_manual or r.source == "lexicon") and candidates_for(r.field, r.native)
+    ]
+    report = anchor.calibrate(known, words)
+    print(
+        f"\ncalibration on {len(known):,} already-reviewed values: "
+        f"{report['accepted']:,} matched at >={anchor.ACCEPT}, "
+        f"agreeing with hand review {report['precision']:.1%} of the time"
+    )
+    for native, hand, official, score in list(report["differ"])[:12]:
+        print(f"    {native[:20]:<22} hand {hand[:20]:<22} official {official} ({score:.2f})")
+
+    applied = confirmed = reviewed = 0
+    out = []
+    review_rows = []
+    for row in table.values():
+        cands = candidates_for(row.field, row.native)
+        found = anchor.match(row.native, cands, words, scope=row.field) if cands else None
+        if found and found.accepted:
+            official = anchor.apply(row.native, found.official, words)
+            if official and official != row.roman:
+                applied += 1
+                out.append(lookup.adopt(row, official, args.authority))
+            else:
+                confirmed += 1
+                out.append(lookup.confirm(row, args.authority))
+            continue
+        if found and found.needs_review:
+            reviewed += 1
+            review_rows.append(
+                (row.field, row.native, row.roman, found.official, f"{found.score:.2f}")
+            )
+        # Nothing official to say: keep what we had, but repair model artifacts.
+        if row.source == "indicxlit" or row.source == "lexicon+indicxlit":
+            repaired = normalize.repair(row.roman)
+            out.append(row if repaired == row.roman else lookup.replace(row, roman=repaired))
+        else:
+            out.append(row)
+
+    # An authority settles the *name*, not the column it was found in. Only some fields have
+    # a scope to match within -- a post office has its pincode, a police station has nothing
+    # -- so without this ডুমডুমা came out "Doom Dooma" as a post office and "Doomdooma" as a
+    # police station, breaking the one property this table has always had: the same native
+    # string romanizes the same way everywhere.
+    settled = {r.native: (r.roman, r.authority) for r in out if r.source == args.authority}
+    propagated = 0
+    for index, row in enumerate(out):
+        found = settled.get(row.native)
+        if not found or row.source == args.authority or row.roman == found[0]:
+            continue
+        out[index] = lookup.adopt(row, found[0], found[1])
+        propagated += 1
+
+    problems = guards.check((r.field, r.native, r.roman) for r in out)
+    if problems:
+        print(f"\nREFUSING TO WRITE: {len(problems)} translated entries", file=sys.stderr)
+        for problem in problems[:10]:
+            print(f"  {problem}", file=sys.stderr)
+        return 1
+
+    clashes = collections.defaultdict(set)
+    for row in out:
+        clashes[row.native].add(row.roman)
+    inconsistent = sum(1 for v in clashes.values() if len(v) > 1)
+    if inconsistent:
+        print(
+            f"\nREFUSING TO WRITE: {inconsistent} native strings romanize inconsistently "
+            f"across fields",
+            file=sys.stderr,
+        )
+        return 1
+
+    lookup.write(out, args.table)
+    args.review.parent.mkdir(parents=True, exist_ok=True)
+    with args.review.open("w", encoding="utf-8", newline="") as handle:
+        writer = _csv.writer(handle)
+        writer.writerow(("field", "native", "current", "official_candidate", "score"))
+        writer.writerows(sorted(review_rows))
+    print(
+        f"\napplied {applied:,} official spellings | {confirmed:,} confirmed unchanged | "
+        f"{reviewed:,} in the review band -> {args.review}"
+    )
+    return 0
+
+
 def cmd_check(args: argparse.Namespace) -> int:
     rows = lookup.read(args.table)
     if not rows:
@@ -167,6 +321,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_fill.add_argument("--backend", choices=["indicxlit", "aksharamukha"], default="indicxlit")
     p_fill.add_argument("--scheme", default="RomanColloquial")
     p_fill.set_defaults(func=cmd_fill)
+
+    p_anchor = sub.add_parser("anchor", help="replace guessed spellings with official ones")
+    p_anchor.add_argument("--authority", default="indiapost", choices=sorted(lookup.AUTHORITIES))
+    p_anchor.add_argument("--review", type=Path, default=Path("out/anchor_review.csv"))
+    p_anchor.set_defaults(func=cmd_anchor)
 
     sub.add_parser("check", help="transliteration-not-translation guard").set_defaults(
         func=cmd_check

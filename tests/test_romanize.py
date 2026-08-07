@@ -105,6 +105,147 @@ class TestLookupKeepsHandReview:
         assert [r.native for r in lookup.pending(rows)] == ["b", "a"]
 
 
+class TestOfficialNamesOutrankHandReview:
+    """The one thing allowed to overwrite a hand-checked row, and only without destroying it.
+
+    India Post spells it *Sibsagar* where the reviewer wrote *Sivasagar*. A published
+    gazetteer beats one person's recollection -- but "official" is not a single thing here,
+    so the displaced spelling has to survive.
+    """
+
+    def test_an_authority_replaces_the_hand_checked_spelling(self):
+        row = lookup.Row("post_office", "শিৱসাগৰ", 100, "Sivasagar", lookup.MANUAL)
+        got = lookup.adopt(row, "Sibsagar", "indiapost")
+        assert got.roman == "Sibsagar"
+        assert got.variant == "Sivasagar"
+        assert got.authority == "indiapost"
+
+    def test_adopting_the_same_spelling_changes_nothing(self):
+        row = lookup.Row("post_office", "ৰহা", 10, "Raha", lookup.MANUAL)
+        assert lookup.adopt(row, "Raha", "indiapost") == row
+
+    def test_an_official_row_survives_a_machine_refill(self):
+        """Having outranked hand review, it must also outrank the model."""
+        existing = {
+            ("post_office", "শিৱসাগৰ"): lookup.Row(
+                "post_office", "শিৱসাগৰ", 100, "Sibsagar", "indiapost", "Sivasagar", "indiapost"
+            )
+        }
+        entry = vocabulary.Entry("post_office", "শিৱসাগৰ", 100, "ASM")
+        merged = lookup.merge(
+            existing, [entry], filled={("post_office", "শিৱসাগৰ"): ("xiboxagor", "indicxlit")}
+        )
+        assert merged[0].roman == "Sibsagar"
+        assert merged[0].variant == "Sivasagar"
+
+    def test_the_machine_still_never_overwrites_hand_review(self):
+        """The original invariant, unchanged: only an authority may displace a manual row."""
+        existing = {("district", "ক"): lookup.Row("district", "ক", 1, "Kokrajhar", lookup.MANUAL)}
+        merged = lookup.merge(
+            existing,
+            [vocabulary.Entry("district", "ক", 1, "ASM")],
+            filled={("district", "ক"): ("kukorabmar", "indicxlit")},
+        )
+        assert merged[0].roman == "Kokrajhar"
+
+
+class TestModelArtifactRepair:
+    """IndicXlit renders Assamese phonetics; two of its habits are wrong in every English
+    context this table will be joined against."""
+
+    def test_x_becomes_s(self):
+        """শ/ষ/স are /x/ in Assamese, but English has always written Salbari, not xalbari."""
+        from romanize import normalize
+
+        assert normalize.repair("xalbari") == "salbari"
+        assert normalize.repair("Xantonogor") == "Santonogor"
+
+    def test_doubled_vowels_collapse(self):
+        from romanize import normalize
+
+        assert normalize.repair("aambari") == "ambari"
+
+    def test_zero_width_joiners_do_not_survive(self):
+        from romanize import normalize
+
+        assert normalize.repair("dh‌su") == "dhsu"
+
+    def test_edge_punctuation_is_trimmed_but_inner_kept(self):
+        from romanize import normalize
+
+        assert normalize.repair("Gossaigaon boad-") == "Gossaigaon boad"
+        assert normalize.repair("Kamrup (Metropolitan)") == "Kamrup (Metropolitan)"
+
+    def test_repair_is_idempotent(self):
+        from romanize import normalize
+
+        once = normalize.repair("xaapotgram-")
+        assert normalize.repair(once) == once
+
+    def test_the_danda_is_not_fed_to_the_model(self):
+        """U+09F7 is punctuation that happens to sit inside the Bengali block."""
+        from romanize.backends.indicxlit import SCRIPT_RUN
+
+        assert SCRIPT_RUN.findall("৷") == []
+
+
+class TestScopedMatching:
+    """Matching is only safe because the candidate set is small and chosen by a real key."""
+
+    WORDS = {"বচদ্ৰৱা": ["botodrowa"], "ৰহা": ["roha"], "লাহাৰঘাচ": ["lahorighat"]}
+
+    def test_the_generic_suffix_is_stripped_before_matching(self):
+        """A first probe failed on 'Batadrava Ansh' purely because of the suffix."""
+        from romanize import anchor
+
+        assert anchor.core_runs("বচদ্ৰৱা অংশ") == ["বচদ্ৰৱা"]
+        assert "Ansh" not in anchor.core_text("বচদ্ৰৱা অংশ", self.WORDS)
+
+    def test_the_suffix_is_put_back_after_matching(self):
+        """An authority on the place name is not a licence to drop what the roll printed."""
+        from romanize import anchor
+
+        assert anchor.apply("ৰহা অংশ", "Raha", self.WORDS) == "Raha Ansh"
+
+    def test_matching_ignores_case_and_punctuation(self):
+        from romanize import anchor
+
+        name, score, runner_up = anchor.best("Bilasipara", ["Bilashipara", "Dhubri"])
+        assert name == "Bilashipara"
+        assert score >= anchor.ACCEPT and score - runner_up >= anchor.MARGIN
+
+    def test_an_empty_scope_yields_no_match(self):
+        from romanize import anchor
+
+        assert anchor.match("ৰহা", [], self.WORDS, scope="test") is None
+
+    def test_a_near_tie_is_not_accepted(self):
+        """Two similar names under one pincode: being nearest is not enough to be right.
+
+        At 0.85 with no margin the matcher turned ধমধমা into "Nizdhamdhama" and মধুপুৰ into
+        "Madhapur" -- different places, applied with confidence.
+        """
+        from romanize import anchor
+
+        found = anchor.match("লাহাৰঘাচ", ["Lahorighat", "Lahorighatt"], self.WORDS, scope="test")
+        assert found is not None
+        assert found.score >= anchor.ACCEPT, "the best candidate is above the threshold"
+        assert not found.accepted, "but not far enough ahead of the runner-up"
+        assert found.needs_review
+
+    def test_dropped_core_runs_take_their_separator(self):
+        from romanize import anchor
+
+        assert anchor.apply("চিদলা-চৰাং (অংশ-১)", "Sidli", self.WORDS) == "Sidli (Ansh-1)"
+
+    def test_part_numbers_survive_substitution(self):
+        """The official source is an authority on the place name and nothing else."""
+        from romanize import anchor
+
+        got = anchor.apply("বড়োবজাৰ (অংশ-২)", "Boro Bazar", self.WORDS)
+        assert got == "Boro Bazar (Ansh-2)"
+
+
 class TestScriptRunTokenization:
     """Split on script runs, not whitespace.
 

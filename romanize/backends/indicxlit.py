@@ -43,12 +43,16 @@ NAME = "indicxlit"
 #: ``চিদলা-চৰাং`` and ``রা'ঈরখাড়া`` are each a single whitespace token, so IndicXlit got
 #: them whole, transliterated part and returned the rest in native script. That left
 #: native characters in the roman column of 112 entries covering 2,426 rows.
-SCRIPT_RUN = re.compile(r"[\u0980-\u09E5\u09F0-\u09FF]+")
+SCRIPT_RUN = re.compile(r"[\u0980-\u09E5\u09F0-\u09F6\u09F8-\u09FF]+")
 
 #: Bengali-Assamese digits are a pure bijection to Latin, so they are converted directly
 #: rather than sent to a model -- exact, free and testable, the same call the extraction
 #: pipeline makes. They are excluded from ``SCRIPT_RUN`` so a lone ``১`` is not handed to a
 #: word transliterator that has never seen one.
+#:
+#: U+09F7, the Bengali danda, is excluded for the same reason: it is punctuation that happens
+#: to sit inside the script block, and feeding it to a word transliterator produced ``xou``
+#: and ``ugh`` in 87 values.
 DIGITS = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
 
 #: IndicXlit language codes, by the corpus's language code.

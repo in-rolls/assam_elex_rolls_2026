@@ -13,11 +13,22 @@ CSV, editable in a spreadsheet, joined onto the dataset in one merge.
 not *Gossaigaon Revenue Circle*. A check over the whole table enforces this.
 
 ```python
-import csv, gzip, json
+import csv, gzip
 lut = {(r["field"], r["native"]): r["roman"]
        for r in csv.DictReader(gzip.open("dataset/transliteration.csv.gz", "rt", encoding="utf-8"))}
 lut[("district", "কোকৰাব্মাৰ")]        # -> 'Kokrajhar'
 ```
+
+| column | meaning |
+|---|---|
+| `roman` | the romanization to use |
+| `variant` | the spelling this one displaced, when an official source disagreed |
+| `source` | how `roman` was produced |
+| `authority` | set when an official gazetteer produced **or independently confirmed** it |
+
+`authority` is worth reading separately from `source`. "Nobody has checked this" and "India
+Post spells it the same way" are very different claims, and only one of them is visible if
+agreement is recorded silently.
 
 ## Why a table and not a model
 
@@ -62,26 +73,104 @@ The verbatim column is **not** patched. Every row carries `pdf_sha256` so a read
 it against the source page; editing the text would make that provenance a lie. The table is
 the same repair as a third column — derived, reversible, checkable.
 
+## Anchored to an official gazetteer
+
+Completeness was never the problem; **correctness** was. Scored against the 725 hand-checked
+tokens the model also saw, raw IndicXlit is exactly right **29.4%** of the time. Most
+unreviewed spellings were plausible rather than right, and nothing in the pipeline could tell
+the two apart.
+
+What fixed that was a join key the corpus already carried and nothing had used: **`pin_code`,
+present on 100% of rows**, 554 distinct, with 1,408 of 1,420 post offices mapping to exactly
+one pin. India Post publishes the official English name of every office under a pincode, so
+the question stops being *"what does this say"* and becomes *"which of these twelve is it"* —
+which edit distance can actually answer.
+
+3,917 official post offices were fetched for 547 of the 554 pincodes. Matching is **always
+scoped**: a post office against the offices sharing its pincode, a block against the blocks
+of its district. Nothing is ever compared against the whole gazetteer, because at that size
+a nearest match is meaningless.
+
+**25.7% of row-weight is now backed by an official source** — 1,186 values corrected and
+561 independently confirmed.
+
+### Where the threshold came from
+
+Acceptance was swept against 643 values whose answer was already known by hand:
+
+| threshold | margin | applied | agrees with hand review |
+|--:|--:|--:|--:|
+| 0.85 | 0.00 | 420 | 86.9% |
+| 0.88 | 0.05 | 383 | 93.5% |
+| **0.90** | **0.05** | **379** | **94.5%** |
+| 0.92 | 0.05 | 369 | 97.0% |
+
+0.90 is where the last *wrong place* disappears. At 0.85 the matcher confidently turned
+`ধমধমা` into **Nizdhamdhama** and `মধুপুৰ` into **Madhapur** — different places, applied
+without hesitation. Every disagreement surviving at 0.90 is the same place spelled
+differently, which is the point rather than a defect.
+
+### Official versus conventional
+
+These are real conflicts, not errors. India Post wins and the displaced spelling is kept in
+`variant`, because "official" is genuinely not a single thing: the district administration
+writes *Sivasagar* where the Department of Posts writes *Sibsagar*.
+
+| native | conventional (`variant`) | official (`roman`) | rows |
+|---|---|---|--:|
+| `কামৰুপ (মহানগৰ)` | Kamrup Metropolitan | **Kamrup (Mahanagar)** | 1,218 |
+| `তামুলপুৰ` | Tamulpur | **Tambulpur** | 482 |
+| `পশ্চিম কাৰ্বি আংলং` | West Karbi Anglong | **Paschim Karbi Anglong** | 358 |
+| `চিদলা-চৰাং (অংশ-১)` | Sidli-Chirang (Ansh-1) | **Sidli Chirang (Ansh-1)** | 214 |
+| `ডুমডুমা` | Doomdooma | **Doom Dooma** | 173 |
+| `নিলামবাজার` | Nilambazar | **Nilam Bazar** | 167 |
+| `লাহাৰঘাচ (অংশ-২)` | Laharighat (Ansh-2) | **Lahorighat (Ansh-2)** | 128 |
+| `হয়বৰগাও অংশ` | Hoiborgaon Ansh | **Haiborgaon Ansh** | 124 |
+| `ভৱানাপুৰ` | Bhawanipur | **Bhowanipur** | 122 |
+| `চাপৰ-শালকোচা` | Chapar-Salkocha | **Chapar Salkocha** | 116 |
+| `।বজনা` | ।Bijni | **Bijni** | 108 |
+| `মুছলপুৰ` | Musalpur | **Mussalpur** | 101 |
+| `উধারবন্দ` | Udharbond | **Udarbond** | 81 |
+| `কাকপথাৰ` | Kakopathar | **Kakapathar** | 79 |
+| `আমবাগান` | aambagan | **Ambagan** | 78 |
+| `বিহগুৰী পি-1` | bihguri P-1 | **Bihaguri P-1** | 75 |
+
+### Model artifacts, repaired
+
+IndicXlit writes Assamese phonetics. Two habits are wrong in every English context this table
+will be joined against, and both are deterministic: of 1,831 cached tokens whose output holds
+an `x`, **1,830** have শ, ষ or স in the source.
+
+| repair | occurrences | gold-set effect |
+|---|--:|--:|
+| `x` → `s` (`xalbari` → `salbari`) | 8,650 | |
+| `aa` → `a` (`aambari` → `ambari`) | 4,928 | |
+| **both** | | **29.4% → 33.0%** |
+
+`z` → `j` was measured and **rejected**: it scored −0.3 points, corrupting as many tokens as
+it fixed. A rule that fails its own measurement does not ship.
+
 ## Review status
 
 The table is complete. It is **not** fully reviewed, and the `source` column says so per row:
 
 | provenance | meaning | entries | row-weight |
 |---|---|--:|--:|
-| `lexicon+indicxlit` | some tokens hand-checked, rest from the model | 33,630 | 22.0% |
-| `indicxlit` | model output, unreviewed | 7,644 | 17.6% |
-| `lexicon` | every token hand-checked | 4,805 | 45.4% |
+| `lexicon+indicxlit` | some tokens hand-checked, rest from the model | 33,121 | 21.2% |
+| `indicxlit` | model output, unreviewed | 7,027 | 15.6% |
+| `lexicon` | every token hand-checked | 4,748 | 43.3% |
+| `indiapost` | **matched to India Post's official name** | 1,186 | 5.7% |
 | `already-latin` | source already Latin, passed through | 524 | 0.8% |
-| `manual` | written by hand | 41 | 14.3% |
+| `manual` | written by hand | 38 | 13.4% |
 
-**60.4% of row-weight has every token hand-checked or was already Latin**, and
-**77.2% of token-occurrences are hand-checked** — the second number is the higher one
-because a value can be nine parts reviewed and one part not, and the first counts it as
-unreviewed. Both are in the file: `source` per row, and the lexicon itself.
+**63.2% of row-weight is hand-checked, officially matched, or already Latin**, and
+**77.2% of token-occurrences are hand-checked**. The second number is higher because a
+value can be nine parts reviewed and one part not, and the first counts that as unreviewed.
+Both are in the file: `source` and `authority` per row, and the lexicon itself.
 
-Capitalisation happens to make this legible. Reviewed tokens are title-cased, model output
-is not, so `puthimari ombikagiri High School (Baon Ansh)` shows at a glance which half
-someone looked at.
+Capitalisation happens to make this legible. Reviewed and official tokens are title-cased,
+model output is not, so `puthimari ombikagiri High School (Baon Ansh)` shows at a glance
+which half someone looked at.
 
 Review works at the **token** level, which is why it goes this fast. The 46,644 values
 decompose into 20,600 tokens, and they repeat hard: `অংশ` appears in 362 values, `স্কুল` in
@@ -136,5 +225,11 @@ lexicon entries fix every one.
   someone looked.
 - Conventional spellings are not stable: Karimganj is now officially Sribhumi, and both
   appear here. This column is a convenience key, never an identifier.
-- The twelve-district comparison above is judged against general knowledge, not a sourced
-  gazetteer. A published list would settle it.
+- **Coverage of the anchor is partial.** India Post reaches post offices, villages and
+  blocks. `revenue_circle` and `police_station` have no gazetteer here at all: the Local
+  Government Directory holds them, but its export sits behind a CSRF-bearing form and no
+  bulk download was obtained, so those fields remain lexicon-and-model only.
+- **4,100 values sit in the 0.60–0.85 review band** and were deliberately *not* applied.
+  They are written to `out/anchor_review.csv` for a human, not silently accepted.
+- The India Post directory carries **24 postal districts**, not Assam's 35 revenue
+  districts, so it is a weak authority on district names and was used mainly as a scope.
