@@ -63,18 +63,25 @@ The table is complete. It is **not** fully reviewed, and the `source` column say
 
 | provenance | meaning | entries | row-weight |
 |---|---|--:|--:|
-| `indicxlit` | model output, unreviewed | 1,787 | 43.0% |
-| `lexicon+indicxlit` | some tokens hand-checked, rest from the model | 677 | 14.5% |
-| `lexicon` | every token hand-checked | 272 | 21.8% |
+| `indicxlit` | model output, unreviewed | 1,279 | 15.9% |
+| `lexicon` | every token hand-checked | 962 | 57.2% |
+| `lexicon+indicxlit` | some tokens hand-checked, rest from the model | 495 | 6.1% |
 | `manual` | written by hand | 41 | 20.0% |
 | `already-latin` | source already Latin, passed through | 40 | 0.8% |
 
-**42.5% of row-weight is fully hand-checked or already Latin.** The rest is IndicXlit
+**78.0% of row-weight is fully hand-checked or already Latin.** The rest is IndicXlit
 output at the quality above — usable as a starting point, not as an authority.
 
 Review works at the **token** level, which is why it goes this fast: the 2,817 values
 decompose into 2,036 tokens, and they repeat heavily — `অংশ` appears in 362 values, `খণ্ড` in
 165. Correcting `ৰাজহ` once fixes every revenue circle across all four fields.
+
+The leverage is steep and measurable. Three review passes over
+[`romanize/tokens.py`](../romanize/tokens.py) — 464 tokens in total — moved
+hand-checked coverage 42.5% → 71.8% → 78.0% of row-weight, because each pass took the tokens
+ranked by how many rows they touch rather than by where they happened to appear. The third
+pass added 101 tokens and bought 6.2 points; the curve is flattening, and the tail is
+genuine long tail.
 
 ## Known limits
 
