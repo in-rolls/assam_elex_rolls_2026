@@ -22,13 +22,47 @@ corpus is full of such loanwords -- ৰেলৱে (railway), কলেজ (col
 So a violation requires **both**: the English word in the output *and* the native word it
 would be the translation of in the input. If the source says টাউন, "town" is right; only if
 the source says চহৰ is "town" a translation.
+
+That two-sided test is still not enough once a value can contain *both*. ``করিখাই ফরেষ্ট
+ভিলেজ`` has ভিলেজ, the borrowed "village"; a value naming a গাওঁ alongside it would trip the
+rule on a word that was never translated. So the loanword side is derived rather than
+listed: any native token whose hand-checked romanization already contains the English word
+**earns** that word, and the rule stands down. The evidence lives in ``tokens``, where it is
+reviewed, instead of being duplicated here.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Iterable, List, Tuple
+from typing import Dict, Iterable, List, Tuple
+
+from . import tokens
+
+
+#: English word (lowercased) -> the native tokens whose reviewed romanization contains it.
+#: Built from the lexicon so that adding ``ভিলেজ`` -> *Village* there also teaches the guard
+#: that "village" can be honestly earned, with no second list to keep in step.
+def _loanword_index() -> Dict[str, Tuple[str, ...]]:
+    index: Dict[str, List[str]] = {}
+    for native, roman in tokens.LEXICON.items():
+        for word in re.findall(r"[a-z]+", roman.lower()):
+            index.setdefault(word, []).append(native)
+    return {word: tuple(natives) for word, natives in index.items()}
+
+
+LOANWORDS = _loanword_index()
+
+
+def loanwords_for(english: str) -> Tuple[Tuple[str, ...], ...]:
+    """Per word of ``english``, the native tokens that legitimately produce it.
+
+    Grouped by word, and every group must be satisfied, because a phrase is only borrowed
+    if all of it was. ``পুলিচ থানা`` -> "Police Station" still counts as translation: পুলিচ
+    earns "police", but nothing in the source earns "station" -- থানা is what was
+    translated away.
+    """
+    return tuple(LOANWORDS.get(word, ()) for word in english.lower().split())
 
 
 @dataclass(frozen=True)
@@ -43,10 +77,14 @@ class Rule:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "_pattern", re.compile(rf"\b{re.escape(self.english)}\b", re.I))
+        object.__setattr__(self, "_loanwords", loanwords_for(self.english))
 
     def violated_by(self, native: str, roman: str) -> bool:
         if not roman or not self._pattern.search(roman):  # type: ignore[attr-defined]
             return False
+        groups = self._loanwords  # type: ignore[attr-defined]
+        if all(any(word in native for word in group) for group in groups):
+            return False  # the source borrowed every word of it; echoing it is faithful
         return any(form in native for form in self.natives)
 
 

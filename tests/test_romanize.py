@@ -28,6 +28,24 @@ class TestTransliterationNotTranslation:
     def test_a_banned_word_inside_a_name_does_not_trip(self):
         assert not guards.violations("পাৰ্টাবঘৰ", "partabghar")
 
+    def test_a_loanword_survives_next_to_the_word_it_would_translate(self):
+        """ভিলেজ earns "village" even when a গাওঁ is also in the value.
+
+        Listing loanwords by hand was not enough: ``বৰবাৰী গাওঁ ফৰেষ্ট ভিলেজ`` contains
+        both the borrowed word and the word it would be the translation of.
+        """
+        assert not guards.violations("বৰবাৰী গাওঁ ফৰেষ্ট ভিলেজ", "Barbari Gaon Forest Village")
+        assert guards.violations("বৰবাৰী গাওঁ", "Barbari Village")
+
+    def test_a_phrase_needs_every_word_borrowed(self):
+        """পুলিচ earns "police"; nothing in the source earns "station", so থানা still trips."""
+        assert guards.violations("পুলিচ থানা", "Police Station")
+
+    def test_loanword_evidence_comes_from_the_lexicon(self):
+        """Adding a loanword to ``tokens`` must be all it takes -- no second list here."""
+        for english in ("village", "town", "part"):
+            assert any(guards.loanwords_for(english)), english
+
     def test_check_reports_every_offender(self):
         problems = guards.check(
             [
@@ -120,6 +138,42 @@ class TestScriptRunTokenization:
 
         assert IndicXlitBackend.join("HARANGAJAO ITDP BLOCK", {}) == "HARANGAJAO ITDP BLOCK"
 
+
+class TestModelOutputIsCached:
+    """A review pass changes the lexicon, not the model. It must not re-ask the model.
+
+    Without this, editing ``tokens`` cost a twenty-minute run over 19,216 words to get
+    19,216 identical answers back -- which is what makes review something you batch up and
+    dread instead of something you iterate on.
+    """
+
+    def backend(self, tmp_path):
+        from romanize.backends.indicxlit import IndicXlitBackend
+
+        return IndicXlitBackend(cache=tmp_path / "words.json")
+
+    def test_a_fully_cached_run_never_starts_the_model(self, tmp_path, monkeypatch):
+        import subprocess
+
+        backend = self.backend(tmp_path)
+        backend._save_cache({"কোকৰাঝাৰ": ["kukorajhar"]})
+
+        def explode(*args, **kwargs):
+            raise AssertionError("the model was started for a word already known")
+
+        monkeypatch.setattr(subprocess, "run", explode)
+        assert backend.romanize_many([("কোকৰাঝাৰ", "ASM")]) == {"কোকৰাঝাৰ": ["kukorajhar"]}
+
+    def test_the_cache_round_trips(self, tmp_path):
+        backend = self.backend(tmp_path)
+        backend._save_cache({"কোকৰাঝাৰ": ["kukorajhar", "kokrajhar"]})
+        assert backend._load_cache()["কোকৰাঝাৰ"] == ["kukorajhar", "kokrajhar"]
+
+    def test_a_missing_cache_is_not_an_error(self, tmp_path):
+        assert self.backend(tmp_path)._load_cache() == {}
+
+
+class TestLeaks:
     def test_leaked_native_script_is_caught(self):
         assert guards.leaked_native("চিদলা-sorang")
         assert not guards.leaked_native("sidla-sorang")

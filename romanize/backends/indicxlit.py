@@ -5,9 +5,13 @@ needs ``fairseq`` and an old TensorFlow/torch stack that will not coexist with t
 project's Python 3.12. The recipe is lifted from ``indicate/training/baseline_indicxlit.py``
 rather than reinvented.
 
-The whole vocabulary goes through **one** subprocess invocation. Model load is ~10 seconds
-and per-word inference is milliseconds, so a process per word would spend all its time
-loading and none transliterating.
+The vocabulary goes through in **chunks of a few thousand words**, not one word at a time
+and not all at once. Model load is ~10 seconds and per-word inference is milliseconds, so a
+process per word would spend all its time loading; but a single process over all 19,216
+words writes nothing until it finishes, and lost twenty minutes of work the first time it
+was interrupted. A chunk pays ~5% overhead for progress that survives.
+
+Output is cached (see ``CACHE``), so a second run asks only about words never seen.
 
 Quality, measured on twelve well-known Assam districts (top-1 exact):
 
@@ -28,7 +32,7 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 NAME = "indicxlit"
 
@@ -92,33 +96,86 @@ json.dump(out, open(sys.argv[2], "w", encoding="utf-8"), ensure_ascii=False)
 """
 
 
+#: Model output for words already seen, so a review pass costs nothing.
+#:
+#: The model is deterministic and the review loop only changes which words the *lexicon*
+#: overrides -- re-running it after editing ``tokens`` asks 19,216 identical questions and
+#: gets 19,216 identical answers, at twenty minutes a pass. Cached, a pass is instant, which
+#: is what makes reviewing iterative instead of a thing you batch up and dread.
+#:
+#: Deliberately not shipped: it is derivable from the model and the corpus, and the useful
+#: artifact is the table.
+CACHE = Path("out/indicxlit_words.json")
+
+
 class IndicXlitBackend:
     """Batch-romanize through the isolated environment."""
 
     name = NAME
 
-    def __init__(self, topk: int = 3, timeout: int = 3600) -> None:
+    #: Words per subprocess invocation. Model load is ~10 seconds, so a chunk this size
+    #: spends under 5% of its time loading -- cheap enough to buy durability. A single
+    #: invocation over all 19,216 words was faster on paper and lost twenty minutes of
+    #: work the first time it was interrupted, because nothing was written until the end.
+    CHUNK = 4000
+
+    def __init__(self, topk: int = 3, timeout: int = 3600, cache: Optional[Path] = CACHE) -> None:
         self.topk = topk
         self.timeout = timeout
+        self.cache = cache
 
-    def romanize_many(self, items: Iterable[Tuple[str, str]]) -> Dict[str, List[str]]:
+    def _load_cache(self) -> Dict[str, List[str]]:
+        if self.cache is None or not self.cache.exists():
+            return {}
+        return json.loads(self.cache.read_text(encoding="utf-8"))
+
+    def _save_cache(self, words: Dict[str, List[str]]) -> None:
+        if self.cache is None:
+            return
+        self.cache.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.cache.with_suffix(".tmp")
+        tmp.write_text(json.dumps(words, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(self.cache)
+
+    def romanize_many(
+        self,
+        items: Iterable[Tuple[str, str]],
+        progress: Optional[Callable[[str], None]] = None,
+    ) -> Dict[str, List[str]]:
         """``items`` is ``(text, lang)``. Returns ``{text: [candidates]}``.
 
         Values are split into **runs of native script** and transliterated run by run.
         IndicXlit is a *word* transliterator: a phrase fed in whole comes back mangled,
         and a run glued to punctuation comes back half-converted.
         """
+        known = self._load_cache()
         by_lang: Dict[str, set] = {}
         for text, lang in items:
             code = XLIT_LANG.get(lang)
             if code is None:
                 continue
             for run in SCRIPT_RUN.findall(text.translate(DIGITS)):
-                by_lang.setdefault(code, set()).add(run)
+                if run not in known:
+                    by_lang.setdefault(code, set()).add(run)
         if not by_lang:
-            return {}
+            return known
 
-        payload = {lang: sorted(words) for lang, words in by_lang.items()}
+        todo = [(lang, sorted(words)) for lang, words in by_lang.items()]
+        remaining = sum(len(words) for _, words in todo)
+        for lang, words in todo:
+            for start in range(0, len(words), self.CHUNK):
+                chunk = words[start : start + self.CHUNK]
+                fresh = self._run({lang: chunk})
+                # Errors are not cached: a word that failed once should be retried, not
+                # remembered as unanswerable.
+                known.update({w: c for w, c in fresh.items() if not isinstance(c, dict)})
+                self._save_cache(known)  # after every chunk, so an interrupted run resumes
+                remaining -= len(chunk)
+                if progress:
+                    progress(f"    {len(known):,} words known, {remaining:,} to go")
+        return known
+
+    def _run(self, payload: Dict[str, List[str]]) -> Dict[str, List[str]]:
         with tempfile.TemporaryDirectory() as tmp:
             src, dst, script = (Path(tmp) / n for n in ("in.json", "out.json", "worker.py"))
             src.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")

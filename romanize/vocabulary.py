@@ -30,9 +30,13 @@ TIER1_FIELDS = (
     "post_office",
 )
 
-#: Same machinery, far more volume -- 12,459 and 31,368 distinct. Left out until tier 1
-#: shows the output is worth having.
+#: Far more volume -- 12,459 and 31,368 distinct -- but not proportionally more work. A
+#: station name is a place name plus a school, and the school half is a closed vocabulary:
+#: ``স্কুল`` occurs in 19,600 rows, ``বিদ্যালয়`` in 7,489. 200 tokens cover half of it.
 TIER2_FIELDS = ("main_town_village", "ps_name")
+
+#: Everything the table covers.
+ALL_FIELDS = TIER1_FIELDS + TIER2_FIELDS
 
 
 @dataclass(frozen=True)

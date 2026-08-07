@@ -76,8 +76,8 @@ def cmd_fill(args: argparse.Namespace) -> int:
         from .backends.indicxlit import IndicXlitBackend
 
         backend = IndicXlitBackend()
-        print(f"running {backend.name} over {len(todo):,} strings in one isolated process...")
-        words = backend.romanize_many((e.native, e.lang) for e in todo)
+        print(f"running {backend.name} over {len(todo):,} strings...")
+        words = backend.romanize_many(((e.native, e.lang) for e in todo), progress=print)
         # Hand-checked tokens outrank the model everywhere they appear. Reviewing ৰাজহ
         # once fixes every revenue circle; reviewing each value separately would not.
         for native, roman in tokens.LEXICON.items():
@@ -156,8 +156,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--fields",
         nargs="*",
-        default=list(vocabulary.TIER1_FIELDS),
-        help="fields to transliterate (default: the five administrative ones)",
+        default=list(vocabulary.ALL_FIELDS),
+        help="fields to transliterate (default: all seven)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
