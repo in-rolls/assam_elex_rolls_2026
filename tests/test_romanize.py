@@ -47,10 +47,11 @@ class TestTransliterationNotTranslation:
             assert any(guards.loanwords_for(english)), english
 
     def test_check_reports_every_offender(self):
+        """Distinct natives, so this isolates the translation rule from the consistency one."""
         problems = guards.check(
             [
                 ("block", "কচুগাও উন্নয়ন খণ্ড", "kachugaon development block"),
-                ("block", "কচুগাও উন্নয়ন খণ্ড", "kachugaon unnayan khanda"),
+                ("block", "কোকৰাঝাৰ উন্নয়ন খণ্ড", "kokrajhar unnayan khanda"),
             ]
         )
         assert len(problems) == 1
@@ -147,6 +148,79 @@ class TestOfficialNamesOutrankHandReview:
             filled={("district", "ক"): ("kukorabmar", "indicxlit")},
         )
         assert merged[0].roman == "Kokrajhar"
+
+
+class TestSecondModelAudit:
+    """Defects an independent review found in code its author had just declared finished.
+
+    Each of these was reproduced against the shipped 46,644-row table before being fixed, so
+    each test names the number it observed.
+    """
+
+    def test_check_catches_cross_field_inconsistency(self):
+        """It lived only inside the anchoring run, so hand-editing the CSV could break it.
+
+        Shipping a reviewable table is the point; a check that only fires during a machine
+        pass does not cover the reviewer.
+        """
+        problems = guards.check(
+            [
+                ("post_office", "ডুমডুমা", "Doom Dooma"),
+                ("police_station", "ডুমডুমা", "Doomdooma"),
+            ]
+        )
+        assert problems and "inconsistently" in problems[0]
+        assert not guards.check(
+            [("post_office", "ডুমডুমা", "Doom Dooma"), ("police_station", "ডুমডুমা", "Doom Dooma")]
+        )
+
+    def test_the_school_rule_is_enforced_not_just_documented(self):
+        """বিদ্যালয় is Vidyalaya. The report led with this and nothing checked it."""
+        assert guards.violations("উচ্চ মাধ্যমিক বিদ্যালয়", "Uchcha Madhyamik School")
+        assert not guards.violations("উচ্চ মাধ্যমিক বিদ্যালয়", "Uchcha Madhyamik Vidyalaya")
+
+    def test_a_borrowed_school_is_still_allowed(self):
+        """The source borrowed স্কুল, so "School" is the faithful reading of 21,355 rows."""
+        assert not guards.violations("অৰুণোদয় হাই স্কুল", "Arunodoy High School")
+
+    def test_an_official_confirmation_survives_a_refill(self):
+        """561 confirmations were being erased by the next `fill`.
+
+        A row an authority confirmed but did not change keeps source="lexicon", so it failed
+        the is_official test in merge, fell through, and had authority rewritten to source.
+        """
+        prior = lookup.Row("post_office", "ৰহা", 10, "Raha", "lexicon", "", "indiapost")
+        merged = lookup.merge(
+            {prior.key: prior},
+            [vocabulary.Entry("post_office", "ৰহা", 10, "ASM")],
+            filled={prior.key: ("roha", "indicxlit")},
+        )
+        assert merged[0].authority == "indiapost"
+
+    def test_a_discarded_model_guess_is_not_published_as_a_variant(self):
+        """617 of 1,186 variants were rejected machine output presented as alternatives."""
+        row = lookup.Row("main_town_village", "শিঙৰী", 5, "xingori", "indicxlit")
+        assert lookup.adopt(row, "Singri", "indiapost", keep_variant=False).variant == ""
+        hand = lookup.Row("post_office", "শিৱসাগৰ", 5, "Sivasagar", lookup.MANUAL)
+        assert lookup.adopt(hand, "Sibsagar", "indiapost").variant == "Sivasagar"
+
+    def test_scope_strength_orders_conflicting_authorities(self):
+        """Two fields anchoring one name differently used to deadlock the whole run.
+
+        Official rows were skipped by propagation, so neither could be corrected, the
+        consistency check fired, and the run exited having written nothing.
+        """
+        from romanize import anchor
+
+        assert anchor.scope_rank("post_office") < anchor.scope_rank("main_town_village")
+        assert anchor.scope_rank("ps_name") == len(anchor.SCOPE_STRENGTH)
+
+    def test_a_dropped_parenthesised_run_leaves_no_empty_brackets(self):
+        """সুখচৰ (ধুবুৰা) matched an office literally named "Sukchar (Dhubri)"."""
+        from romanize import anchor
+
+        got = anchor.apply("সুখচৰ (ধুবুৰা)", "Sukchar (Dhubri)", {"ধুবুৰা": ["dhuburi"]})
+        assert got == "Sukchar (Dhubri)"
 
 
 class TestModelArtifactRepair:

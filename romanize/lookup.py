@@ -165,27 +165,38 @@ def merge(
                 frequency=entry.frequency,
                 roman=roman,
                 source=source,
+                # ``variant`` and ``authority`` describe the *value*, not the fill that
+                # produced this row, so a refill must not reset them. It used to: a row an
+                # authority had confirmed but not changed keeps source="lexicon", failed the
+                # is_official test above, fell through here, and had its authority rewritten
+                # to the source -- silently erasing the confirmation on all 561 such rows.
                 variant=prior.variant if prior else "",
-                authority=source,
+                authority=(prior.authority if prior and prior.authority else source),
                 note=prior.note if prior else "",
             )
         )
     return out
 
 
-def adopt(row: Row, official: str, authority: str) -> Row:
+def adopt(row: Row, official: str, authority: str, keep_variant: bool = True) -> Row:
     """Take an official spelling, keeping the displaced one in ``variant``.
 
     This is the only path by which hand review is overwritten, and it never destroys: if the
     reviewer wrote *Sivasagar* and India Post says *Sibsagar*, both survive and ``authority``
     says which one ``roman`` now holds.
+
+    ``keep_variant=False`` for rows whose displaced spelling was pure model output. A
+    rejected guess is not an alternative spelling, and publishing one as if it were is a
+    claim about English usage that nothing supports -- 617 of the first run's 1,186 variants
+    were exactly that, 113 of them still carrying the ``x``/``aa`` artifacts this pipeline
+    calls wrong. The guess is already in the IndicXlit cache for anyone who wants it.
     """
     if not official or official == row.roman:
         return row
     return replace(
         row,
         roman=official,
-        variant=row.roman,
+        variant=row.roman if keep_variant else "",
         source=authority,
         authority=authority,
     )

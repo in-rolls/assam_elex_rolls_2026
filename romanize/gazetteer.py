@@ -10,16 +10,19 @@ pin. India Post publishes, per pincode, the official English post office name al
 block and district. That turns "guess the spelling" into "pick from twelve candidates", which
 is a problem fuzzy matching can actually solve.
 
-Sources, in descending order of how much they can be trusted:
+One source is implemented:
 
 ``indiapost``
     ``api.postalpincode.in``, a mirror of the Department of Posts directory. One request per
     pincode, 554 of them. Authoritative for post office names, and a useful secondary
-    witness for block and district.
+    witness for block and district. Only Assam offices are kept -- border pincodes serve
+    across the state line, and a candidate pool should not hold names from a state this
+    corpus never covers.
 
-``lgd``
-    The Local Government Directory's district / sub-district lists. Assam's sub-district
-    *is* the revenue circle, so this covers a field nothing else does.
+The Local Government Directory would cover ``revenue_circle`` and ``police_station``, which
+nothing else here reaches. Its bulk export sits behind a CSRF-bearing form and no working
+download was found, so those two fields remain lexicon-and-model only. ``lookup.AUTHORITIES``
+already reserves the ``lgd`` name for whenever that changes.
 
 Everything is cached under ``out/gazetteer/``. The network is hit once; every later run of
 the audit is offline and reproducible, the same discipline as the IndicXlit cache.
@@ -46,6 +49,12 @@ REQUEST_PAUSE = 0.4
 USER_AGENT = "assam_elex_rolls_2026 (open data audit; github.com/in-rolls)"
 
 
+#: Border pincodes serve offices across the state line. Two Meghalaya offices reached the
+#: Assam gazetteer this way -- harmless so far, but a candidate pool should not contain
+#: names from a state the corpus never covers.
+STATE = "Assam"
+
+
 @dataclass(frozen=True)
 class PostOffice:
     """One office as the Department of Posts spells it."""
@@ -55,6 +64,7 @@ class PostOffice:
     block: str
     district: str
     branch_type: str
+    state: str = ""
 
     @classmethod
     def from_api(cls, row: dict) -> "PostOffice":
@@ -65,6 +75,7 @@ class PostOffice:
             block=(row.get("Block") or "").strip(),
             district=(row.get("District") or "").strip(),
             branch_type=(row.get("BranchType") or "").strip(),
+            state=(row.get("State") or "").strip(),
         )
 
 
@@ -128,7 +139,7 @@ def fetch_post_offices(
         rows = []
         if isinstance(payload, list) and payload:
             rows = payload[0].get("PostOffice") or []
-        offices = [PostOffice.from_api(r) for r in rows]
+        offices = [o for o in map(PostOffice.from_api, rows) if o.state == STATE]
         if offices:
             out[pin] = offices
         if progress and index % 50 == 0:

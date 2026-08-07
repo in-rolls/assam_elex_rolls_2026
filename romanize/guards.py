@@ -100,6 +100,12 @@ RULES: Tuple[Rule, ...] = (
     Rule("town", ("চহৰ", "শহর"), "chahar"),
     Rule("district", ("জিলা", "জেলা"), "jila"),
     Rule("part", ("অংশ",), "ansh"),
+    # The claim the report makes loudest was the one nothing enforced. ``বিদ্যালয়`` is the
+    # single highest-leverage token in the polling-station names -- 7,489 rows -- and the
+    # source itself distinguishes it from ``স্কুল``, which it borrowed. Collapsing the two
+    # would destroy a distinction the roll took care to record.
+    Rule("school", ("বিদ্যালয়", "মহাবিদ্যালয়", "বিদ্যাপীঠ", "নিকেতন"), "vidyalaya"),
+    Rule("room", ("কোঠা",), "kotha"),
 )
 
 
@@ -120,9 +126,29 @@ def violations(native: str, roman: str) -> List[Rule]:
     return [rule for rule in RULES if rule.violated_by(native, roman)]
 
 
+def inconsistent(entries: Iterable[Tuple[str, str, str]]) -> Dict[str, List[str]]:
+    """Native strings that romanize two different ways. Empty result means clean.
+
+    The table's oldest property: a name means the same thing whichever column it was printed
+    in, so ``ডুমডুমা`` cannot be *Doom Dooma* as a post office and *Doomdooma* as a police
+    station. It lives here, with the other invariants, because it was previously enforced
+    only inside the anchoring run -- which meant hand-editing the shipped CSV, the entire
+    reason for shipping a table, could break it and ``check`` would still report success.
+    """
+    seen: Dict[str, set] = {}
+    for _, native, roman in entries:
+        if roman:
+            seen.setdefault(native, set()).add(roman)
+    return {native: sorted(romans) for native, romans in seen.items() if len(romans) > 1}
+
+
 def check(entries: Iterable[Tuple[str, str, str]]) -> List[str]:
     """Check a whole table of ``(field, native, roman)``. Empty result means clean."""
-    problems: List[str] = []
+    entries = list(entries)
+    problems: List[str] = [
+        f"{native!r} romanizes inconsistently across fields: {romans}"
+        for native, romans in sorted(inconsistent(entries).items())
+    ]
     for field, native, roman in entries:
         if leaked_native(roman):
             problems.append(

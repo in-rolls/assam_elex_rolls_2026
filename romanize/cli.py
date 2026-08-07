@@ -121,6 +121,22 @@ def cmd_fill(args: argparse.Namespace) -> int:
     return 0
 
 
+def _hand_checked(row) -> bool:
+    """Whether this row's romanization owes anything to a human.
+
+    Decides if a displaced spelling is worth keeping as a ``variant``. A value whose every
+    token came from the model is a guess, and a guess an authority overruled is not an
+    alternative spelling -- it is just wrong. One where a reviewer chose even part of the
+    wording is a real competing form and worth recording.
+    """
+    from .backends.indicxlit import DIGITS, SCRIPT_RUN
+
+    if row.is_manual:
+        return True
+    runs = SCRIPT_RUN.findall(row.native.translate(DIGITS))
+    return any(run in tokens.LEXICON for run in runs)
+
+
 def _scopes(rows, gaz):
     """The candidate list each value may be matched against, and why it is small.
 
@@ -162,7 +178,6 @@ def _scopes(rows, gaz):
 
 def cmd_anchor(args: argparse.Namespace) -> int:
     """Replace guessed spellings with official ones, wherever an official one can be found."""
-    import collections
     import csv as _csv
     import gzip as _gzip
     import json as _json
@@ -174,6 +189,13 @@ def cmd_anchor(args: argparse.Namespace) -> int:
     if not table:
         print(f"no table at {args.table}", file=sys.stderr)
         return 1
+    # Repair model artifacts *first*. Anchoring stores whatever it displaces, and doing this
+    # afterwards left 113 variants reading ``xingori`` and ``aamtola`` -- spellings this
+    # pipeline declares wrong, published as if they were alternatives.
+    table = {
+        key: (row if row.is_manual else lookup.replace(row, roman=normalize.repair(row.roman)))
+        for key, row in table.items()
+    }
 
     with _gzip.open(args.dataset, "rt", encoding="utf-8") as handle:
         rows = [_json.loads(line) for line in handle if line.strip()]
@@ -204,6 +226,7 @@ def cmd_anchor(args: argparse.Namespace) -> int:
     applied = confirmed = reviewed = 0
     out = []
     review_rows = []
+    official_rows = []
     for row in table.values():
         cands = candidates_for(row.field, row.native)
         found = anchor.match(row.native, cands, words, scope=row.field) if cands else None
@@ -211,10 +234,12 @@ def cmd_anchor(args: argparse.Namespace) -> int:
             official = anchor.apply(row.native, found.official, words)
             if official and official != row.roman:
                 applied += 1
-                out.append(lookup.adopt(row, official, args.authority))
+                new = lookup.adopt(row, official, args.authority, keep_variant=_hand_checked(row))
             else:
                 confirmed += 1
-                out.append(lookup.confirm(row, args.authority))
+                new = lookup.confirm(row, args.authority)
+            out.append(new)
+            official_rows.append((new, found.score))
             continue
         if found and found.needs_review:
             reviewed += 1
@@ -233,32 +258,29 @@ def cmd_anchor(args: argparse.Namespace) -> int:
     # -- so without this ডুমডুমা came out "Doom Dooma" as a post office and "Doomdooma" as a
     # police station, breaking the one property this table has always had: the same native
     # string romanizes the same way everywhere.
-    settled = {r.native: (r.roman, r.authority) for r in out if r.source == args.authority}
+    #
+    # Official rows are included rather than skipped. Skipping them meant two fields that
+    # anchored the same name differently could never be reconciled: the consistency check
+    # below would fire and the run would exit having written nothing, with no way out. The
+    # winner is chosen by scope strength, then by match score -- never by iteration order.
+    best_official: dict = {}
+    for row, score in official_rows:
+        rank = (anchor.scope_rank(row.field), -score, row.roman)
+        if row.native not in best_official or rank < best_official[row.native][0]:
+            best_official[row.native] = (rank, row.roman, row.authority)
     propagated = 0
     for index, row in enumerate(out):
-        found = settled.get(row.native)
-        if not found or row.source == args.authority or row.roman == found[0]:
+        found = best_official.get(row.native)
+        if not found or row.roman == found[1]:
             continue
-        out[index] = lookup.adopt(row, found[0], found[1])
+        out[index] = lookup.adopt(row, found[1], found[2], keep_variant=_hand_checked(row))
         propagated += 1
 
     problems = guards.check((r.field, r.native, r.roman) for r in out)
     if problems:
-        print(f"\nREFUSING TO WRITE: {len(problems)} translated entries", file=sys.stderr)
+        print(f"\nREFUSING TO WRITE: {len(problems)} problems", file=sys.stderr)
         for problem in problems[:10]:
             print(f"  {problem}", file=sys.stderr)
-        return 1
-
-    clashes = collections.defaultdict(set)
-    for row in out:
-        clashes[row.native].add(row.roman)
-    inconsistent = sum(1 for v in clashes.values() if len(v) > 1)
-    if inconsistent:
-        print(
-            f"\nREFUSING TO WRITE: {inconsistent} native strings romanize inconsistently "
-            f"across fields",
-            file=sys.stderr,
-        )
         return 1
 
     lookup.write(out, args.table)

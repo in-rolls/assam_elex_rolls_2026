@@ -57,6 +57,18 @@ REVIEW = 0.60
 #: Sentinel marking a core run the official name absorbed, so its separator can go too.
 DROPPED = "\x00"
 
+#: How much a field's scope is worth as evidence, strongest first. A post office matched
+#: against the offices under its own pincode is a near-certain identification; a village
+#: matched against those same office names is an inference. When one native string is
+#: anchored in two fields at once, this -- not dictionary iteration order -- decides.
+SCOPE_STRENGTH = ("post_office", "block", "district", "main_town_village")
+
+
+def scope_rank(field: str) -> int:
+    """Lower is stronger. Unknown scopes sort last."""
+    return SCOPE_STRENGTH.index(field) if field in SCOPE_STRENGTH else len(SCOPE_STRENGTH)
+
+
 #: Administrative vocabulary: everything that is *not* the name of the place.
 GENERIC_TOKENS = (
     frozenset(tokens.GENERIC)
@@ -155,8 +167,11 @@ def apply(native: str, official: str, words: Dict[str, Sequence[str]]) -> str:
 
     out = SCRIPT_RUN.sub(substitute, native.translate(DIGITS))
     # A dropped run leaves its joining punctuation behind: ``চিদলা-চৰাং`` would end up as
-    # ``Sidli-``. Take the separator with it.
+    # ``Sidli-``. Take the separator with it, and the brackets if it was parenthesised --
+    # ``সুখচৰ (ধুবুৰা)`` matched an office literally named "Sukchar (Dhubri)" and came out
+    # as ``Sukchar (Dhubri) ()``.
     out = re.sub(rf"[\s\-–—]*{DROPPED}", "", out)
+    out = re.sub(r"[([{]\s*[)\]}]", "", out)
     return normalize.trim(re.sub(r"\s{2,}", " ", out))
 
 

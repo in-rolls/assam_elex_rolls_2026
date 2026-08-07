@@ -22,13 +22,19 @@ lut[("district", "কোকৰাব্মাৰ")]        # -> 'Kokrajhar'
 | column | meaning |
 |---|---|
 | `roman` | the romanization to use |
-| `variant` | the spelling this one displaced, when an official source disagreed |
+| `variant` | a **competing spelling** an official source displaced — present on 568 rows |
 | `source` | how `roman` was produced |
 | `authority` | set when an official gazetteer produced **or independently confirmed** it |
 
 `authority` is worth reading separately from `source`. "Nobody has checked this" and "India
 Post spells it the same way" are very different claims, and only one of them is visible if
-agreement is recorded silently.
+agreement is recorded silently. **25.7% of row-weight** carries one.
+
+`variant` is only populated where the displaced spelling had a human behind it. An earlier
+version filled it from whatever happened to be there, so 617 of 1,186 variants were rejected
+machine guesses published as if they were alternative English spellings — 113 still carrying
+the `x`/`aa` artifacts this pipeline calls wrong. A guess an authority overruled is not a
+variant; it is in `out/indicxlit_words.json` for anyone who wants it.
 
 ## Why a table and not a model
 
@@ -94,21 +100,26 @@ a nearest match is meaningless.
 **25.7% of row-weight is now backed by an official source** — 1,186 values corrected and
 561 independently confirmed.
 
-### Where the threshold came from
+### Where the threshold came from, measured honestly
 
-Acceptance was swept against 643 values whose answer was already known by hand:
+A first version of this section swept the threshold and reported its score on **the same
+values it was chosen from** — an in-sample number presented as if it were a validation.
 
-| threshold | margin | applied | agrees with hand review |
-|--:|--:|--:|--:|
-| 0.85 | 0.00 | 420 | 86.9% |
-| 0.88 | 0.05 | 383 | 93.5% |
-| **0.90** | **0.05** | **379** | **94.5%** |
-| 0.92 | 0.05 | 369 | 97.0% |
+The split that was missing: gold restricted to values where every token is hand-checked
+(1,396 of them), shuffled, swept on half A, scored on **held-out half B**.
 
-0.90 is where the last *wrong place* disappears. At 0.85 the matcher confidently turned
-`ধমধমা` into **Nizdhamdhama** and `মধুপুৰ` into **Madhapur** — different places, applied
-without hesitation. Every disagreement surviving at 0.90 is the same place spelled
-differently, which is the point rather than a defect.
+| threshold | margin | A applied | A precision | B applied | **B precision** |
+|--:|--:|--:|--:|--:|--:|
+| 0.85 | 0.05 | 331 | 85.5% | 336 | 87.2% |
+| 0.88 | 0.05 | 302 | 93.4% | 310 | 94.2% |
+| **0.90** | **0.05** | **301** | **93.7%** | **305** | **95.7%** |
+| 0.92 | 0.05 | 291 | 96.9% | 301 | 97.0% |
+
+Held-out precision is *higher* than in-sample, so the threshold is not overfit — the
+**reporting** was. 0.90 is where the last *wrong place* disappears: at 0.85 the matcher
+confidently turned `ধমধমা` into **Nizdhamdhama** and `মধুপুৰ` into **Madhapur**, different
+places applied without hesitation. Every disagreement surviving at 0.90 is the same place
+spelled differently, which is the point rather than a defect.
 
 ### Official versus conventional
 
@@ -158,8 +169,8 @@ The table is complete. It is **not** fully reviewed, and the `source` column say
 |---|---|--:|--:|
 | `lexicon+indicxlit` | some tokens hand-checked, rest from the model | 33,121 | 21.2% |
 | `indicxlit` | model output, unreviewed | 7,027 | 15.6% |
-| `lexicon` | every token hand-checked | 4,748 | 43.3% |
-| `indiapost` | **matched to India Post's official name** | 1,186 | 5.7% |
+| `lexicon` | every token hand-checked | 4,749 | 43.4% |
+| `indiapost` | **matched to India Post's official name** | 1,185 | 5.6% |
 | `already-latin` | source already Latin, passed through | 524 | 0.8% |
 | `manual` | written by hand | 38 | 13.4% |
 
