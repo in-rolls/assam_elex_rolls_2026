@@ -18,6 +18,7 @@ byte-identical to what the pipeline wrote.
 | `parts.jsonl.gz` | 31,486 | **authoritative** — real integers, `null` distinct from `""`, sections nested per part |
 | `parts.csv.gz` | 31,486 | the same rows, flat, `utf-8-sig` so Excel renders Assamese |
 | `part_sections.csv.gz` | 47,290 | one row per numbered area, joins on `(ac_no, part_no)` |
+| `transliteration.csv.gz` | 2,817 | native → romanized lookup for the administrative fields ([details](docs/ROMANIZATION.md)) |
 | `report.json` | — | accuracy, overall and per language |
 | `SHA256SUMS` | — | check a download |
 

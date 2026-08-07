@@ -12,7 +12,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import guards, lookup, vocabulary
+from . import guards, lookup, tokens, vocabulary
 
 
 def cmd_vocab(args: argparse.Namespace) -> int:
@@ -33,6 +33,27 @@ def cmd_vocab(args: argparse.Namespace) -> int:
         )
     print(f"\n  {'TOTAL':20s} {len(entries):>9,d} distinct strings to transliterate")
     return 0
+
+
+def _provenance(entry, backend_name: str, roman: str) -> str:
+    """Which parts of this value a human has checked.
+
+    Recorded per row rather than per run, because the table is a mixture: districts are
+    written by hand, most values are the model's, and many are part one and part the other.
+    A reader deciding whether to trust ``Guwahati Paur Nigam (Ansh-1)`` needs to know that
+    every token in it was reviewed, while ``lokhyapur`` was not.
+    """
+    from .backends.indicxlit import DIGITS, SCRIPT_RUN
+
+    runs = SCRIPT_RUN.findall(entry.native.translate(DIGITS))
+    if not runs:
+        return "already-latin"
+    checked = sum(1 for run in runs if run in tokens.LEXICON)
+    if checked == len(runs):
+        return "lexicon"
+    if checked:
+        return f"lexicon+{backend_name}"
+    return backend_name
 
 
 def cmd_fill(args: argparse.Namespace) -> int:
@@ -57,6 +78,10 @@ def cmd_fill(args: argparse.Namespace) -> int:
         backend = IndicXlitBackend()
         print(f"running {backend.name} over {len(todo):,} strings in one isolated process...")
         words = backend.romanize_many((e.native, e.lang) for e in todo)
+        # Hand-checked tokens outrank the model everywhere they appear. Reviewing ৰাজহ
+        # once fixes every revenue circle; reviewing each value separately would not.
+        for native, roman in tokens.LEXICON.items():
+            words[native] = [roman]
         for entry in todo:
             roman = backend.join(entry.native, words)
             if not roman:
@@ -67,8 +92,7 @@ def cmd_fill(args: argparse.Namespace) -> int:
             # treating it as a miss left 40 of them permanently empty.
             if roman == entry.native and guards.NATIVE_SCRIPT.search(entry.native):
                 continue
-            source = backend.name if roman != entry.native else "already-latin"
-            filled[entry.key] = (roman, source)
+            filled[entry.key] = (roman, _provenance(entry, backend.name, roman))
     else:
         from .backends.aksharamukha import AksharamukhaBackend
 
