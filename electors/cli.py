@@ -52,9 +52,16 @@ def _one_part(args) -> Dict[str, Any]:
     summary = {
         "ac_no": result.ac_no,
         "part_no": result.part_no,
+        # The roll's own closing totals. Cached with the part, because they are what the
+        # extracted rows are measured against.
+        "summary_male": result.summary_male,
+        "summary_female": result.summary_female,
+        "summary_third": result.summary_third,
+        "summary_total": result.summary_total,
         "page_count": result.page_count,
         "elector_pages": result.elector_pages,
         "unknown_pages": result.unknown_pages,
+        "supplement_pages": result.supplement_pages,
         "error": result.error,
         "stage_version": extract.PIPELINE_VERSION,
         "cached": False,
@@ -87,6 +94,7 @@ def cmd_parse(args: argparse.Namespace) -> int:
     )
 
     rows: List[Dict[str, Any]] = []
+    results: List[Dict[str, Any]] = []
     failures: List[Dict[str, Any]] = []
     done = 0
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
@@ -96,6 +104,7 @@ def cmd_parse(args: argparse.Namespace) -> int:
             if result["error"] or result["unknown_pages"]:
                 failures.append(result)
             rows.extend(result["electors"])
+            results.append(result)
             # Every part, not every tenth. A run that prints only every tenth part gives no
             # sign of life for its first hour, which is exactly when you need to know
             # whether it is working or wedged.
@@ -111,7 +120,16 @@ def cmd_parse(args: argparse.Namespace) -> int:
         return 1
 
     totals = validate.load_part_totals()
-    checks = validate.reconcile(rows, totals)
+    roll_totals = {
+        (r["ac_no"], r["part_no"]): {
+            "total": r.get("summary_total"),
+            "male": r.get("summary_male"),
+            "female": r.get("summary_female"),
+        }
+        for r in results
+        if r.get("summary_total")
+    }
+    checks = validate.reconcile(rows, totals, roll_totals)
     summary = validate.summarize(checks, rows)
 
     path = output.write_shard(rows, ac_no, Path(args.out))
@@ -121,7 +139,8 @@ def cmd_parse(args: argparse.Namespace) -> int:
         {
             "rows": summary["rows"],
             "supplement_rows": summary["supplement_rows"],
-            "printed_minus_published_mean": summary["printed_minus_published_mean"],
+            "parts_matching_roll": summary["parts_matching_roll"],
+            "parts_measured": summary["parts_measured"],
             "male_share": summary["male_share"],
             "written_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         },
@@ -130,20 +149,28 @@ def cmd_parse(args: argparse.Namespace) -> int:
     print(f"\nwrote {path} ({entry['bytes'] / 1e6:.1f} MB)")
     print(f"rows: {summary['rows']:,} ({summary['supplement_rows']:,} from supplements)")
     print(
-        f"printed minus published net: mean {summary['printed_minus_published_mean']:+.1f} "
-        f"(sd {summary['printed_minus_published_sd']:.1f}) -- the publisher's net excludes "
-        f"deletions it does not reprint"
+        f"against the roll's own total: {summary['parts_matching_roll']}"
+        f"/{summary['parts_measured']} parts exact "
+        f"({summary['parts_matching_roll_rate']:.1%})"
     )
-    if summary["male_share"] is not None:
+    if summary["roll_male_share"] is not None:
         print(
             f"male share: {summary['male_share']:.1%} extracted vs "
-            f"{summary['published_male_share']:.1%} published"
+            f"{summary['roll_male_share']:.1%} on the roll's own summary"
         )
-    print(f"parts with serial gaps: {summary['parts_with_serial_gaps']}")
-    if summary["gap_outliers"]:
-        print(f"\n{len(summary['gap_outliers'])} parts well outside the usual gap:")
-        for o in summary["gap_outliers"][:10]:
-            print(f"   part {o['part_no']}: printed {o['printed']} vs published {o['published']}")
+    print(
+        f"rows whose OCR'd serial disagrees with its position: "
+        f"{summary['rows_with_serial_disagreement']:,}"
+    )
+    if summary["parts_unmeasured"]:
+        print(
+            f"{len(summary['parts_unmeasured'])} parts whose closing total could not be read "
+            f"(excluded, not guessed): {summary['parts_unmeasured'][:10]}"
+        )
+    if summary["roll_residuals"]:
+        print(f"\n{len(summary['roll_residuals'])} parts not matching their roll total:")
+        for r in summary["roll_residuals"][:10]:
+            print(f"   part {r['part_no']}: {r['rows']} rows vs {r['roll_total']} ({r['diff']:+d})")
     _print_fields(summary["fields"])
     if failures:
         print(f"\n{len(failures)} parts with unreadable pages or errors:")

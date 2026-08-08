@@ -316,11 +316,39 @@ class TestReconciliation:
         assert not checks[0].counts_match
         assert checks[0].shortfall == -30
 
-    def test_a_serial_gap_is_caught_even_when_the_count_is_right(self):
+    def test_the_serial_check_compares_ocr_against_position(self):
+        """The old check could not fail: serial_no is assigned by a counter, so it is 1..N
+        by construction. It reported "0 parts with serial gaps" and I quoted that as
+        evidence. What can disagree is the serial read off the page.
+        """
         rows = self.rows(10)
-        rows[5]["serial_no"] = 99
-        checks = validate.reconcile(rows, {(1, 1): {"total": 10}})
-        assert checks[0].counts_match and checks[0].serial_gaps
+        for r in rows:
+            r["serial_no_ocr"] = r["serial_no"]
+        assert validate.reconcile(rows, {})[0].serial_gaps == 0
+        rows[5]["serial_no_ocr"] = 99
+        assert validate.reconcile(rows, {})[0].serial_gaps == 1
+
+    def test_the_roll_total_is_the_target_not_the_info_page_net(self):
+        """Part 1 prints 873 and its closing page says 873; the info page says 850.
+
+        Measuring against the net made a correct extraction look 23 over.
+        """
+        rows = self.rows(873)
+        checks = validate.reconcile(
+            rows, {(1, 1): {"total": 850}}, {(1, 1): {"total": 873, "male": 453, "female": 420}}
+        )
+        assert checks[0].matches_roll and checks[0].roll_shortfall == 0
+        summary = validate.summarize(checks, rows)
+        assert summary["parts_matching_roll"] == 1
+        assert summary["parts_unmeasured"] == []
+
+    def test_a_part_whose_roll_total_is_unreadable_is_excluded_not_guessed(self):
+        rows = self.rows(600)
+        checks = validate.reconcile(rows, {(1, 1): {"total": 618}})
+        assert checks[0].matches_roll is None
+        summary = validate.summarize(checks, rows)
+        assert summary["parts_measured"] == 0
+        assert summary["parts_unmeasured"] == [1]
 
     def test_the_sex_ratio_is_reported_against_the_published_one(self):
         """A ratio catches what no count can: a matcher that skews the dataset.

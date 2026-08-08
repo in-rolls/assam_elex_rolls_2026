@@ -62,6 +62,20 @@ class PartCheck:
     female: int = 0
     serial_gaps: int = 0
     supplement_rows: int = 0
+    #: What the part's own closing page says its main list holds. ``None`` when unreadable.
+    roll_total: Optional[int] = None
+    roll_male: Optional[int] = None
+    roll_female: Optional[int] = None
+    main_rows: int = 0
+
+    @property
+    def matches_roll(self) -> Optional[bool]:
+        """Whether the main-roll rows equal the roll's own total. ``None`` if unmeasured."""
+        return None if self.roll_total is None else self.main_rows == self.roll_total
+
+    @property
+    def roll_shortfall(self) -> Optional[int]:
+        return None if self.roll_total is None else self.main_rows - self.roll_total
 
     @property
     def counts_match(self) -> bool:
@@ -102,7 +116,9 @@ def load_part_totals(path: Path = PARTS) -> Dict[tuple, Dict[str, Any]]:
 
 
 def reconcile(
-    rows: Sequence[Dict[str, Any]], totals: Dict[tuple, Dict[str, Any]]
+    rows: Sequence[Dict[str, Any]],
+    totals: Dict[tuple, Dict[str, Any]],
+    roll_totals: Optional[Dict[tuple, Dict[str, Any]]] = None,
 ) -> List[PartCheck]:
     """Compare what was extracted with what each part's info page published."""
     by_part: Dict[tuple, List[Dict[str, Any]]] = {}
@@ -113,17 +129,16 @@ def reconcile(
     for key, part_rows in sorted(by_part.items()):
         published = totals.get(key, {})
         sexes = Counter(r.get("sex") for r in part_rows)
-        # Serials restart per list, so gaps are counted within a list rather than across the
-        # part -- otherwise every supplement would register as one large false gap.
-        gaps = 0
-        for section in {r.get("roll_section") or "main" for r in part_rows}:
-            serials = sorted(
-                r["serial_no"]
-                for r in part_rows
-                if r.get("serial_no") and (r.get("roll_section") or "main") == section
-            )
-            gaps += sum(1 for a, b in zip(serials, serials[1:]) if b - a != 1)
-            gaps += 1 if serials and serials[0] != 1 else 0
+        # ``serial_no`` is assigned by a counter during extraction, so it is 1..N by
+        # construction and a gap in it is impossible. Checking it reported "0 parts with
+        # serial gaps" and I quoted that as evidence -- of nothing. What *can* disagree is
+        # the serial OCR'd off the page, so that is what is compared.
+        gaps = sum(
+            1
+            for r in part_rows
+            if r.get("serial_no_ocr") and r["serial_no_ocr"] != r.get("serial_no")
+        )
+        roll = (roll_totals or {}).get(key, {})
         checks.append(
             PartCheck(
                 ac_no=key[0],
@@ -138,6 +153,10 @@ def reconcile(
                 supplement_rows=sum(
                     1 for r in part_rows if (r.get("roll_section") or "main") != "main"
                 ),
+                main_rows=sum(1 for r in part_rows if (r.get("roll_section") or "main") == "main"),
+                roll_total=roll.get("total"),
+                roll_male=roll.get("male"),
+                roll_female=roll.get("female"),
             )
         )
     return checks
@@ -196,15 +215,40 @@ def summarize(checks: Sequence[PartCheck], rows: Sequence[Dict[str, Any]]) -> Di
         for c in checks
         if c.male_share is not None and c.expected_male_share is not None
     ]
+    measured = [c for c in checks if c.roll_total is not None]
+    exact = [c for c in measured if c.matches_roll]
+    roll_shares = [
+        (c.male_share, c.roll_male / (c.roll_male + c.roll_female))
+        for c in measured
+        if c.male_share is not None and c.roll_male and c.roll_female
+    ]
     return {
         "parts": len(checks),
         "rows": sum(c.extracted for c in checks),
         "supplement_rows": sum(c.supplement_rows for c in checks),
-        # Checkable from the data alone: numbering is intact.
-        "parts_with_serial_gaps": sum(1 for c in checks if c.serial_gaps),
+        # The real check: main-roll rows against the roll's own closing total.
+        "parts_measured": len(measured),
+        "parts_matching_roll": len(exact),
+        "parts_matching_roll_rate": len(exact) / max(1, len(measured)),
+        "roll_residuals": [
+            {
+                "part_no": c.part_no,
+                "rows": c.main_rows,
+                "roll_total": c.roll_total,
+                "diff": c.roll_shortfall,
+            }
+            for c in measured
+            if not c.matches_roll
+        ],
+        "parts_unmeasured": [c.part_no for c in checks if c.roll_total is None],
+        # Rows whose OCR'd serial disagrees with the position it was assigned.
+        "rows_with_serial_disagreement": sum(c.serial_gaps for c in checks),
         # A ratio, not a count -- this is what catches a biased field.
         "male_share": statistics.fmean(a for a, _ in shares) if shares else None,
         "published_male_share": statistics.fmean(b for _, b in shares) if shares else None,
+        # Against the roll's own male/female, which is the right denominator: the info page's
+        # net counts a different population.
+        "roll_male_share": statistics.fmean(b for _, b in roll_shares) if roll_shares else None,
         # The publisher's net differs from what it prints; reported, not treated as a target.
         "printed_minus_published_mean": round(mean, 1),
         "printed_minus_published_sd": round(sigma, 1),

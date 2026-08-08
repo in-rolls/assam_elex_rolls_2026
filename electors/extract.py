@@ -25,6 +25,7 @@ from PIL import Image
 from assam_rolls import ocr, render, schema
 
 from . import fields, grid, pages
+from . import summary as summary_page
 
 #: Everything downstream is calibrated to this. The boxes are ~1000px wide here, which is
 #: where the Assamese conjuncts in a name become legible; at 200 dpi they are not.
@@ -33,7 +34,8 @@ DPI = 400
 #: Bumped whenever extraction changes what a part yields, because the cache is keyed on it.
 #: 1.1.0 -- partial last pages, which draw no photo dividers, are no longer discarded whole.
 #: 1.2.0 -- supplement pages are labelled instead of merged into the main roll.
-PIPELINE_VERSION = "1.2.0"
+#: 1.3.0 -- the roll's own closing totals are read, so counts have a real target.
+PIPELINE_VERSION = "1.3.0"
 
 
 @dataclass
@@ -55,6 +57,13 @@ class PartResult:
     #: Pages whose header band could not be read as either. Worth a look: an unrecognised
     #: supplement would otherwise be counted as main-roll electors.
     unrecognised_headers: List[int] = field(default_factory=list)
+    #: What the closing page says this part contains -- the number the main-roll rows are
+    #: measured against. ``None`` when it could not be read, which is reported rather than
+    #: quietly replaced by the info page's (different) net.
+    summary_male: Optional[int] = None
+    summary_female: Optional[int] = None
+    summary_third: Optional[int] = None
+    summary_total: Optional[int] = None
     error: str = ""
 
     @property
@@ -106,6 +115,13 @@ def read_part(
                 if signature.kind is pages.PageKind.UNKNOWN:
                     result.unknown_pages.append(index)
                     continue
+                if signature.kind is pages.PageKind.SUMMARY and result.summary_total is None:
+                    found = summary_page.read(engine, image)
+                    if found:
+                        result.summary_male = found.male
+                        result.summary_female = found.female
+                        result.summary_third = found.third
+                        result.summary_total = found.total
                 if not signature.is_elector:
                     continue
 
