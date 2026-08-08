@@ -19,9 +19,14 @@ any other tuning here.
 
 **Bands are anchored on the age line, then ordered.** Matching every line by its label was
 tried first and failed on the house number: ``ঘৰ নং`` comes back as ``ছাৰ ন`` or ``হৰ ক্খত``,
-so it matched nothing and every house number came out empty. The age line survives almost any
-scan -- ``বয়স`` plus a two-digit number -- so it anchors the box, and the publisher's fixed
-order supplies the rest. Labels then confirm or correct rather than find.
+so it matched nothing and every house number came out empty. The last line anchors the box
+instead, and the publisher's fixed order supplies the rest.
+
+Finding *that* line is what the sex statistics turned on. Anchoring on ``বয়স`` or a plausible
+age left five boxes on one page with no age line at all, and **all five were male** -- their
+line read ``বৈবলমলস ' 2/ লঙ্গ ' পৰম``, label garbled and digits unreadable, so age and sex were
+both lost. That, not the sex matcher, was the 44.2% male share against the roll's own 50.8%.
+The ``লিঙ্গ`` label is the durable thing on that line, and it is searched for from the end.
 
 **The serial number is derived, not read.** It is small, sits alone in a wide strip, and OCR
 returns it for barely half the boxes even at three scales. But serials run consecutively
@@ -76,6 +81,11 @@ LABELS: Sequence[Tuple[str, str]] = (
 HOUSE_LABELS = ("ঘৰ নং", "ঘৰনং", "ঘর নং", "ঘৰ ন")
 AGE_LABEL = "বয়স"
 NAME_LABEL = "নাম"
+
+#: ``লিঙ্গ`` ("sex"), however badly it scanned. It survives as লঙ্গ, ল্গ, লল্গী, ললক -- always a
+#: ``ল`` and a ``গ``-like letter within a few characters -- and it is the most durable thing on
+#: the age line. ``বয়স`` is not: it comes back as বৈবলমলস, ়বৈলযস, ৈলৰযস.
+SEX_LABEL = re.compile(r"ল[\u0980-\u09FF]{0,3}[গকঙ]")
 
 #: Anything outside this is not a voter age and is recorded as missing.
 MIN_AGE, MAX_AGE = 18, 120
@@ -243,7 +253,17 @@ def sex_of(line: str) -> str:
 
 
 def _is_age_line(line: str) -> bool:
-    if AGE_LABEL in line:
+    """Whether this band is the age/sex line.
+
+    Recognising it mattered more than it looked. Requiring ``বয়স`` or a plausible age left
+    five boxes on one page with no age line at all -- and **all five were male**, because
+    their line read ``বৈবলমলস ' 2/ লঙ্গ ' পৰম``: the label garbled and the digits unreadable,
+    so neither test fired and both the age *and* the sex were lost. That is the whole of the
+    44.2% male share against the roll's own 50.8%; it was never the sex matcher.
+
+    So the ``লিঙ্গ`` label counts too. It is the most durable thing on the line.
+    """
+    if AGE_LABEL in line or SEX_LABEL.search(line):
         return True
     digits = re.findall(r"\d{1,3}", schema.normalize_digits(line))
     return any(MIN_AGE <= int(d) <= MAX_AGE for d in digits) and bool(sex_of(line))
@@ -266,7 +286,10 @@ def assign_bands(lines: Sequence[str]) -> Dict[str, str]:
         return {}
     out: Dict[str, str] = {}
 
-    age_index = next((i for i, line in enumerate(lines) if _is_age_line(line)), None)
+    # Searched from the **end**: the age line is always last, and a widened test can match a
+    # name that happens to contain the same letters. Taking the last match cannot be fooled
+    # by a line above it.
+    age_index = next((i for i in range(len(lines) - 1, -1, -1) if _is_age_line(lines[i])), None)
     if age_index is not None:
         out["age"] = lines[age_index]
         above = lines[:age_index]

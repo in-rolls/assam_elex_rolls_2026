@@ -35,7 +35,8 @@ DPI = 400
 #: 1.1.0 -- partial last pages, which draw no photo dividers, are no longer discarded whole.
 #: 1.2.0 -- supplement pages are labelled instead of merged into the main roll.
 #: 1.3.0 -- the roll's own closing totals are read, so counts have a real target.
-PIPELINE_VERSION = "1.3.0"
+#: 1.4.0 -- the age line is found by its লিঙ্গ label, recovering the male rows it dropped.
+PIPELINE_VERSION = "1.4.0"
 
 
 @dataclass

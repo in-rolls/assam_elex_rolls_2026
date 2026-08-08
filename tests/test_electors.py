@@ -155,6 +155,33 @@ class TestFieldParsing:
         assert fields.sex_of("নাম : খাদৰাম ৰাভা") == ""
         assert fields.sex_of("") == ""
 
+    def test_a_garbled_age_line_is_still_found_by_its_sex_label(self):
+        """The whole sex bias lived here, not in the sex matcher.
+
+        Five boxes on one page had no age line identified and all five were male: their line
+        read ``বৈবলমলস ' 2/ লঙ্গ ' পৰম`` -- বয়স garbled, digits unreadable -- so age and sex
+        were both lost. লিঙ্গ survives where বয়স does not.
+        """
+        for line in (
+            "বৈবলমলস ‘*2/ লঙ্গ ‘ পৰম",
+            "বৈবযস * ৫48ক8 [লল্গী ‘' পৰম",
+            "বৈবলমস ‘*2/ [ল্গ ‘' পৰম",
+        ):
+            assert fields._is_age_line(line), line
+            assert fields.sex_of(line) == "M", line
+
+    def test_a_name_line_is_not_mistaken_for_the_age_line(self):
+        """The widened test must not let a name hijack the anchor."""
+        assert not fields._is_age_line("নাম * দিপক নাজাখৰা 0")
+        assert not fields._is_age_line("পতাৰ নাম‘ কামৰাজ নাজাৰা")
+
+    def test_the_age_line_is_taken_from_the_end(self):
+        """It is always last; searching from the front lets a widened match win too early."""
+        assigned = fields.assign_bands(
+            ["নাম ' লগন বৰুৱা", "পতাৰ নাম' গংগাৰাম", "ছাৰ ন ' 21", "বয়স ' 46 লঙ্গ ' পৰষ"]
+        )
+        assert "46" in assigned["age"]
+
     def test_a_one_character_tail_does_not_raise(self):
         """``range(2, 2)`` is empty and ``max()`` raised, killing the whole part.
 
