@@ -455,7 +455,7 @@ def read_page(
         if box in second_by_box:
             lines_by_box[box][1].append(second_by_box[box])
 
-    out: List[Tuple[grid.Box, Elector]] = []
+    out: List[Tuple[grid.Box, Elector, Reads]] = []
     for position, box in enumerate(live):
         reads = Reads(
             lines=lines_by_box[box][0],
@@ -472,6 +472,26 @@ def read_page(
 NON_ALNUM = re.compile(r"[^A-Za-z0-9]")
 
 
+def second_name(first: Sequence[str], second: Sequence[str], assigned: Dict[str, str]) -> str:
+    """The second scale's reading of the name, when it read the same band.
+
+    The second pass reads only the box's **topmost** band. Where the name did not come from
+    that band there is no second opinion on it, and comparing anyway would report the name
+    line disagreeing with the relation line on every row.
+
+    This exists because the obvious version -- running the one-line second read back through
+    :func:`assign_bands` -- silently produced nothing. A single line lands in ``house`` there,
+    so the second reading of the name was always empty, ``consensus`` always saw one value,
+    and the disagreement flag it feeds was raised **zero times in 10,245 rows**. A scale-3
+    pass over every name crop was being computed and discarded.
+    """
+    if not second or not first:
+        return ""
+    if assigned.get("name") != first[0]:
+        return ""
+    return value_after(second[0], NAME_LABEL)
+
+
 def assemble(lines: Tuple[List[str], List[str]], epic_read: str, serial_read: str) -> Elector:
     """Build one elector from its text lines, its EPIC strip and its serial strip.
 
@@ -479,11 +499,17 @@ def assemble(lines: Tuple[List[str], List[str]], epic_read: str, serial_read: st
     re-reading the PDF. Everything between the OCR and the output row lives here, so a replay
     that calls this cannot drift from what the pipeline does.
     """
+    first_lines, second_lines = lines
     assigned = [assign_bands(scale_lines) for scale_lines in lines]
     elector = Elector()
 
     elector.name, agreed = consensus([value_after(a.get("name", ""), NAME_LABEL) for a in assigned])
     if not agreed:
+        elector.flags.append("name_disagreement")
+    if second_name(first_lines, second_lines, assigned[0]) not in ("", elector.name):
+        # The second scale read the same band differently. Flagged rather than resolved: the
+        # two are equally entitled to be right and picking one silently is how a plausible
+        # wrong name gets published as fact.
         elector.flags.append("name_disagreement")
 
     relations = [relation_of(a.get("relation", "")) for a in assigned]

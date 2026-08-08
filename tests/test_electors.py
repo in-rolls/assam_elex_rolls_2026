@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import random
 
-from electors import bench, diagnose, fields, grid, pages, quality, replay, validate
+from electors import bench, diagnose, escalate, fields, grid, pages, quality, replay, validate
 
 #: One real elector page from part 1, at 400 dpi. Vertical rules come in clusters because
 #: adjacent boxes share a border; the extras at 749, 1189 ... are the internal rule some
@@ -699,3 +699,92 @@ class TestReplay:
         assert len(rows) == 1
         assert rows[0]["name"] and rows[0]["box_col"] == 1
         assert replay.cached_parts(tmp_path) == [13]
+
+
+class TestEscalation:
+    """The router decides what the expensive pass reads, so it is measured before it is used."""
+
+    CLEAN = {
+        "epic_no": "HHK0001471",
+        "name": "খাদৰাম ৰাভা",
+        "relation_name": "গংগাৰাম ৰাভা",
+        "age": 35,
+        "sex": "M",
+        "flags": "",
+    }
+
+    def test_a_clean_row_is_not_escalated(self):
+        assert not escalate.needs_escalation(dict(self.CLEAN))
+
+    def test_a_provably_wrong_row_is_escalated(self):
+        row = dict(self.CLEAN, name="গংগাৰাম ৰাভা")
+        assert "name_equals_relation" in escalate.certain(row)
+        assert escalate.needs_escalation(row)
+
+    def test_disagreement_alone_is_enough_to_doubt_a_row(self):
+        """Nothing here is known to be wrong -- the two upscales just did not agree."""
+        row = dict(self.CLEAN, flags="name_disagreement")
+        assert escalate.certain(row) == []
+        assert escalate.doubtful(row) == ["name_disagreement"]
+        assert escalate.needs_escalation(row)
+
+    def test_one_missing_field_is_not_enough(self):
+        """A blank box is the publisher's doing; two missing core fields is a broken read."""
+        assert escalate.missing_core(dict(self.CLEAN, age=None)) == []
+        assert escalate.missing_core(dict(self.CLEAN, age=None, sex="")) != []
+
+    def test_volume_is_reported_because_it_bounds_the_second_pass_cost(self):
+        rows = [dict(self.CLEAN) for _ in range(9)] + [dict(self.CLEAN, name="গংগাৰাম ৰাভা")]
+        found = escalate.report(rows)
+        assert found.flagged == 1 and found.volume == 0.1
+
+    def test_a_router_that_flags_at_random_scores_no_better_than_chance(self):
+        """The check that makes the router falsifiable.
+
+        Scoring precision against the floor detectors could only ever return 100%, because
+        they are half the router. This compares agreement on flagged rows against agreement
+        on unflagged ones, which a useless router cannot win.
+        """
+        cheap = [dict(self.CLEAN, flags="name_disagreement" if i % 2 else "") for i in range(20)]
+        # The second engine disagrees on every other row, uncorrelated with the flag.
+        expensive = [dict(r, name="অন্য নাম" if i % 3 else r["name"]) for i, r in enumerate(cheap)]
+        scored = escalate.agreement_against(cheap, expensive)
+        assert 0.5 < scored["flagged_agreement_ratio"]["name"] < 1.6
+
+    def test_a_router_that_finds_real_trouble_scores_below_one(self):
+        cheap = [dict(self.CLEAN, flags="name_disagreement" if i < 10 else "") for i in range(20)]
+        # The second engine disagrees only where the router flagged.
+        expensive = [dict(r, name="অন্য নাম" if i < 10 else r["name"]) for i, r in enumerate(cheap)]
+        scored = escalate.agreement_against(cheap, expensive)
+        assert scored["flagged_agreement_ratio"]["name"] == 0.0
+
+
+class TestNameConsensus:
+    """The second scale must be able to disagree, or it is a check that cannot fail."""
+
+    LINES = [
+        "নাম : খাদৰাম ৰাভা",
+        "পিতাৰ নাম : গংগাৰাম ৰাভা",
+        "ঘৰ নং : 5",
+        "বয়স : 35 লিঙ্গ : পুৰুষ",
+    ]
+
+    def test_the_second_scale_reading_the_same_band_differently_is_flagged(self):
+        """Under the previous version this flag was raised zero times in 10,245 rows.
+
+        The one-line second read was passed through assign_bands, where a single line lands
+        in ``house`` -- so the second reading of the *name* was always empty, consensus always
+        saw one value, and a full scale-3 pass over every name crop was computed and discarded.
+        """
+        elector = fields.assemble((self.LINES, ["নাম : খাদৰম ৰাভা"]), "HHK0001471", "106")
+        assert "name_disagreement" in elector.flags
+
+    def test_agreement_is_not_flagged(self):
+        elector = fields.assemble((self.LINES, ["নাম : খাদৰাম ৰাভা"]), "HHK0001471", "106")
+        assert elector.flags == []
+
+    def test_no_second_opinion_when_the_name_did_not_come_from_the_top_band(self):
+        """Comparing anyway would report the name line disagreeing with the relation line."""
+        shifted = self.LINES[1:]
+        assigned = fields.assign_bands(shifted)
+        assert fields.second_name(shifted, ["নাম : খাদৰাম ৰাভা"], assigned) == ""

@@ -36,7 +36,11 @@ DPI = 400
 #: 1.2.0 -- supplement pages are labelled instead of merged into the main roll.
 #: 1.3.0 -- the roll's own closing totals are read, so counts have a real target.
 #: 1.4.0 -- the age line is found by its লিঙ্গ label, recovering the male rows it dropped.
-PIPELINE_VERSION = "1.4.0"
+#: 1.5.0 -- the name consensus compares the two scales on the *same band*, so it can disagree.
+#:          Bumped despite the cost of discarding 10,245 cached rows: the flag it feeds was
+#:          raised zero times under 1.4.0, and a cache mixing the two would report a
+#:          disagreement rate that is part real and part an artefact of when a part was read.
+PIPELINE_VERSION = "1.5.0"
 
 
 @dataclass

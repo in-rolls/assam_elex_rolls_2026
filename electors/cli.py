@@ -413,6 +413,23 @@ def cmd_replay(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_escalate(args: argparse.Namespace) -> int:
+    """How many rows the cheap pass wants a second opinion on, and why."""
+    from . import escalate
+
+    if args.replay:
+        parts = list(args.parts) if args.parts else replay.cached_parts(ac=args.ac)
+        rows = replay.replay_parts(parts, ac=args.ac)
+    else:
+        rows, _ = _cached(Path(args.cache), args.ac)
+    if not rows:
+        print("no rows: run `parse`, `quality` or `capture` first", file=sys.stderr)
+        return 1
+
+    print(escalate.report(rows))
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     rows = output.read_shard(Path(args.shard))
     checks = validate.reconcile(rows, validate.load_part_totals())
@@ -467,6 +484,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_replay.add_argument("--ac", type=int, default=1)
     p_replay.add_argument("--diagnose", action="store_true")
     p_replay.set_defaults(func=cmd_replay)
+
+    p_esc = sub.add_parser("escalate", help="which rows want a second, more expensive read")
+    p_esc.add_argument("--cache", default="out/cache/electors")
+    p_esc.add_argument("--ac", type=int, default=1)
+    p_esc.add_argument("--parts", type=int, nargs="*")
+    p_esc.add_argument("--replay", action="store_true", help="source rows from the line cache")
+    p_esc.set_defaults(func=cmd_escalate)
 
     p_report = sub.add_parser("report", help="reconcile a shard against the info pages")
     p_report.add_argument("shard")

@@ -124,7 +124,7 @@ def parse_box(box: BoxLines, serial: int) -> Dict[str, Any]:
         "house_no": elector.house_no,
         "age": elector.age,
         "sex": elector.sex,
-        "flags": ";".join(elector.flags),
+        "flags": ",".join(elector.flags),
         "box_col": box.col,
         "box_row": box.row,
         "page_no": box.page,

@@ -1,0 +1,11 @@
+{
+  "1": {
+    "file": "AC001.parquet",
+    "bytes": 93538,
+    "sha256": "14621ddb08a4151a2b8c82bd98a4acac0bea19eab09399b1434e9e521bef564b",
+    "rows": 2550,
+    "expected": 2573,
+    "parts_exact_rate": 0.0,
+    "written_at": "2026-08-08T03:58:13+00:00"
+  }
+}

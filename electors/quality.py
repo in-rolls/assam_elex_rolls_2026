@@ -49,7 +49,7 @@ MIN_AGE, MAX_AGE = 18, 120
 MIN_NAME, MAX_NAME = 2, 60
 
 
-def _is_definitely_wrong(row: Dict[str, Any]) -> List[str]:
+def problems_with(row: Dict[str, Any]) -> List[str]:
     """Every way this row is certainly wrong, whatever the source says."""
     problems: List[str] = []
     name = row.get("name") or ""
@@ -80,7 +80,7 @@ def definite_errors(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     kinds: Counter = Counter()
     affected = 0
     for row in rows:
-        problems = _is_definitely_wrong(row)
+        problems = problems_with(row)
         if problems:
             affected += 1
             kinds.update(problems)
@@ -160,7 +160,7 @@ def sound_rates(rows: Sequence[Dict[str, Any]]) -> Dict[str, float]:
         for row in rows:
             if not row.get(field):
                 continue
-            problems = _is_definitely_wrong(row)
+            problems = problems_with(row)
             if not any(field.split("_")[0] in problem for problem in problems):
                 good += 1
         out[f"{field}_sound"] = good / total
