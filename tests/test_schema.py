@@ -11,6 +11,7 @@ class TestParseSourceFilename:
             "2026-EROLLGEN-S03-100-FinalRoll-Revision1-ASM-45-WI_INFO.pdf"
         )
         assert parsed == {
+            "info_pages": True,
             "year": 2026,
             "state": "S03",
             "ac_no": 100,
@@ -19,6 +20,21 @@ class TestParseSourceFilename:
             "revision": 1,
             "lang": "ASM",
         }
+
+    def test_the_roll_pdf_parses_too_and_that_is_the_join(self):
+        """The roll and its info pages differ only by the ``_INFO`` suffix.
+
+        The pattern used to require it, so every elector-roll PDF parsed to ``None``. Making
+        it optional is what lets the elector rows key onto the part rows for free.
+        """
+        info = schema.parse_source_filename(
+            "2026-EROLLGEN-S03-100-FinalRoll-Revision1-ASM-45-WI_INFO.pdf"
+        )
+        roll = schema.parse_source_filename(
+            "2026-EROLLGEN-S03-100-FinalRoll-Revision1-ASM-45-WI.pdf"
+        )
+        assert roll is not None and not roll["info_pages"]
+        assert (roll["ac_no"], roll["part_no"]) == (info["ac_no"], info["part_no"])
 
     def test_single_digit_ac_and_part(self):
         parsed = schema.parse_source_filename(

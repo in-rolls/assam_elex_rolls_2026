@@ -10,13 +10,13 @@ install: .venv
 	$(PIP) -e ".[dev]"
 
 fmt:
-	$(PY) -m black assam_rolls romanize tests
-	$(PY) -m isort assam_rolls romanize tests
+	$(PY) -m black assam_rolls romanize electors tests
+	$(PY) -m isort assam_rolls romanize electors tests
 
 lint:
-	$(PY) -m black --check assam_rolls romanize tests
-	$(PY) -m isort --check-only assam_rolls romanize tests
-	$(PY) -m flake8 assam_rolls romanize tests
+	$(PY) -m black --check assam_rolls romanize electors tests
+	$(PY) -m isort --check-only assam_rolls romanize electors tests
+	$(PY) -m flake8 assam_rolls romanize electors tests
 
 test:
 	$(PY) -m pytest -q
@@ -28,9 +28,9 @@ ci-docker:
 	docker run --rm -v "$(CURDIR)":/w -w /w python:3.12 bash -c "\
 		apt-get update -qq && apt-get install -y -qq poppler-utils >/dev/null && \
 		pip install -q -e '.[dev]' && \
-		black --check assam_rolls romanize tests && \
-		isort --check-only assam_rolls romanize tests && \
-		flake8 assam_rolls romanize tests && \
+		black --check assam_rolls romanize electors tests && \
+		isort --check-only assam_rolls romanize electors tests && \
+		flake8 assam_rolls romanize electors tests && \
 		pytest -q"
 
 render:

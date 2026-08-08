@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 SOURCE_FILENAME_RE = re.compile(
     r"^(?P<year>\d{4})-EROLLGEN-(?P<state>S\d{2})-(?P<ac_no>\d+)-"
     r"(?P<roll_type>[A-Za-z]+)-Revision(?P<revision>\d+)-"
-    r"(?P<lang>[A-Z]+)-(?P<part_no>\d+)-WI_INFO\.pdf$"
+    r"(?P<lang>[A-Z]+)-(?P<part_no>\d+)-WI(?P<info>_INFO)?\.pdf$"
 )
 
 STATE_CODE = "S03"
@@ -52,6 +52,9 @@ def parse_source_filename(filename: str) -> Optional[Dict[str, Any]]:
         return None
     fields = match.groupdict()
     return {
+        # The roll PDF and its info pages differ only by this suffix, which is what makes
+        # the elector rows join to the part rows for free on (ac_no, part_no).
+        "info_pages": bool(fields["info"]),
         "year": int(fields["year"]),
         "state": fields["state"],
         "ac_no": int(fields["ac_no"]),

@@ -34,6 +34,7 @@ class TestFilenameProvenance:
     def test_every_filename_field_is_recovered(self):
         parsed = schema.parse_source_filename(sample_ref().pdf_name)
         assert parsed == {
+            "info_pages": True,
             "year": 2026,
             "state": "S03",
             "ac_no": 100,
