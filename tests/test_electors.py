@@ -820,3 +820,42 @@ class TestDiagnosingWrongValues:
         found = diagnose.associations(rows, features=("box_col",))
         hit = next(a for a in found if a.failure == "name_equals_relation")
         assert hit.value == 0 and hit.rate == 1.0
+
+
+class TestDerivedFeatures:
+    """`diffuse` is a claim about the feature set, not about the data."""
+
+    def _part(self, pages, per_page=3, part=5):
+        rows = []
+        for page in pages:
+            for box_row in range(per_page):
+                rows.append({"ac_no": 1, "part_no": part, "page_no": page, "box_row": box_row})
+        return rows
+
+    def test_first_and_last_pages_are_distinguished_from_the_middle(self):
+        found = diagnose.derive_features(self._part([3, 4, 5]))
+        positions = {(r["page_no"], r["page_position"]) for r in found}
+        assert positions == {(3, "first"), (4, "middle"), (5, "last")}
+
+    def test_the_bottom_row_of_each_page_is_marked(self):
+        found = diagnose.derive_features(self._part([3], per_page=4))
+        assert [r["in_last_row"] for r in found] == [False, False, False, True]
+
+    def test_a_cause_invisible_to_the_base_features_is_found_by_the_derived_ones(self):
+        """Without page_position this failure looks evenly spread and routes to escalation.
+
+        Routing it there quietly buys a second OCR pass for something a geometry fix solves,
+        which is why the thinness of the feature set is a correctness concern and not a
+        matter of taste.
+        """
+        # Four parts, so the first-page slice clears MIN_SUPPORT. A slice below it is not
+        # reported at all, which is the intended behaviour: a rate over five rows is noise.
+        rows = [r for part in range(1, 5) for r in self._part([1, 2, 3, 4, 5], 10, part)]
+        enriched = diagnose.derive_features(rows)
+        for row in enriched:
+            row["name"] = "" if row["page_position"] == "first" else "খাদৰাম"
+        blind = diagnose.associations(enriched, features=("box_col", "box_row"))
+        assert not [a for a in blind if a.failure == "no_name"]
+        seeing = diagnose.associations(enriched, features=("page_position",))
+        hit = next(a for a in seeing if a.failure == "no_name")
+        assert hit.value == "first" and hit.rate == 1.0

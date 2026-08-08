@@ -272,6 +272,7 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
     from . import diagnose
 
     rows, _ = _cached(Path(args.cache), args.ac)
+    rows = diagnose.derive_features(rows)
     if not rows:
         print(
             f"no cached parts under {args.cache}; run `quality` or `parse` first", file=sys.stderr

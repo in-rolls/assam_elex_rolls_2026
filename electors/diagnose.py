@@ -31,7 +31,66 @@ from . import quality
 
 #: Row attributes cheap to compute and plausibly causal. Spatial ones matter most: a crop
 #: bug shows up as a column or row effect and nothing else.
-FEATURES: Sequence[str] = ("box_col", "box_row", "roll_section", "lang", "relation_type")
+#:
+#: The derived ones exist because *diffuse* is a claim about the feature set, not about the
+#: data. Reporting a failure as diffuse routes it to the expensive pass, so a feature set too
+#: thin to see the cause quietly buys a second OCR run for something a crop fix would have
+#: solved. These say where a box sat in its part and its page, which is what a partial page or
+#: a shifted band looks like.
+FEATURES: Sequence[str] = (
+    "box_col",
+    "box_row",
+    "roll_section",
+    "lang",
+    "relation_type",
+    "page_position",
+    "in_last_row",
+)
+
+
+def derive_features(rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Add positional features that need the whole part to compute.
+
+    ``page_position`` distinguishes the first and last elector page of a part from the middle
+    ones; the last page is the partial one, whose geometry differs. ``in_last_row`` marks the
+    bottom row of its page, where a band that has drifted downwards runs out of box.
+    """
+    pages: Dict[Any, List[int]] = defaultdict(list)
+    rows_per_page: Dict[Any, int] = {}
+    for row in rows:
+        key = (row.get("ac_no"), row.get("part_no"))
+        page = row.get("page_no")
+        if page is not None:
+            pages[key].append(page)
+        page_key = (key, page)
+        box_row = row.get("box_row")
+        if box_row is not None:
+            rows_per_page[page_key] = max(rows_per_page.get(page_key, 0), box_row)
+
+    span = {key: (min(seen), max(seen)) for key, seen in pages.items()}
+    out = []
+    for row in rows:
+        key = (row.get("ac_no"), row.get("part_no"))
+        page = row.get("page_no")
+        first, last = span.get(key, (None, None))
+        if page is None or first is None:
+            position = "unknown"
+        elif page == first:
+            position = "first"
+        elif page == last:
+            position = "last"
+        else:
+            position = "middle"
+        bottom = rows_per_page.get((key, page))
+        out.append(
+            dict(
+                row,
+                page_position=position,
+                in_last_row=bottom is not None and row.get("box_row") == bottom,
+            )
+        )
+    return out
+
 
 #: A feature value has to cover at least this many rows before its rate means anything.
 MIN_SUPPORT = 30
@@ -166,6 +225,20 @@ PROPOSALS: Sequence[Tuple[str, str, str]] = (
         "*",
         "Supplement pages differ in layout from the main roll (they draw no photo divider). "
         "Check that the geometry derived for the main roll still holds there.",
+    ),
+    (
+        "page_position",
+        "*",
+        "The first and last elector pages of a part are structurally different: the first "
+        "carries a header band above the grid, the last is partial and draws no photo "
+        "dividers. A failure concentrating on either is a geometry problem on that page "
+        "shape, not a recognition problem.",
+    ),
+    (
+        "in_last_row",
+        "*",
+        "The bottom row is where a band that has drifted downwards runs out of box. Compare "
+        "the row bands on the affected pages against the page's own rule positions.",
     ),
     (
         "relation_type",

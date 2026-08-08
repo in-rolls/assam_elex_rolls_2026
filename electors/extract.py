@@ -173,7 +173,7 @@ def read_part(
                             replay.BoxLines(
                                 page=index,
                                 section=section.value,
-                                col=box.col,
+                                col=box.column,
                                 row=box.row,
                                 lines=list(reads.lines),
                                 name_second=list(reads.name_second),

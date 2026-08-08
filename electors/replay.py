@@ -108,7 +108,7 @@ def cached_parts(root: Path = CACHE_DIR, ac: int = 1) -> List[int]:
     return sorted(found)
 
 
-def parse_box(box: BoxLines, serial: int) -> Dict[str, Any]:
+def parse_box(box: BoxLines, serial: int, ac: int = 0, part: int = 0) -> Dict[str, Any]:
     """One elector, parsed from cached text by whatever the field code says today.
 
     Calls :func:`fields.assemble` -- the pipeline's own assembler -- rather than
@@ -116,6 +116,11 @@ def parse_box(box: BoxLines, serial: int) -> Dict[str, Any]:
     """
     elector = fields.assemble((box.lines, box.name_second), box.epic_raw, box.serial_raw)
     return {
+        # Carried so replayed rows can be reconciled against the roll's own closing totals.
+        # Without them the two ground-truth guards are absent from every replay-based gate,
+        # and a metric the gate cannot find is one that passes by not being measured.
+        "ac_no": ac,
+        "part_no": part,
         "serial_no": serial,
         "epic_no": elector.epic_no,
         "name": elector.name,
@@ -135,7 +140,10 @@ def parse_box(box: BoxLines, serial: int) -> Dict[str, Any]:
 
 def replay(captured: PartLines) -> List[Dict[str, Any]]:
     """Every elector in a part, re-parsed from cached text."""
-    return [parse_box(box, serial) for serial, box in enumerate(captured.boxes, start=1)]
+    return [
+        parse_box(box, serial, captured.ac, captured.part)
+        for serial, box in enumerate(captured.boxes, start=1)
+    ]
 
 
 def replay_parts(parts: Sequence[int], ac: int = 1, root: Path = CACHE_DIR) -> List[Dict[str, Any]]:
