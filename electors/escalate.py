@@ -45,6 +45,23 @@ def doubtful(row: Dict[str, Any]) -> List[str]:
     return [flag for flag in DOUBT_FLAGS if flag in flags]
 
 
+def unlabelled_relation(row: Dict[str, Any]) -> List[str]:
+    """A relation value whose label was never recognised -- so it may be the elector's own.
+
+    Not a floor detector: a genuinely unreadable label produces this too, and the value is
+    usually right. It earns a place because of how it fails when it is wrong. When the label
+    is missed, the relation line can be filed as the *name* and the name line as the relation,
+    and the fallback then fills ``relation_name`` with the elector's own name. Both fields
+    come out populated and plausible, so nothing in the floor catches it and ``name`` never
+    equals ``relation`` -- the swap is invisible to every check that exists.
+
+    ``relation_type`` empty beside a populated ``relation_name`` is the one visible trace.
+    """
+    if row.get("relation_name") and not row.get("relation_type"):
+        return ["relation_type_unknown"]
+    return []
+
+
 def missing_core(row: Dict[str, Any]) -> List[str]:
     """Fields absent that the row plainly ought to have.
 
@@ -57,7 +74,7 @@ def missing_core(row: Dict[str, Any]) -> List[str]:
 
 
 def reasons(row: Dict[str, Any]) -> List[str]:
-    return certain(row) + doubtful(row) + missing_core(row)
+    return certain(row) + doubtful(row) + unlabelled_relation(row) + missing_core(row)
 
 
 def needs_escalation(row: Dict[str, Any]) -> bool:
@@ -105,7 +122,12 @@ class RouterReport:
 
 def report(rows: Sequence[Dict[str, Any]]) -> RouterReport:
     """Volume and composition -- everything establishable without a second engine."""
-    families = {"certain": certain, "doubtful": doubtful, "missing": missing_core}
+    families = {
+        "certain": certain,
+        "doubtful": doubtful,
+        "unlabelled": unlabelled_relation,
+        "missing": missing_core,
+    }
     hits: Dict[str, Set[int]] = {name: set() for name in families}
     reason_counts: Dict[str, int] = {}
 

@@ -4,8 +4,13 @@ Extracts the per-part **info pages** of the Assam 2026 Final Electoral Roll into
 tidy, part-level dataset: polling station, locality, and elector counts for every part
 in every assembly constituency.
 
-These are **not** the elector lists. Each part's roll opens with a two-page cover sheet
-describing the polling station; this repository parses that cover sheet.
+Each part's roll opens with a two-page cover sheet describing the polling station, and this
+dataset is that cover sheet, parsed for every part.
+
+The elector lists behind those cover sheets are handled by a second stage, `electors`, which
+is **in progress and has no published dataset yet** — see [docs/ELECTORS.md](docs/ELECTORS.md)
+for how it reads the grid, what is measured, and what is not. Its rows join to the tables here
+on `(ac_no, part_no)`.
 
 ## Get the data
 

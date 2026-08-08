@@ -708,6 +708,7 @@ class TestEscalation:
         "epic_no": "HHK0001471",
         "name": "খাদৰাম ৰাভা",
         "relation_name": "গংগাৰাম ৰাভা",
+        "relation_type": "father",
         "age": 35,
         "sex": "M",
         "flags": "",
@@ -859,3 +860,20 @@ class TestDerivedFeatures:
         seeing = diagnose.associations(enriched, features=("page_position",))
         hit = next(a for a in seeing if a.failure == "no_name")
         assert hit.value == "first" and hit.rate == 1.0
+
+
+class TestSwapDetection:
+    """A swapped name and relation is populated, plausible, and invisible to the floor."""
+
+    def test_a_relation_without_a_recognised_label_is_doubted(self):
+        row = {"name": "হুলশা নাজাৰা", "relation_name": "খাদৰাম ৰাভা", "relation_type": ""}
+        assert escalate.certain(row) == [], "nothing here is provably wrong -- that is the point"
+        assert escalate.unlabelled_relation(row) == ["relation_type_unknown"]
+        assert escalate.needs_escalation(row)
+
+    def test_a_labelled_relation_is_not_doubted(self):
+        row = {"name": "খাদৰাম ৰাভা", "relation_name": "গংগাৰাম", "relation_type": "father"}
+        assert escalate.unlabelled_relation(row) == []
+
+    def test_an_empty_relation_is_not_a_swap_suspect(self):
+        assert escalate.unlabelled_relation({"relation_name": "", "relation_type": ""}) == []

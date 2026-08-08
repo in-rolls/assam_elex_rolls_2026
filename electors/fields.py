@@ -333,18 +333,43 @@ def assign_bands(lines: Sequence[str]) -> Dict[str, str]:
     else:
         above = lines
 
-    # Order is name, relation, house. Take them from the end so a missing first line pushes
-    # the others up rather than shifting everything down.
-    for offset, key in enumerate(("house", "relation", "name")):
-        if len(above) > offset:
-            out[key] = above[len(above) - 1 - offset]
+    # The relation line, found by its label with the same whitespace-tolerant patterns
+    # ``relation_of`` uses. While this test was the strict one and that one was not, a label
+    # OCR had run together -- ``স্বামৰনাম`` for ``স্বামীৰ নাম`` -- was a relation line to one and
+    # not to the other, which is why the duplicates concentrated on ``husband``: ``স্বামীৰ`` is
+    # the label that loses its space most.
+    #
+    # Searched from the end for the same reason as the age line: the name line above it also
+    # ends in ``নাম``, and a widened pattern can reach it.
+    relation_index = next(
+        (
+            i
+            for i in range(len(above) - 1, -1, -1)
+            if any(pattern.search(above[i]) for pattern, _ in LABEL_PATTERNS)
+        ),
+        None,
+    )
 
-    # A label, where it survived, outranks position.
-    for line in lines:
-        if any(label in line for label, _ in LABELS):
-            out["relation"] = line
-        elif NAME_LABEL in line and "relation" in out and out["relation"] != line:
-            out.setdefault("name", line)
+    if relation_index is not None:
+        # Anchor on it, the way the age line anchors the box. Counting inwards from the ends
+        # instead assigned the relation line to ``house`` and the name line to ``relation``
+        # whenever the house line was lost -- and the house line is the worst-scanned in the
+        # box, so it is lost often. The label says which line this is; position need only say
+        # what is on either side of it.
+        out["relation"] = above[relation_index]
+        if relation_index > 0:
+            out["name"] = above[relation_index - 1]
+        if relation_index + 1 < len(above):
+            out["house"] = above[relation_index + 1]
+    else:
+        # No label survived. Order is name, relation, house; taken from the end so a missing
+        # first line pushes the others up rather than shifting everything down.
+        for offset, key in enumerate(("house", "relation", "name")):
+            if len(above) > offset:
+                out[key] = above[len(above) - 1 - offset]
+        for line in above:
+            if NAME_LABEL in line and out.get("relation") != line:
+                out.setdefault("name", line)
     return out
 
 
