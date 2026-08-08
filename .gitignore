@@ -13,3 +13,6 @@ htmlcov/
 # Source PDFs and rendered images are large and re-derivable
 data/
 out/
+
+# OCR line captures: regenerable from the PDFs, large, and machine-specific.
+dataset/lines/

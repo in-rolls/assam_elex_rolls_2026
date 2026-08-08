@@ -17,9 +17,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
-from assam_rolls import cache, ocr, render
+from assam_rolls import cache, ocr, render, schema
 
-from . import extract, output, validate
+from . import extract, output, replay, validate
 
 
 def _one_part(args) -> Dict[str, Any]:
@@ -31,8 +31,9 @@ def _one_part(args) -> Dict[str, Any]:
     hours. ``assam_rolls.cache`` already solved this for the info pages, atomically and keyed
     to the source bytes; this simply uses it.
     """
-    zip_path, pdf_name, cache_dir = args
+    zip_path, pdf_name, cache_dir, *rest = args
     zip_path, cache_dir = Path(zip_path), Path(cache_dir)
+    capture_lines = bool(rest[0]) if rest else False
 
     key = Path(pdf_name).stem
     pdf_sha256 = render.sha256_bytes(render.read_pdf_bytes(zip_path, pdf_name))
@@ -44,11 +45,18 @@ def _one_part(args) -> Dict[str, Any]:
     fresh = cache.is_fresh(entry, pdf_sha256) and (
         entry["row"].get("stage_version") == extract.PIPELINE_VERSION
     )
+    if capture_lines:
+        # Capturing needs the OCR to actually run, so a part whose lines are not on disk is
+        # re-read even when its rows are cached. Serving the row cache unconditionally here
+        # would leave the line cache permanently empty on any machine that had run before.
+        meta = schema.parse_source_filename(pdf_name) or {}
+        on_disk = replay.path_for(meta.get("part_no", 0), meta.get("ac_no", 0)).exists()
+        fresh = fresh and on_disk
     if fresh:
         return dict(entry["row"], electors=entry["sections"], cached=True)
 
     engine = ocr.get_engine("tesseract", lang="asm")
-    result = extract.read_part(zip_path, pdf_name, engine=engine)
+    result = extract.read_part(zip_path, pdf_name, engine=engine, capture_lines=capture_lines)
     summary = {
         "ac_no": result.ac_no,
         "part_no": result.part_no,
@@ -259,6 +267,152 @@ def cmd_quality(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_diagnose(args: argparse.Namespace) -> int:
+    """Where the failures concentrate, what to try, and what to work on first."""
+    from . import diagnose
+
+    rows, _ = _cached(Path(args.cache), args.ac)
+    if not rows:
+        print(
+            f"no cached parts under {args.cache}; run `quality` or `parse` first", file=sys.stderr
+        )
+        return 1
+
+    print(f"{len(rows):,} rows from cache\n")
+    print(diagnose.render_priorities(diagnose.priorities(rows)))
+    found = diagnose.associations(rows)
+    print()
+    print(diagnose.render(found, diagnose.proposals(found)))
+    return 0
+
+
+def cmd_bench(args: argparse.Namespace) -> int:
+    """Record a baseline, or measure the current code against one."""
+    from . import bench, quality
+
+    rows, roll_totals = _cached(Path(args.cache), args.ac)
+    if not rows:
+        print(f"no cached parts under {args.cache}; run `quality` first", file=sys.stderr)
+        return 1
+
+    parts = sorted({r["part_no"] for r in rows})
+    splits = bench.split_parts(parts)
+    current: Dict[str, Any] = {}
+    for name, members in splits.items():
+        subset = [r for r in rows if r["part_no"] in set(members)]
+        if not subset:
+            continue
+        checks = validate.reconcile(subset, validate.load_part_totals(), roll_totals)
+        report = quality.report(subset, validate.summarize(checks, subset))
+        current[name] = bench.metrics_from(report, validate.summarize(checks, subset))
+    current["seconds_per_part"] = args.seconds
+
+    if args.record:
+        path = bench.save_baseline(current)
+        print(f"recorded baseline for {len(current) - 1} splits -> {path}")
+        for name, metrics in current.items():
+            if isinstance(metrics, dict):
+                print(f"   {name:<12} {metrics.get(args.target, float('nan')):.1%} {args.target}")
+        return 0
+
+    baseline = bench.load_baseline()
+    if not baseline:
+        print("no baseline recorded; run `bench --record` before the fix", file=sys.stderr)
+        return 1
+    print(bench.render(bench.compare(args.target, baseline, current)))
+    return 0
+
+
+def _cached(cache_root: Path, ac_no: int):
+    """Every extracted elector for this AC, **and** each part's own roll totals.
+
+    Both, because the totals are what the guarded ground-truth metrics are computed from.
+    Returning rows alone would leave completeness and the sex ratio absent from the gate,
+    and ``gate_no_damage`` skips metrics it cannot find on both sides -- so the two checks
+    that matter most would have passed by being missing.
+    """
+    directory = cache_root / f"AC{ac_no:03d}"
+    rows: List[Dict[str, Any]] = []
+    totals: Dict[tuple, Dict[str, Any]] = {}
+    for path in sorted(directory.glob("*.json")):
+        try:
+            entry = json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            continue
+        rows.extend(entry.get("sections") or [])
+        summary = entry.get("row") or {}
+        if summary.get("summary_total"):
+            totals[(summary.get("ac_no"), summary.get("part_no"))] = {
+                "total": summary["summary_total"],
+                "male": summary.get("summary_male"),
+                "female": summary.get("summary_female"),
+            }
+    return rows, totals
+
+
+def cmd_capture(args: argparse.Namespace) -> int:
+    """Run the real pipeline once and write down every line the OCR produced.
+
+    The point is everything that comes after: a parsing change can then be scored against
+    identical text in seconds. Costs one JSON file per part and no extra OCR.
+    """
+    zip_path = Path(args.zip)
+    if not zip_path.exists():
+        print(f"no such zip: {zip_path}", file=sys.stderr)
+        return 1
+    render.require_poppler()
+
+    everything = list(render.iter_zip_parts(zip_path))
+    wanted = set(args.parts) if args.parts else None
+    chosen = [p for p in everything if wanted is None or p.part_no in wanted]
+    if not chosen:
+        print("no matching parts", file=sys.stderr)
+        return 1
+
+    ac_no = chosen[0].ac_no
+    cache_dir = Path(args.cache) / f"AC{ac_no:03d}"
+    print(f"{zip_path.name}: capturing lines for {len(chosen)} parts, {args.workers} workers")
+
+    with ProcessPoolExecutor(max_workers=args.workers) as pool:
+        payload = [(str(zip_path), p.pdf_name, str(cache_dir), True) for p in chosen]
+        for done, result in enumerate(pool.map(_one_part, payload), start=1):
+            print(
+                f"  {done}/{len(chosen)} part {result['part_no']}: "
+                f"{len(result['electors'])} electors captured",
+                flush=True,
+            )
+
+    captured = replay.cached_parts(ac=ac_no)
+    print(f"\n{len(captured)} parts in the line cache at {replay.CACHE_DIR}")
+    return 0
+
+
+def cmd_replay(args: argparse.Namespace) -> int:
+    """Re-parse cached OCR text with today's code and report what it produces.
+
+    Instant, and exact for any change downstream of the text. It says nothing about a change
+    to the crop geometry or the engine -- those change the text itself, and this would replay
+    the old text and report, truthfully but uselessly, that nothing moved.
+    """
+    from . import diagnose, quality
+
+    parts = list(args.parts) if args.parts else replay.cached_parts(ac=args.ac)
+    absent = replay.missing(parts, ac=args.ac)
+    if absent:
+        print(f"no capture for parts {absent} -- run `capture` first", file=sys.stderr)
+        parts = [p for p in parts if p not in absent]
+    if not parts:
+        return 1
+
+    rows = replay.replay_parts(parts, ac=args.ac)
+    print(f"replayed {len(rows):,} rows from {len(parts)} parts\n")
+    print(quality.format_report(quality.report(rows, {})))
+    if args.diagnose:
+        print()
+        print(diagnose.render_priorities(diagnose.priorities(rows)))
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     rows = output.read_shard(Path(args.shard))
     checks = validate.reconcile(rows, validate.load_part_totals())
@@ -287,6 +441,32 @@ def build_parser() -> argparse.ArgumentParser:
     p_quality.add_argument("--cache", default="out/electors/cache")
     p_quality.add_argument("--out", type=Path, default=Path("out/electors/quality.json"))
     p_quality.set_defaults(func=cmd_quality)
+
+    p_diag = sub.add_parser("diagnose", help="where failures concentrate and what to try")
+    p_diag.add_argument("--cache", default="out/electors/cache")
+    p_diag.add_argument("--ac", type=int, default=1)
+    p_diag.set_defaults(func=cmd_diagnose)
+
+    p_bench = sub.add_parser("bench", help="record a baseline, or gate a fix against one")
+    p_bench.add_argument("--record", action="store_true")
+    p_bench.add_argument("--target", default="epic_present")
+    p_bench.add_argument("--seconds", type=float, default=0.0, help="measured seconds per part")
+    p_bench.add_argument("--cache", default="out/electors/cache")
+    p_bench.add_argument("--ac", type=int, default=1)
+    p_bench.set_defaults(func=cmd_bench)
+
+    p_capture = sub.add_parser("capture", help="cache the OCR text so parsing fixes score fast")
+    p_capture.add_argument("zip")
+    p_capture.add_argument("--parts", type=int, nargs="*", help="part numbers (default: all)")
+    p_capture.add_argument("--cache", default="out/cache/electors")
+    p_capture.add_argument("--workers", type=int, default=4)
+    p_capture.set_defaults(func=cmd_capture)
+
+    p_replay = sub.add_parser("replay", help="re-parse cached OCR text with today's code")
+    p_replay.add_argument("--parts", type=int, nargs="*")
+    p_replay.add_argument("--ac", type=int, default=1)
+    p_replay.add_argument("--diagnose", action="store_true")
+    p_replay.set_defaults(func=cmd_replay)
 
     p_report = sub.add_parser("report", help="reconcile a shard against the info pages")
     p_report.add_argument("shard")

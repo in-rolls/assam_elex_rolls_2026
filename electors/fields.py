@@ -172,12 +172,49 @@ def house_number(line: str) -> str:
     return digits[0] if digits else ""
 
 
+def _flexible(label: str) -> "re.Pattern[str]":
+    """A label pattern that tolerates the spacing OCR loses.
+
+    ``স্বামীৰ নাম`` comes back as ``স্বামৰনাম`` -- same letters, no space -- and a literal
+    substring test misses it. That single character of whitespace cost the relation on
+    1,588 rows (24% of the corpus) while the value itself sat legibly on the line.
+    """
+    return re.compile(r"\s*".join(re.escape(part) for part in label.split()))
+
+
+#: Compiled once, longest first, so ``পিতাৰ নাম`` is tried before the bare ``নাম`` it contains.
+LABEL_PATTERNS: Sequence[Tuple["re.Pattern[str]", str]] = tuple(
+    (_flexible(label), kind) for label, kind in LABELS
+)
+
+
 def relation_of(line: str) -> Tuple[str, str]:
-    """``(relation_name, relation_type)`` from a relation line."""
-    for label, kind in LABELS:
-        if label in line:
-            return value_after(line, label), kind
-    return "", ""
+    """``(relation_name, relation_type)`` from a relation line.
+
+    Falls back to taking the value positionally when no label matches at all. The relation
+    *name* is usually legible even when its label is not, and dropping the whole field
+    because the word in front of it scanned badly loses information the page still holds --
+    the type is left empty to say so.
+    """
+    for pattern, kind in LABEL_PATTERNS:
+        found = pattern.search(line)
+        if found:
+            return _clean(line[found.end() :].lstrip(" :;'\u2018\u2019")), kind
+    return relation_fallback(line), ""
+
+
+def relation_fallback(line: str) -> str:
+    """Whatever follows the first separator, when the label is unreadable."""
+    for separator in (":", "'", "\u2018", "\u2019"):
+        if separator in line:
+            value = _clean(line.split(separator, 1)[1])
+            if len(value) >= MIN_VALUE:
+                return value
+    return ""
+
+
+#: Shorter than this and a "value" is scanner debris rather than a name.
+MIN_VALUE = 3
 
 
 def age_from(line: str) -> Optional[int]:
@@ -327,7 +364,27 @@ def consensus(readings: Sequence[str]) -> Tuple[str, bool]:
     return max(cleaned, key=len), False
 
 
-def read_page(image: Image.Image, boxes: Sequence[grid.Box]) -> List[Tuple[grid.Box, "Elector"]]:
+@dataclass
+class Reads:
+    """Everything the OCR said about one box -- the whole input to :func:`assemble`.
+
+    Kept as a record so it can be written to disk and replayed. If a field the parser uses is
+    not in here, a replay silently scores it against nothing, so this is the one place the two
+    paths are held together.
+    """
+
+    lines: List[str] = field(default_factory=list)
+    name_second: List[str] = field(default_factory=list)
+    epic_raw: str = ""
+    serial_raw: str = ""
+
+    def as_input(self) -> Tuple[List[str], List[str]]:
+        return (self.lines, self.name_second)
+
+
+def read_page(
+    image: Image.Image, boxes: Sequence[grid.Box]
+) -> List[Tuple[grid.Box, "Elector", "Reads"]]:
     """Every elector on one page, in three tesseract invocations instead of three hundred.
 
     Reading box by box cost ten process spawns per elector. Here the whole page's crops go in
@@ -400,9 +457,13 @@ def read_page(image: Image.Image, boxes: Sequence[grid.Box]) -> List[Tuple[grid.
 
     out: List[Tuple[grid.Box, Elector]] = []
     for position, box in enumerate(live):
-        out.append(
-            (box, _assemble(lines_by_box[box], epic_reads[position], serial_reads[position]))
+        reads = Reads(
+            lines=lines_by_box[box][0],
+            name_second=lines_by_box[box][1],
+            epic_raw=epic_reads[position],
+            serial_raw=serial_reads[position],
         )
+        out.append((box, assemble(reads.as_input(), reads.epic_raw, reads.serial_raw), reads))
     return out
 
 
@@ -411,8 +472,13 @@ def read_page(image: Image.Image, boxes: Sequence[grid.Box]) -> List[Tuple[grid.
 NON_ALNUM = re.compile(r"[^A-Za-z0-9]")
 
 
-def _assemble(lines: Tuple[List[str], List[str]], epic_read: str, serial_read: str) -> Elector:
-    """Build one elector from its text lines, its EPIC strip and its serial strip."""
+def assemble(lines: Tuple[List[str], List[str]], epic_read: str, serial_read: str) -> Elector:
+    """Build one elector from its text lines, its EPIC strip and its serial strip.
+
+    Public because ``replay`` re-runs it over cached text to score a parsing change without
+    re-reading the PDF. Everything between the OCR and the output row lives here, so a replay
+    that calls this cannot drift from what the pipeline does.
+    """
     assigned = [assign_bands(scale_lines) for scale_lines in lines]
     elector = Elector()
 

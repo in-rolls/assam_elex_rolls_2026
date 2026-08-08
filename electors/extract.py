@@ -24,7 +24,7 @@ from PIL import Image
 
 from assam_rolls import ocr, render, schema
 
-from . import fields, grid, pages
+from . import fields, grid, pages, replay
 from . import summary as summary_page
 
 #: Everything downstream is calibrated to this. The boxes are ~1000px wide here, which is
@@ -88,8 +88,14 @@ def read_part(
     zip_path: Path,
     pdf_name: str,
     engine: Optional[Any] = None,
+    capture_lines: bool = False,
 ) -> PartResult:
-    """Extract every elector from one part PDF."""
+    """Extract every elector from one part PDF.
+
+    ``capture_lines`` writes everything the OCR said to ``dataset/lines`` on the way past, so
+    a later parsing change can be scored against identical text in seconds instead of another
+    half-hour of tesseract. It costs one JSON file per part and no extra OCR.
+    """
     meta = schema.parse_source_filename(pdf_name) or {}
     pdf_bytes = render.read_pdf_bytes(zip_path, pdf_name)
     result = PartResult(
@@ -101,6 +107,18 @@ def read_part(
         pdf_sha256=render.sha256_bytes(pdf_bytes),
     )
     engine = engine or ocr.get_engine("tesseract", lang="asm")
+    captured = (
+        replay.PartLines(
+            part=result.part_no,
+            ac=result.ac_no,
+            capture_version=replay.CAPTURE_VERSION,
+            scale=fields.NAME_SCALES[0],
+            psm=7,
+            lang="asm",
+        )
+        if capture_lines
+        else None
+    )
 
     try:
         with tempfile.TemporaryDirectory() as tmp:
@@ -145,7 +163,20 @@ def read_part(
                 if section is not current_section:
                     current_section, serial = section, 0
 
-                for box, elector in fields.read_page(image, boxes):
+                for box, elector, reads in fields.read_page(image, boxes):
+                    if captured is not None:
+                        captured.boxes.append(
+                            replay.BoxLines(
+                                page=index,
+                                section=section.value,
+                                col=box.col,
+                                row=box.row,
+                                lines=list(reads.lines),
+                                name_second=list(reads.name_second),
+                                epic_raw=reads.epic_raw,
+                                serial_raw=reads.serial_raw,
+                            )
+                        )
                     if elector.is_empty:
                         # Ink but nothing readable. Emitted anyway: the row exists in the
                         # source, and dropping it makes the count agree with nothing.
@@ -162,6 +193,8 @@ def read_part(
                 image.close()
     except (subprocess.CalledProcessError, OSError, ocr.OCRError) as exc:
         result.error = f"{type(exc).__name__}: {exc}"
+    if captured is not None and captured.boxes and not result.error:
+        replay.save(captured)
     return result
 
 

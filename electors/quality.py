@@ -135,13 +135,36 @@ def distributions(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+FIELDS: Sequence[str] = ("epic_no", "name", "relation_name", "house_no", "age", "sex")
+
+
 def fill_rates(rows: Sequence[Dict[str, Any]]) -> Dict[str, float]:
     """Kept only so it can be shown beside the error rates it was mistaken for."""
     total = len(rows) or 1
-    return {
-        field: sum(1 for r in rows if r.get(field)) / total
-        for field in ("epic_no", "name", "relation_name", "house_no", "age", "sex")
-    }
+    return {field: sum(1 for r in rows if r.get(field)) / total for field in FIELDS}
+
+
+def sound_rates(rows: Sequence[Dict[str, Any]]) -> Dict[str, float]:
+    """Per field: present **and not provably wrong**. The right thing to guard on.
+
+    A fill rate punishes the correct move. Clearing a name that is provably not the
+    elector's name -- because it is identical to the father's, or contains Latin letters --
+    lowers ``name_present`` while making the data better, so a gate guarding fill rate would
+    reject it. This does not: a wrong value contributes nothing either way, so removing one
+    is neutral and replacing it with a right one is a gain.
+    """
+    total = len(rows) or 1
+    out: Dict[str, float] = {}
+    for field in FIELDS:
+        good = 0
+        for row in rows:
+            if not row.get(field):
+                continue
+            problems = _is_definitely_wrong(row)
+            if not any(field.split("_")[0] in problem for problem in problems):
+                good += 1
+        out[f"{field}_sound"] = good / total
+    return out
 
 
 def report(rows: Iterable[Dict[str, Any]], reconciliation: Dict[str, Any]) -> Dict[str, Any]:
@@ -160,6 +183,9 @@ def report(rows: Iterable[Dict[str, Any]], reconciliation: Dict[str, Any]) -> Di
         "disagreement": disagreement(rows),
         "distributions": distributions(rows),
         "fill_rates": fill_rates(rows),
+        # Present *and* not provably wrong -- what a gate should guard, because a fill rate
+        # falls when a wrong value is correctly removed.
+        "sound_rates": sound_rates(rows),
     }
 
 

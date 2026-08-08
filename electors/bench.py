@@ -108,17 +108,22 @@ def gate_no_damage(
     Checked over *every* guarded metric rather than the one being worked on, because the
     failure this exists to catch is the one nobody was looking for.
     """
-    damaged = []
+    damaged, missing = [], []
     for key in guarded:
         if key not in before or key not in after:
+            # A metric absent from either side is **not** a pass. Skipping it silently is how
+            # the two checks with real ground truth would clear the gate by being unmeasured.
+            missing.append(key)
             continue
         delta = after[key] - before[key]
         if delta < -tolerance:
             damaged.append(f"{key} {before[key]:.1%} -> {after[key]:.1%} ({delta:+.1%})")
+
+    problems = damaged + [f"{key} not measured" for key in missing]
     return GateResult(
         name="no degradation",
-        passed=not damaged,
-        detail="; ".join(damaged) if damaged else f"all {len(guarded)} guarded metrics held",
+        passed=not problems,
+        detail="; ".join(problems) if problems else f"all {len(guarded)} guarded metrics held",
     )
 
 
@@ -182,14 +187,18 @@ def render(results: Sequence[GateResult]) -> str:
 
 #: Metrics guarded on every change, whatever field the fix is aimed at. The first two are the
 #: only ones with real ground truth.
+#: Guarded on **soundness**, not fill. A fill rate drops when a provably wrong value is
+#: correctly cleared, so guarding it would reject the one move that unambiguously improves
+#: the data. ``*_sound`` counts a field only when it is present and not provably wrong, which
+#: makes removing a wrong value neutral and replacing it with a right one a gain.
 GUARDED: Sequence[str] = (
     "parts_matching_roll_rate",
     "male_share",
-    "epic_present",
-    "name_present",
-    "age_present",
-    "sex_present",
-    "relation_present",
+    "epic_no_sound",
+    "name_sound",
+    "age_sound",
+    "sex_sound",
+    "relation_name_sound",
 )
 
 
@@ -204,6 +213,7 @@ def metrics_from(report: Dict[str, Any], reconciliation: Dict[str, Any]) -> Dict
         "relation_present": fill.get("relation_name", 0.0),
         "definitely_wrong": report.get("definitely_wrong", {}).get("rate", 0.0),
     }
+    out.update(report.get("sound_rates", {}))
     out["parts_matching_roll_rate"] = reconciliation.get("parts_matching_roll_rate") or 0.0
     share = reconciliation.get("male_share")
     roll = reconciliation.get("roll_male_share")

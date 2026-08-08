@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import random
 
-from electors import bench, diagnose, fields, grid, pages, quality, validate
+from electors import bench, diagnose, fields, grid, pages, quality, replay, validate
 
 #: One real elector page from part 1, at 400 dpi. Vertical rules come in clusters because
 #: adjacent boxes share a border; the extras at 749, 1189 ... are the internal rule some
@@ -131,6 +131,27 @@ class TestFieldParsing:
     def test_relation_type_comes_from_the_label(self):
         assert fields.relation_of("পিতাৰ নাম : গংগাৰাম ৰাভা") == ("গংগাৰাম ৰাভা", "father")
         assert fields.relation_of("স্বামীৰ নাম : খাদৰাম ৰাভা") == ("খাদৰাম ৰাভা", "husband")
+
+    def test_a_label_missing_its_space_still_matches(self):
+        """One character of whitespace cost the relation on 1,588 rows -- 24% of the corpus.
+
+        OCR returns স্বামৰনাম for স্বামীৰ নাম: same letters, no space. A literal substring
+        test misses it while the value sits legibly on the same line.
+        """
+        assert fields.relation_of("স্বামৰনাম' বভজময") == ("বভজময", "husband")
+        assert fields.relation_of("স্বামাৰনাম' হুলশা নাজাৰা") == ("হুলশা নাজাৰা", "husband")
+
+    def test_an_unreadable_label_still_yields_the_name(self):
+        """The relation name is usually legible even when the word in front of it is not.
+
+        The type is left empty to say the relationship is unknown, rather than dropping a
+        value the page plainly holds.
+        """
+        name, kind = fields.relation_of("গলিত়াৰ মায়: য়ককাই ৰাভা")
+        assert name and not kind
+
+    def test_debris_does_not_become_a_relation(self):
+        assert fields.relation_of("৷ ক্ৰ ভৰা ক্ম লে *, = |") == ("", "")
 
     def test_sex_survives_a_damaged_scan(self):
         """পুৰুষ comes back as পৰষ or পৰম; মহিলা as মাহলা."""
@@ -297,8 +318,8 @@ class TestResume:
 
         calls = []
 
-        def fake_read_part(zip_path, pdf_name, engine=None):
-            calls.append(pdf_name)
+        def fake_read_part(zip_path, pdf_name, engine=None, capture_lines=False):
+            calls.append((pdf_name, capture_lines))
             result = extract.PartResult(1, 7, "ASM", "z.zip", pdf_name, "sha")
             result.electors = [{"ac_no": 1, "part_no": 7, "name": "x"}]
             return result
@@ -311,7 +332,7 @@ class TestResume:
         first = cli._one_part((str(tmp_path / "z.zip"), "part7.pdf", str(tmp_path)))
         second = cli._one_part((str(tmp_path / "z.zip"), "part7.pdf", str(tmp_path)))
 
-        assert calls == ["part7.pdf"], "the second call must come from cache"
+        assert calls == [("part7.pdf", False)], "the second call must come from cache"
         assert not first["cached"] and second["cached"]
         assert second["electors"] == first["electors"]
         assert cache.read_entry(tmp_path, "part7") is not None
@@ -498,6 +519,31 @@ class TestTheGate:
         assert not bench.verdict(results)
         assert any("parts_matching_roll_rate" in r.detail for r in results)
 
+    def test_an_unmeasured_guard_is_a_failure_not_a_pass(self):
+        """Skipping a metric absent from either side is how the checks that matter clear
+        the gate by being missing. The two with real ground truth are exactly the ones a
+        harness is most likely to fail to compute."""
+        result = bench.gate_no_damage(
+            {"name_present": 0.90},
+            {"name_present": 0.90},
+            guarded=("name_present", "parts_matching_roll_rate", "male_share"),
+        )
+        assert not result.passed
+        assert "not measured" in result.detail
+
+    def test_guarding_soundness_does_not_punish_removing_wrong_data(self):
+        """A fill rate falls when a provably wrong value is correctly cleared.
+
+        Guarding fill would reject the one move that unambiguously improves the data, so the
+        gate guards *present and not provably wrong* instead.
+        """
+        wrong = [{"name": "তন্ডা ৰাভা", "relation_name": "তন্ডা ৰাভা"}]
+        cleared = [{"name": "", "relation_name": "তন্ডা ৰাভা"}]
+        assert quality.fill_rates(cleared)["name"] < quality.fill_rates(wrong)["name"]
+        assert (
+            quality.sound_rates(cleared)["name_sound"] == quality.sound_rates(wrong)["name_sound"]
+        )
+
     def test_a_fix_clearing_everything_is_accepted(self):
         results = bench.run(
             "epic_present",
@@ -586,3 +632,70 @@ class TestTheProposalEngine:
         """They want opposite fixes and are identical in a fill rate."""
         shapes = dict(diagnose.raw_read_shapes(["", "", "", "S 106 -, HHK3535/704", "", "HH"]))
         assert shapes["empty"] == 4 and shapes["garbled"] == 1
+
+
+class TestReplay:
+    """The line cache is only worth having if it reproduces the pipeline exactly."""
+
+    def _box(self):
+        return replay.BoxLines(
+            page=7,
+            section="main",
+            col=1,
+            row=2,
+            lines=[
+                "নাম : খাদৰাম ৰাভা",
+                "পিতাৰ নাম : গংগাৰাম ৰাভা",
+                "ঘৰ নং : 42",
+                "বয়স : 35 লিঙ্গ : পুৰুষ",
+            ],
+            name_second=["নাম : খাদৰাম ৰাভা"],
+            epic_raw="S 106 -, HHK3535704",
+            serial_raw="106",
+        )
+
+    def test_replay_reproduces_the_pipeline_assembler(self):
+        """Replay must call the pipeline's own assembler, not a copy of it.
+
+        A harness that reimplements the parser measures the harness. This asserts the two
+        paths produce identical values from identical text.
+        """
+        box = self._box()
+        direct = fields.assemble((box.lines, box.name_second), box.epic_raw, box.serial_raw)
+        replayed = replay.parse_box(box, serial=1)
+        assert replayed["name"] == direct.name
+        assert replayed["relation_name"] == direct.relation_name
+        assert replayed["age"] == direct.age
+        assert replayed["sex"] == direct.sex
+        assert replayed["epic_no"] == direct.epic_no
+
+    def test_a_capture_from_older_code_is_refused_not_replayed(self, tmp_path):
+        """Replaying text the current pipeline would not produce answers the wrong question."""
+        stale = replay.PartLines(
+            part=13,
+            ac=1,
+            capture_version=replay.CAPTURE_VERSION - 1,
+            scale=2,
+            psm=7,
+            lang="asm",
+            boxes=[self._box()],
+        )
+        replay.save(stale, root=tmp_path)
+        assert replay.load(13, 1, tmp_path) is None
+        assert replay.missing([13], 1, tmp_path) == [13]
+
+    def test_a_current_capture_round_trips(self, tmp_path):
+        fresh = replay.PartLines(
+            part=13,
+            ac=1,
+            capture_version=replay.CAPTURE_VERSION,
+            scale=2,
+            psm=7,
+            lang="asm",
+            boxes=[self._box()],
+        )
+        replay.save(fresh, root=tmp_path)
+        rows = replay.replay_parts([13], 1, tmp_path)
+        assert len(rows) == 1
+        assert rows[0]["name"] and rows[0]["box_col"] == 1
+        assert replay.cached_parts(tmp_path) == [13]
