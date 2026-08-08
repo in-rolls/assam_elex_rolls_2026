@@ -32,6 +32,7 @@ guess. A disagreement is recorded rather than resolved silently.
 
 from __future__ import annotations
 
+import difflib
 import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -70,25 +71,6 @@ LABELS: Sequence[Tuple[str, str]] = (
     ("স্বামাৰ নাম", "husband"),
     ("মাতাৰ নাম", "mother"),
     ("মাতৃৰ নাম", "mother"),
-)
-
-#: Matched as fragments, not whole words. ``পুৰুষ`` comes back as ``পৰষ``, ``পুৰম``, ``পুৰুষ``
-#: depending on the scan, and a whole-word table misses every damaged one -- which showed up
-#: immediately as a missing sex on boxes whose age read perfectly.
-SEX_FRAGMENTS: Sequence[Tuple[str, str]] = (
-    ("মহিলা", "F"),
-    ("মাহলা", "F"),
-    ("হিলা", "F"),
-    ("মহল", "F"),
-    ("মাহ", "F"),
-    ("তৃতীয়", "T"),
-    ("তৃতা", "T"),
-    ("পুৰুষ", "M"),
-    ("পুরুষ", "M"),
-    ("পৰষ", "M"),
-    ("পুৰ", "M"),
-    ("ৰুষ", "M"),
-    ("পৰম", "M"),
 )
 
 HOUSE_LABELS = ("ঘৰ নং", "ঘৰনং", "ঘর নং", "ঘৰ ন")
@@ -216,21 +198,55 @@ def age_from(line: str) -> Optional[int]:
 def age_and_sex(line: str) -> Tuple[Optional[int], str]:
     """Age and sex from the ``বয়স ... লিঙ্গ ...`` line."""
     age = age_from(line)
-    sex = ""
-    for fragment, code in SEX_FRAGMENTS:
-        if fragment in line:
-            sex = code
-            break
-    return age, sex
+    return age, sex_of(line)
+
+
+#: The three words the sex field can hold, and the code each maps to.
+SEX_WORDS: Sequence[Tuple[str, str]] = (("পুৰুষ", "M"), ("মহিলা", "F"), ("তৃতীয়", "T"))
+
+#: How closely a damaged read must resemble one of them to count. Below this the sex is
+#: recorded as unknown rather than guessed.
+SEX_SIMILARITY = 0.5
+
+
+def sex_of(line: str) -> str:
+    """The sex, scored against all three words rather than matched against a fragment list.
+
+    An ordered list of fragments was tried first and **biased the dataset**. ``মহিলা`` is
+    longer and more distinctive than ``পুৰুষ``, so it survived damage that destroyed the male
+    word, and the female fragments sat earlier in the list. Against a published 51% male /
+    49% female, the fragment matcher returned **41% / 59%** -- and it did so on rows whose age
+    had read perfectly, so this was the matcher, not the scan.
+
+    Scoring every candidate and taking the best is symmetric by construction: neither word can
+    win by being listed first, and neither loses by being shorter.
+    """
+    tail = re.sub(r"[^ঀ-৿]", "", line)[-12:]
+    # Two characters is the shortest window scored below. A one-character tail made
+    # ``range(2, 2)`` empty and ``max()`` raise, which killed the whole part rather than the
+    # one box -- found by a real run dying on it, not by reading the code.
+    if len(tail) < 2:
+        return ""
+    # The word sits at the end but its length varies with how the scan mangled it, and a
+    # fixed window dilutes the comparison -- ``পৰম`` against a 12-character tail scores below
+    # threshold even though it is unmistakably পুৰুষ. Scoring every plausible suffix and
+    # keeping the best makes the window fit the word rather than the other way round.
+    best, score = "", 0.0
+    for word, code in SEX_WORDS:
+        ratio = max(
+            difflib.SequenceMatcher(None, tail[-length:], word).ratio()
+            for length in range(2, len(tail) + 1)
+        )
+        if ratio > score:
+            best, score = code, ratio
+    return best if score >= SEX_SIMILARITY else ""
 
 
 def _is_age_line(line: str) -> bool:
     if AGE_LABEL in line:
         return True
     digits = re.findall(r"\d{1,3}", schema.normalize_digits(line))
-    return any(MIN_AGE <= int(d) <= MAX_AGE for d in digits) and any(
-        fragment in line for fragment, _ in SEX_FRAGMENTS
-    )
+    return any(MIN_AGE <= int(d) <= MAX_AGE for d in digits) and bool(sex_of(line))
 
 
 def assign_bands(lines: Sequence[str]) -> Dict[str, str]:

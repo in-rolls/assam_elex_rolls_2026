@@ -42,6 +42,7 @@ SCHEMA = pa.schema(
         ("age", pa.int32()),
         ("sex", pa.string()),
         ("lang", pa.string()),
+        ("roll_section", pa.string()),
         ("page_no", pa.int32()),
         ("box_row", pa.int32()),
         ("box_col", pa.int32()),

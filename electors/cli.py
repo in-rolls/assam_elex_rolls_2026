@@ -37,7 +37,14 @@ def _one_part(args) -> Dict[str, Any]:
     key = Path(pdf_name).stem
     pdf_sha256 = render.sha256_bytes(render.read_pdf_bytes(zip_path, pdf_name))
     entry = cache.read_entry(cache_dir, key)
-    if cache.is_fresh(entry, pdf_sha256):
+    # ``cache.is_fresh`` checks the *info-page* pipeline version, which does not move when
+    # this stage changes. Without the stage's own version a resume would happily serve
+    # results produced by code since fixed -- here, parts extracted before partial last
+    # pages were handled, which are short by a page.
+    fresh = cache.is_fresh(entry, pdf_sha256) and (
+        entry["row"].get("stage_version") == extract.PIPELINE_VERSION
+    )
+    if fresh:
         return dict(entry["row"], electors=entry["sections"], cached=True)
 
     engine = ocr.get_engine("tesseract", lang="asm")
@@ -49,6 +56,7 @@ def _one_part(args) -> Dict[str, Any]:
         "elector_pages": result.elector_pages,
         "unknown_pages": result.unknown_pages,
         "error": result.error,
+        "stage_version": extract.PIPELINE_VERSION,
         "cached": False,
     }
     if not result.error:
@@ -111,22 +119,31 @@ def cmd_parse(args: argparse.Namespace) -> int:
         ac_no,
         path,
         {
-            "rows": summary["electors_extracted"],
-            "expected": summary["electors_expected"],
-            "parts_exact_rate": round(summary["parts_exact_rate"], 4),
+            "rows": summary["rows"],
+            "supplement_rows": summary["supplement_rows"],
+            "printed_minus_published_mean": summary["printed_minus_published_mean"],
+            "male_share": summary["male_share"],
             "written_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         },
     )
 
     print(f"\nwrote {path} ({entry['bytes'] / 1e6:.1f} MB)")
+    print(f"rows: {summary['rows']:,} ({summary['supplement_rows']:,} from supplements)")
     print(
-        f"count reconciliation: {summary['parts_exact']}/{summary['parts_with_published_total']} "
-        f"parts exact ({summary['parts_exact_rate']:.1%})"
+        f"printed minus published net: mean {summary['printed_minus_published_mean']:+.1f} "
+        f"(sd {summary['printed_minus_published_sd']:.1f}) -- the publisher's net excludes "
+        f"deletions it does not reprint"
     )
-    print(
-        f"electors: {summary['electors_extracted']:,} extracted vs "
-        f"{summary['electors_expected']:,} published"
-    )
+    if summary["male_share"] is not None:
+        print(
+            f"male share: {summary['male_share']:.1%} extracted vs "
+            f"{summary['published_male_share']:.1%} published"
+        )
+    print(f"parts with serial gaps: {summary['parts_with_serial_gaps']}")
+    if summary["gap_outliers"]:
+        print(f"\n{len(summary['gap_outliers'])} parts well outside the usual gap:")
+        for o in summary["gap_outliers"][:10]:
+            print(f"   part {o['part_no']}: printed {o['printed']} vs published {o['published']}")
     _print_fields(summary["fields"])
     if failures:
         print(f"\n{len(failures)} parts with unreadable pages or errors:")

@@ -13,9 +13,9 @@ is a guess about the other 125.
 
 The signature is robust because it is structural:
 
-    elector page   3 columns of boxes  ->  >= 9 vertical rules, >= 20 horizontal
-    summary page   ruled rows, no columns  ->  0 vertical rules
-    info page      the form grid           ->  a handful of each
+    elector page   a grid can be built from its rules  ->  columns and rows both resolve
+    summary page   ruled rows, no columns              ->  no vertical rules
+    info page      the form grid                       ->  positions 1 and 2, always
 
 An unrecognised page is **flagged, never parsed**. A page this module cannot classify is a
 page whose geometry we do not understand, and guessing at 30 box positions on it would
@@ -26,21 +26,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Sequence
+from typing import List, Sequence, Tuple
 
 from PIL import Image
 
 from assam_rolls import layout
 
+from . import grid
+
 #: Pages 1 and 2 are the info pages, already extracted. Everything after is roll content.
 INFO_PAGES = 2
-
-#: An elector page carries three columns of boxes. Each column contributes an outer pair of
-#: rules plus an internal divider, so nine is the floor for three columns being present.
-MIN_COLUMN_RULES = 9
-
-#: Ten box rows, each bounded above and below, minus tolerance for a short final page.
-MIN_ROW_RULES = 8
 
 
 class PageKind(str, Enum):
@@ -48,6 +43,52 @@ class PageKind(str, Enum):
     ELECTOR = "elector"
     SUMMARY = "summary"
     UNKNOWN = "unknown"
+
+
+class Section(str, Enum):
+    """Which list a page of electors belongs to.
+
+    A final roll is the main list plus supplements published with it, and they use the
+    **identical box layout**. Part 8's page 31 is headed ``যোগ তালিকা 1 (27-12-2025
+    04-02-2026)`` -- an addition list -- and without reading that header its 23 electors are
+    indistinguishable from main-roll rows. Parts 1, 5 and 9 have no supplement at all, which
+    is what makes this dangerous: it is occasional, so nothing downstream would ever notice
+    the two being mixed.
+    """
+
+    MAIN = "main"
+    ADDITION = "addition"
+    DELETION = "deletion"
+    MODIFICATION = "modification"
+
+
+#: Header words that name a supplement. Matched as substrings because the header is OCR'd:
+#: ``যোগ তালিকা`` survives as ``যোগ`` far more reliably than as the whole phrase.
+SECTION_MARKERS = (
+    ("যোগ", Section.ADDITION),
+    ("সংযোজন", Section.ADDITION),
+    ("বিয়োজন", Section.DELETION),
+    ("লোপ", Section.DELETION),
+    ("বাদ", Section.DELETION),
+    ("সংশোধন", Section.MODIFICATION),
+    ("পৰিৱৰ্তন", Section.MODIFICATION),
+)
+
+
+def section_of(header: str) -> Tuple[Section, bool]:
+    """``(section, recognised)`` for one page's header band.
+
+    An unrecognised header is reported as ``MAIN`` with ``recognised=False`` rather than
+    guessed at. A supplement worded in a way this does not know about then shows up as a
+    flagged page -- something to look at -- instead of as electors quietly merged into the
+    main roll, which is the failure that matters.
+    """
+    text = " ".join(header.split())
+    for marker, section in SECTION_MARKERS:
+        if marker in text:
+            return section, True
+    recognised = "অংশৰ" in text or "সমষ্টিৰ" in text
+    return Section.MAIN, recognised
 
 
 @dataclass(frozen=True)
@@ -67,14 +108,32 @@ class PageSignature:
 def classify(image: Image.Image, number: int) -> PageSignature:
     """Decide what a rendered page is, from its rules alone."""
     h_rules = layout.detect_h_rules(image)
-    v_rules = layout.detect_v_rules(image, 0, image.height - 1) if h_rules else []
+    # Look for columns **only between the first and last horizontal rule**, not down the whole
+    # page. A supplement holding eighteen electors rules six rows across the top fifth of the
+    # sheet, so its vertical lines are a fifth of the height and none of them survives a
+    # full-page threshold: parts 2 and 3 had their addition lists classified as summaries and
+    # came out 18 and 8 electors short, matching those lists exactly.
+    v_rules = layout.detect_v_rules(image, h_rules[0], h_rules[-1]) if len(h_rules) > 1 else []
+
+    columns = grid.column_triples(v_rules)
+    rows = grid.row_bands(h_rules)
 
     if number <= INFO_PAGES:
         kind = PageKind.INFO
-    elif len(v_rules) >= MIN_COLUMN_RULES and len(h_rules) >= MIN_ROW_RULES:
+    elif columns and rows:
+        # The test is whether a grid can actually be built, not whether enough rules were
+        # counted. A rule-count floor is a guess about how many electors a page holds: at
+        # eight it called a two-row addition list "unknown" and dropped it. Asking the grid
+        # builder is the same question the extractor will ask, so the two cannot disagree.
         kind = PageKind.ELECTOR
-    elif not v_rules and h_rules:
-        # Ruled rows with no columns: the closing summary of net electors.
+    elif columns:
+        # Columns but no rows is a grid half-resolved -- geometry we do not understand, and
+        # the only case worth flagging. Everything else here is a page with no electors.
+        kind = PageKind.UNKNOWN
+    elif h_rules:
+        # Ruled, but no column structure: the closing summary of net electors. It carries a
+        # couple of stray vertical marks, so testing for *no* vertical rules at all put every
+        # summary page into "unknown" and drowned the signal that flag exists to give.
         kind = PageKind.SUMMARY
     else:
         kind = PageKind.UNKNOWN

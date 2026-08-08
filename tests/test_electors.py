@@ -130,10 +130,38 @@ class TestFieldParsing:
         assert fields.relation_of("পিতাৰ নাম : গংগাৰাম ৰাভা") == ("গংগাৰাম ৰাভা", "father")
         assert fields.relation_of("স্বামীৰ নাম : খাদৰাম ৰাভা") == ("খাদৰাম ৰাভা", "husband")
 
-    def test_sex_is_matched_as_a_fragment(self):
-        """পুৰুষ comes back as পৰষ; a whole-word table misses every damaged scan."""
+    def test_sex_survives_a_damaged_scan(self):
+        """পুৰুষ comes back as পৰষ or পৰম; মহিলা as মাহলা."""
         assert fields.age_and_sex("বয়স ' 46 [লঙ্গ ' পৰষ") == (46, "M")
         assert fields.age_and_sex("বয়স : 55 লিঙ্গ : মাহলা") == (55, "F")
+        assert fields.sex_of("বয়স ' এ4এ4 ললক্ষ ' পৰম") == "M"
+        assert fields.sex_of("বয়স : 30 লিঙ্গ : তৃতীয়") == "T"
+
+    def test_sex_scoring_is_symmetric_between_the_words(self):
+        """An ordered fragment list skewed the dataset and this is the regression test.
+
+        মহিলা is longer and more distinctive than পুৰুষ, so it survived damage the male word
+        did not, and the female fragments were checked first. Against a published 51/49 male
+        split the fragment matcher returned 41/59 -- on rows whose age had read perfectly, so
+        it was the matcher and not the scan. Scoring all three words and taking the best is
+        symmetric by construction.
+        """
+        male = fields.sex_of("লিঙ্গ ' পৰম")
+        female = fields.sex_of("লিঙ্গ ' মহল")
+        assert (male, female) == ("M", "F")
+
+    def test_a_line_with_no_sex_word_yields_nothing(self):
+        """Scoring must not invent a sex for the name line."""
+        assert fields.sex_of("নাম : খাদৰাম ৰাভা") == ""
+        assert fields.sex_of("") == ""
+
+    def test_a_one_character_tail_does_not_raise(self):
+        """``range(2, 2)`` is empty and ``max()`` raised, killing the whole part.
+
+        Found by a real run dying on it. Every short input must return, not raise.
+        """
+        for text in ("", "প", "ম", "1", "  ", "-"):
+            assert fields.sex_of(text) == ""
 
     def test_an_implausible_age_is_not_recorded(self):
         assert fields.age_and_sex("বয়স : 7 লিঙ্গ : পুৰুষ")[0] is None
@@ -177,6 +205,50 @@ class TestFieldParsing:
         assert fields.consensus(["ৰাভা", "ৰাভা"]) == ("ৰাভা", True)
         value, agreed = fields.consensus(["ৰাভ", "ৰাভা"])
         assert value == "ৰাভা" and not agreed
+
+
+class TestRollSections:
+    """A final roll is the main list plus supplements, in the identical box layout."""
+
+    def test_a_supplement_header_is_recognised(self):
+        """Part 8 page 31: যোগ তালিকা 1 (27-12-2025 04-02-2026) -- an addition list."""
+        header = "বিধানসভা সমষ্টিৰ নম্বৰ আৰু নাম : 1-গোসাইগাওঁ খণ্ড নং :8 | যোগ তালিকা 1"
+        assert pages.section_of(header) == (pages.Section.ADDITION, True)
+
+    def test_a_main_roll_header_is_recognised(self):
+        header = "বিধানসভা সমষ্টিৰ নম্বৰ আৰু নাম : 1-গোসাইগাওঁ | অংশৰ নম্বৰ আৰু নাম : 1-বনগাওঁ"
+        assert pages.section_of(header) == (pages.Section.MAIN, True)
+
+    def test_an_unreadable_header_is_flagged_not_guessed(self):
+        """An unknown supplement wording must surface, not merge silently into the roll."""
+        section, recognised = pages.section_of("garbled nonsense")
+        assert section is pages.Section.MAIN and not recognised
+
+
+class TestPageKindsAreSpecific:
+    """``unknown`` has to mean something, or it stops being a signal."""
+
+    SUMMARY_H = (38, 200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400)
+
+    def test_a_summary_with_stray_vertical_marks_is_not_unknown(self):
+        """Testing for *no* vertical rules put every summary page into unknown.
+
+        The closing page carries a couple of stray vertical marks, so the seven-part run came
+        back with unknown=[25], [30, 32] and so on -- all of them ordinary summaries, drowning
+        the flag that exists to surface geometry we do not understand.
+        """
+        signature = pages.PageSignature(25, pages.PageKind.SUMMARY, self.SUMMARY_H, (100, 900))
+        assert signature.kind is pages.PageKind.SUMMARY
+
+    def test_a_two_row_supplement_is_an_elector_page(self):
+        """A rule-count floor is a guess about how many electors a page holds.
+
+        At eight horizontal rules it classified an eighteen-elector addition list as a
+        summary, and parts 2 and 3 came out 18 and 8 short -- exactly those lists.
+        """
+        h = (38, 153, 568, 593, 1008)
+        v = (78, 854, 1082, 1108, 1133, 1909, 2137, 2189, 2965, 3193)
+        assert grid.column_triples(v) and grid.row_bands(h)
 
 
 class TestResume:
@@ -250,10 +322,38 @@ class TestReconciliation:
         checks = validate.reconcile(rows, {(1, 1): {"total": 10}})
         assert checks[0].counts_match and checks[0].serial_gaps
 
-    def test_summary_reports_the_rate_over_checkable_parts_only(self):
-        rows = self.rows(5) + self.rows(5, part=2)
-        checks = validate.reconcile(rows, {(1, 1): {"total": 5}})
+    def test_the_sex_ratio_is_reported_against_the_published_one(self):
+        """A ratio catches what no count can: a matcher that skews the dataset.
+
+        The fragment matcher returned 41% male against a published 51% while the totals
+        looked fine, so this is the check that would have caught it.
+        """
+        rows = self.rows(6, sex="M") + self.rows(4, sex="F")[:4]
+        for i, r in enumerate(rows):
+            r["serial_no"] = i + 1
+        checks = validate.reconcile(rows, {(1, 1): {"total": 10, "male": 5, "female": 5}})
         summary = validate.summarize(checks, rows)
-        assert summary["parts"] == 2
-        assert summary["parts_with_published_total"] == 1
-        assert summary["parts_exact_rate"] == 1.0
+        assert summary["male_share"] == 0.6
+        assert summary["published_male_share"] == 0.5
+
+    def test_the_published_gap_is_reported_not_scored(self):
+        """The printed roll does not equal the published net, so this is a difference.
+
+        Part 1 prints 870 against a published 850 with no supplement and no blank boxes.
+        Treating that as failure would mean deleting real rows.
+        """
+        rows = self.rows(870)
+        summary = validate.summarize(validate.reconcile(rows, {(1, 1): {"total": 850}}), rows)
+        assert summary["printed_minus_published_mean"] == 20.0
+        assert summary["gap_outliers"] == [], "a single part cannot be an outlier"
+
+    def test_serial_gaps_are_counted_within_each_list(self):
+        """Supplements restart at 1, so a part-wide sequence check sees a false gap."""
+        rows = self.rows(3)
+        extra = self.rows(2, part=1)
+        for i, r in enumerate(extra):
+            r["serial_no"] = i + 1
+            r["roll_section"] = "addition"
+        checks = validate.reconcile(rows + extra, {(1, 1): {"total": 5}})
+        assert checks[0].serial_gaps == 0
+        assert checks[0].supplement_rows == 2

@@ -32,6 +32,13 @@ from typing import List, Optional, Sequence, Tuple
 import numpy as np
 from PIL import Image
 
+#: Where the photo divider sits, as a fraction of box width. Measured on full pages:
+#: (854-78)/(1082-78) = 0.773. Used only when the divider was never printed.
+TEXT_FRACTION = 0.773
+
+#: Rules closer together than this fraction of the page width belong to the same edge.
+#: Adjacent boxes share a border drawn as two or three closely-spaced lines, and the page
+#: border adds another beside the outermost.
 #: Boxes per elector page. Fixed by the publisher's template, and asserted rather than
 #: assumed -- a page that yields a different count is reported, not silently accepted.
 COLUMNS = 3
@@ -96,9 +103,6 @@ def _bands(values: Sequence[int], threshold: float) -> List[Tuple[int, int]]:
     return out
 
 
-#: Rules closer together than this fraction of the page width belong to the same edge.
-#: Adjacent boxes share a border drawn as two or three closely-spaced lines, and the page
-#: border adds another beside the outermost.
 EDGE_TOLERANCE = 0.03
 
 
@@ -115,9 +119,17 @@ def column_triples(v_rules: Sequence[int]) -> List[Tuple[int, int, int]]:
     Reading them as consecutive triples finds nothing. Reading the shared clusters as *both*
     the right edge of one box and the left edge of the next -- taking the outermost line on
     each side, so the gutter is excluded from both -- recovers the geometry exactly.
+
+    **The last page of a part draws no dividers.** Where a part runs out of electors partway
+    down a page, the publisher prints the boxes but not the photo panels, so that page has
+    six vertical rules instead of twelve -- three columns of bare outer edges. Requiring the
+    divider discarded those pages whole, and with them every elector on them: part 5 came out
+    at 330 against a published 344, and the missing fourteen were all on the page that was
+    thrown away. So a column may arrive either way, and where the divider was never printed
+    its position is taken from the ratio the full pages establish.
     """
     rules = sorted(set(v_rules))
-    if len(rules) < COLUMNS * 3:
+    if len(rules) < COLUMNS + 1:
         return []
     tolerance = max(4, (rules[-1] - rules[0]) * EDGE_TOLERANCE)
 
@@ -128,13 +140,21 @@ def column_triples(v_rules: Sequence[int]) -> List[Tuple[int, int, int]]:
         else:
             clusters.append([rule])
 
-    if len(clusters) < COLUMNS * 2 + 1:
+    if len(clusters) >= COLUMNS * 2 + 1:
+        edges = [(clusters[i * 2][-1], clusters[i * 2 + 2][0]) for i in range(COLUMNS)]
+        dividers = [clusters[i * 2 + 1][0] for i in range(COLUMNS)]
+    elif len(clusters) >= COLUMNS + 1:
+        edges = [(clusters[i][-1], clusters[i + 1][0]) for i in range(COLUMNS)]
+        dividers = [None] * COLUMNS
+    else:
         return []
+
     out: List[Tuple[int, int, int]] = []
-    for column in range(COLUMNS):
-        left = clusters[column * 2][-1]
-        divider = clusters[column * 2 + 1][0]
-        right = clusters[column * 2 + 2][0]
+    for (left, right), divider in zip(edges, dividers):
+        if right <= left:
+            return []
+        if divider is None:
+            divider = left + int((right - left) * TEXT_FRACTION)
         if not left < divider < right:
             return []
         out.append((left, divider, right))
