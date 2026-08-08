@@ -27,6 +27,8 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Sequence, Tuple
 
+from . import quality
+
 #: Row attributes cheap to compute and plausibly causal. Spatial ones matter most: a crop
 #: bug shows up as a column or row effect and nothing else.
 FEATURES: Sequence[str] = ("box_col", "box_row", "roll_section", "lang", "relation_type")
@@ -62,7 +64,17 @@ class Association:
         )
 
 
+def _wrong(problem: str) -> Callable[[Dict[str, Any]], bool]:
+    return lambda row: problem in quality.problems_with(row)
+
+
 #: The failure classes worth explaining. Each maps a row to whether it failed.
+#:
+#: Both kinds are here, and for a while only the first kind was. A missing field announces
+#: itself; a *wrong* one does not, and the single largest error class in this corpus --
+#: 1,299 rows whose name is a copy of the relation -- was invisible to the association scan
+#: while the floor detectors that find it sat in another module. An engine that localises
+#: only what is absent will never point at what is merely false.
 FAILURES: Dict[str, Callable[[Dict[str, Any]], bool]] = {
     "no_epic": lambda r: not r.get("epic_no"),
     "no_name": lambda r: not r.get("name"),
@@ -72,6 +84,11 @@ FAILURES: Dict[str, Callable[[Dict[str, Any]], bool]] = {
     "no_house": lambda r: not r.get("house_no"),
     "name_disagreement": lambda r: "name_disagreement" in (r.get("flags") or ""),
     "unreadable": lambda r: "unreadable" in (r.get("flags") or ""),
+    "name_equals_relation": _wrong("name_equals_relation"),
+    "name_has_latin_or_digits": _wrong("name_has_latin_or_digits"),
+    "name_contains_label": _wrong("name_contains_label"),
+    "epic_malformed": _wrong("epic_malformed"),
+    "age_out_of_range": _wrong("age_out_of_range"),
 }
 
 
@@ -135,6 +152,14 @@ PROPOSALS: Sequence[Tuple[str, str, str]] = (
         "*",
         "A row effect usually means the row band is off by a few pixels -- an internal rule "
         "or a section header shifting the band. Check row_bands on the affected pages.",
+    ),
+    (
+        "roll_section",
+        "no_epic",
+        "The EPIC is cropped from right of the photo divider, and supplement pages print no "
+        "divider -- the position is derived from TEXT_FRACTION instead. If that fraction is "
+        "off there, the crop clips the EPIC. Compare derived against printed dividers before "
+        "changing anything; this is a geometry change, so the line cache cannot score it.",
     ),
     (
         "roll_section",

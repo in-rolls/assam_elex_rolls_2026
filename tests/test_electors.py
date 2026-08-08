@@ -788,3 +788,35 @@ class TestNameConsensus:
         shifted = self.LINES[1:]
         assigned = fields.assign_bands(shifted)
         assert fields.second_name(shifted, ["নাম : খাদৰাম ৰাভা"], assigned) == ""
+
+
+class TestDiagnosingWrongValues:
+    """An engine that localises only what is absent will never point at what is false."""
+
+    def test_a_wrong_value_is_a_failure_class_the_engine_can_localise(self):
+        rows = [
+            {
+                "name": "গংগাৰাম ৰাভা" if i % 3 == 0 else "খাদৰাম ৰাভা",
+                "relation_name": "গংগাৰাম ৰাভা",
+                "box_col": i % 3,
+                "box_row": i % 10,
+            }
+            for i in range(90)
+        ]
+        ranked = {p.failure: p for p in diagnose.priorities(rows)}
+        assert "name_equals_relation" in ranked, "the largest error class must be rankable"
+        assert ranked["name_equals_relation"].affected == 30
+
+    def test_it_finds_the_slice_a_wrong_value_concentrates_in(self):
+        rows = [
+            {
+                "name": "গংগাৰাম ৰাভা" if i % 3 == 0 else "খাদৰাম ৰাভা",
+                "relation_name": "গংগাৰাম ৰাভা",
+                "box_col": i % 3,
+                "box_row": 0,
+            }
+            for i in range(90)
+        ]
+        found = diagnose.associations(rows, features=("box_col",))
+        hit = next(a for a in found if a.failure == "name_equals_relation")
+        assert hit.value == 0 and hit.rate == 1.0
