@@ -196,6 +196,69 @@ def _print_fields(report: Dict[str, Any]) -> None:
         print("   flags:", dict(sorted(report["flags"].items(), key=lambda kv: -kv[1])))
 
 
+def cmd_quality(args: argparse.Namespace) -> int:
+    """Extract a random sample of parts and report what can be established about it."""
+    import random
+
+    from . import quality
+
+    zip_path = Path(args.zip)
+    if not zip_path.exists():
+        print(f"no such zip: {zip_path}", file=sys.stderr)
+        return 1
+    render.require_poppler()
+
+    everything = list(render.iter_zip_parts(zip_path))
+    if not everything:
+        print(f"no recognisable part PDFs in {zip_path}", file=sys.stderr)
+        return 1
+    # Seeded, so a re-measure after a fix is comparable rather than a different sample.
+    chosen = random.Random(args.seed).sample(everything, min(args.parts, len(everything)))
+    ac_no = chosen[0].ac_no
+    cache_dir = Path(args.cache) / f"AC{ac_no:03d}"
+    print(
+        f"{zip_path.name}: sampling {len(chosen)} of {len(everything)} parts "
+        f"(seed {args.seed}), {args.workers} workers"
+    )
+
+    rows: List[Dict[str, Any]] = []
+    results: List[Dict[str, Any]] = []
+    with ProcessPoolExecutor(max_workers=args.workers) as pool:
+        payload = [(str(zip_path), p.pdf_name, str(cache_dir)) for p in chosen]
+        for done, result in enumerate(pool.map(_one_part, payload), start=1):
+            rows.extend(result["electors"])
+            results.append(result)
+            print(
+                f"  {done}/{len(chosen)} part {result['part_no']}: "
+                f"{len(result['electors'])} electors | {len(rows):,} total"
+                + (" (cached)" if result.get("cached") else ""),
+                flush=True,
+            )
+
+    if not rows:
+        print("no electors extracted", file=sys.stderr)
+        return 1
+
+    roll_totals = {
+        (r["ac_no"], r["part_no"]): {
+            "total": r.get("summary_total"),
+            "male": r.get("summary_male"),
+            "female": r.get("summary_female"),
+        }
+        for r in results
+        if r.get("summary_total")
+    }
+    checks = validate.reconcile(rows, validate.load_part_totals(), roll_totals)
+    data = quality.report(rows, validate.summarize(checks, rows))
+
+    print()
+    print(quality.format_report(data))
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"\nwrote {args.out}")
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     rows = output.read_shard(Path(args.shard))
     checks = validate.reconcile(rows, validate.load_part_totals())
@@ -215,6 +278,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_parse.add_argument("--limit", type=int, default=0, help="first N parts only")
     p_parse.add_argument("--cache", default="out/electors/cache")
     p_parse.set_defaults(func=cmd_parse)
+
+    p_quality = sub.add_parser("quality", help="measure field quality on a sample of parts")
+    p_quality.add_argument("zip")
+    p_quality.add_argument("--parts", type=int, default=20)
+    p_quality.add_argument("--seed", type=int, default=7)
+    p_quality.add_argument("--workers", type=int, default=6)
+    p_quality.add_argument("--cache", default="out/electors/cache")
+    p_quality.add_argument("--out", type=Path, default=Path("out/electors/quality.json"))
+    p_quality.set_defaults(func=cmd_quality)
 
     p_report = sub.add_parser("report", help="reconcile a shard against the info pages")
     p_report.add_argument("shard")

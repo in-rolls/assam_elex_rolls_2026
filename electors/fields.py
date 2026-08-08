@@ -367,15 +367,29 @@ def read_page(image: Image.Image, boxes: Sequence[grid.Box]) -> List[Tuple[grid.
         for position, box in enumerate(box for box in live if box in name_index)
     }
 
-    headers = [
-        (
-            image.crop((box.left, box.top + 4, box.right, max(box.top + 12, bands[box][0][0])))
-            if bands[box]
-            else image.crop((box.left, box.top + 4, box.right, box.top + 110))
-        )
+    # The EPIC sits **right of the photo divider** and the serial at the far left, with a
+    # thousand pixels of whitespace between them. Read as one strip, psm 7 gives up: on an
+    # untouched part it matched 24 of 30, and six of the misses came back completely empty
+    # while their crops measured a normal 92-94px, so geometry was never the problem. Read as
+    # its own zone the same page matches **30 of 30**, at every scale and segmentation mode
+    # tried -- a fix that works at only one setting is usually a coincidence.
+    strips = [
+        (box, box.top + 4, max(box.top + 12, bands[box][0][0] if bands[box] else box.top + 110))
         for box in live
     ]
-    header_reads = [batch.texts(headers, lang="eng", psm=7, scale=scale) for scale in HEADER_SCALES]
+    epic_reads = batch.texts(
+        [image.crop((b.text_right, y0, b.right, y1)) for b, y0, y1 in strips],
+        lang="eng",
+        psm=7,
+        scale=HEADER_SCALES[0],
+    )
+    serial_reads = batch.texts(
+        [image.crop((b.left, y0, b.text_right, y1)) for b, y0, y1 in strips],
+        lang="eng",
+        psm=7,
+        scale=HEADER_SCALES[0],
+        whitelist="0123456789",
+    )
 
     lines_by_box: Dict[grid.Box, Tuple[List[str], List[str]]] = {box: ([], []) for box in live}
     for box, index in spans:
@@ -386,13 +400,19 @@ def read_page(image: Image.Image, boxes: Sequence[grid.Box]) -> List[Tuple[grid.
 
     out: List[Tuple[grid.Box, Elector]] = []
     for position, box in enumerate(live):
-        reads = [reading[position] for reading in header_reads]
-        out.append((box, _assemble(lines_by_box[box], reads)))
+        out.append(
+            (box, _assemble(lines_by_box[box], epic_reads[position], serial_reads[position]))
+        )
     return out
 
 
-def _assemble(lines: Tuple[List[str], List[str]], header_reads: Sequence[str]) -> Elector:
-    """Build one elector from its lines at two scales and its header at two scales."""
+#: Stripped before the EPIC is matched. A real read came back ``S 106 -, HHK3535/704``: the
+#: EPIC is plainly there and a stray slash inside the digits was enough to reject it.
+NON_ALNUM = re.compile(r"[^A-Za-z0-9]")
+
+
+def _assemble(lines: Tuple[List[str], List[str]], epic_read: str, serial_read: str) -> Elector:
+    """Build one elector from its text lines, its EPIC strip and its serial strip."""
     assigned = [assign_bands(scale_lines) for scale_lines in lines]
     elector = Elector()
 
@@ -414,20 +434,12 @@ def _assemble(lines: Tuple[List[str], List[str]], header_reads: Sequence[str]) -
         elector.age = elector.age if elector.age is not None else age
         elector.sex = elector.sex or sex
 
-    epics = [
-        m.group()
-        for m in (EPIC_RE.search(raw.replace(" ", "").upper()) for raw in header_reads)
-        if m
-    ]
-    elector.epic_no, _ = consensus(epics)
-    for raw in header_reads:
-        # The serial sits left of the EPIC, so the EPIC marks where to stop looking -- but
-        # only when one was found. Splitting on an empty string raises.
-        head = raw.split(elector.epic_no)[0] if elector.epic_no else raw
-        found = re.findall(r"\d{1,4}", schema.normalize_digits(head))
-        if found:
-            elector.serial_no_ocr = int(found[0])
-            break
+    match = EPIC_RE.search(NON_ALNUM.sub("", epic_read).upper())
+    elector.epic_no = match.group() if match else ""
+
+    found = re.findall(r"\d{1,4}", schema.normalize_digits(serial_read))
+    if found:
+        elector.serial_no_ocr = int(found[0])
 
     if not elector.is_empty:
         for value, flag in (

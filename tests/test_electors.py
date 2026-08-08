@@ -6,7 +6,9 @@ failure it exists to prevent, because all of them were failures first.
 
 from __future__ import annotations
 
-from electors import fields, grid, pages, validate
+import random
+
+from electors import bench, diagnose, fields, grid, pages, quality, validate
 
 #: One real elector page from part 1, at 400 dpi. Vertical rules come in clusters because
 #: adjacent boxes share a border; the extras at 749, 1189 ... are the internal rule some
@@ -412,3 +414,175 @@ class TestReconciliation:
         checks = validate.reconcile(rows + extra, {(1, 1): {"total": 5}})
         assert checks[0].serial_gaps == 0
         assert checks[0].supplement_rows == 2
+
+
+class TestQualityIsNotFillRate:
+    """Fill rate says a field is non-empty. These say whether it can possibly be right.
+
+    Every string here came out of a real run; none is invented.
+    """
+
+    def test_latin_in_an_assamese_name_is_certainly_wrong(self):
+        rows = [{"name": "Kokrajhar midancipalus"}, {"name": "খাদৰাম ৰাভা"}]
+        assert quality.definite_errors(rows)["by_kind"]["name_has_latin_or_digits"] == 1
+
+    def test_a_name_equal_to_the_relation_is_certainly_wrong(self):
+        """Seen as তন্ডা ৰাভা in both columns -- one band read twice."""
+        rows = [{"name": "তন্ডা ৰাভা", "relation_name": "তন্ডা ৰাভা"}]
+        assert "name_equals_relation" in quality.definite_errors(rows)["by_kind"]
+
+    def test_a_leaked_label_is_certainly_wrong(self):
+        rows = [{"name": "নাম খাদৰাম"}]
+        assert "name_contains_label" in quality.definite_errors(rows)["by_kind"]
+
+    def test_a_duplicate_epic_is_certainly_wrong(self):
+        """EPICs are unique by construction, so a repeat inside one AC is a misread."""
+        rows = [{"epic_no": "HHK0001471"}, {"epic_no": "HHK0001471"}, {"epic_no": "HHK0001472"}]
+        assert quality.definite_errors(rows)["duplicate_epics"] == 1
+
+    def test_a_clean_row_trips_nothing(self):
+        rows = [
+            {
+                "name": "খাদৰাম ৰাভা",
+                "relation_name": "গংগাৰাম ৰাভা",
+                "epic_no": "HHK0001471",
+                "age": 46,
+            }
+        ]
+        assert quality.definite_errors(rows)["rows_definitely_wrong"] == 0
+
+    def test_the_floor_and_ceiling_are_reported_separately(self):
+        """They bound the error rate from opposite sides and must not be conflated."""
+        rows = [
+            {"name": "Latin here", "flags": ""},
+            {"name": "খাদৰাম ৰাভা", "flags": "name_disagreement"},
+        ]
+        assert quality.definite_errors(rows)["rate"] == 0.5
+        assert quality.disagreement(rows)["name_disagreement"] == 0.5
+
+    def test_the_age_last_digit_histogram_exposes_digit_confusion(self):
+        """No per-row check can see this: every age is individually plausible."""
+        rows = [{"age": a} for a in (25, 35, 45, 55, 65, 25, 35, 45)]
+        dist = quality.distributions(rows)
+        assert dist["age_last_digit"] == {5: 8}
+
+
+class TestTheGate:
+    """A fix is accepted only if it clears all four conditions.
+
+    The sex bias was declared fixed twice before its cause was found, because each attempt
+    improved the case in front of me. Improving the case in front of you is not evidence.
+    """
+
+    def test_a_fix_that_only_works_in_sample_is_rejected(self):
+        results = bench.run(
+            "epic_present",
+            in_sample={"before": 0.83, "after": 0.98},
+            out_of_sample={"before": 0.79, "after": 0.80},
+            regression_before={},
+            regression_after={},
+            guarded=(),
+        )
+        assert not bench.verdict(results)
+
+    def test_a_fix_that_breaks_something_else_is_rejected(self):
+        """The gate that was missing: collateral damage to a field nobody was watching."""
+        results = bench.run(
+            "epic_present",
+            in_sample={"before": 0.83, "after": 0.98},
+            out_of_sample={"before": 0.79, "after": 0.97},
+            regression_before={"parts_matching_roll_rate": 0.60, "name_present": 0.90},
+            regression_after={"parts_matching_roll_rate": 0.40, "name_present": 0.90},
+            guarded=("parts_matching_roll_rate", "name_present"),
+        )
+        assert not bench.verdict(results)
+        assert any("parts_matching_roll_rate" in r.detail for r in results)
+
+    def test_a_fix_clearing_everything_is_accepted(self):
+        results = bench.run(
+            "epic_present",
+            in_sample={"before": 0.826, "after": 0.981},
+            out_of_sample={"before": 0.792, "after": 0.977},
+            regression_before={"name_present": 0.90},
+            regression_after={"name_present": 0.90},
+            guarded=("name_present",),
+            seconds=(800.0, 780.0),
+        )
+        assert bench.verdict(results)
+
+    def test_the_splits_are_disjoint(self):
+        """An out-of-sample set that overlaps the others is not out of sample."""
+        parts = list(range(1, 155))
+        splits = bench.split_parts(parts)
+        assert not set(splits["validate"]) & set(splits["diagnose"])
+        assert not set(splits["validate"]) & set(splits["regression"])
+
+    def test_the_held_out_split_is_reproducible(self):
+        parts = list(range(1, 155))
+        assert bench.validate_parts(parts) == bench.validate_parts(parts)
+
+    def test_a_ratio_is_scored_by_closeness_not_by_size(self):
+        """Overshooting the target is not an improvement."""
+        under = bench.metrics_from({}, {"male_share": 0.45, "roll_male_share": 0.508})
+        near = bench.metrics_from({}, {"male_share": 0.505, "roll_male_share": 0.508})
+        over = bench.metrics_from({}, {"male_share": 0.60, "roll_male_share": 0.508})
+        assert near["male_share"] > under["male_share"]
+        assert near["male_share"] > over["male_share"]
+
+
+class TestTheProposalEngine:
+    """Root causes are co-occurrences. Found by eye they neither repeat nor scale."""
+
+    def rows(self, failing_column):
+        out = []
+        for col in (0, 1, 2):
+            for i in range(60):
+                lost = col == failing_column and i < 30
+                out.append(
+                    {
+                        "box_col": col,
+                        "box_row": i % 10,
+                        "roll_section": "main",
+                        "sex": "" if lost else "M",
+                        "age": None if lost else 40,
+                        "epic_no": "HHK0001471",
+                        "name": "ৰাভা",
+                        "relation_name": "গংগাৰাম",
+                        "house_no": "2",
+                        "flags": "",
+                    }
+                )
+        return out
+
+    def test_it_finds_a_failure_concentrated_in_one_column(self):
+        found = diagnose.associations(self.rows(2), min_support=10)
+        assert found and found[0].feature == "box_col" and found[0].value == 2
+        assert found[0].lift > 2
+
+    def test_it_proposes_the_crop_when_the_signature_is_spatial(self):
+        found = diagnose.associations(self.rows(2), min_support=10)
+        assert any("crop" in p for p in diagnose.proposals(found))
+
+    def test_evenly_spread_failures_produce_nothing(self):
+        """It must not invent a cause when there is no pattern.
+
+        The first version of this test used ``i % 5`` for failures and ``i % 10`` for the row,
+        which puts every failure in rows 0 and 5 -- a real association. The engine found it and
+        the test was wrong. Randomised so the null really is null.
+        """
+        rng = random.Random(3)
+        rows = [
+            {
+                "box_col": rng.randrange(3),
+                "box_row": rng.randrange(10),
+                "sex": "" if rng.random() < 0.2 else "M",
+                "flags": "",
+            }
+            for _ in range(3000)
+        ]
+        assert diagnose.associations(rows, min_support=100) == []
+
+    def test_empty_and_garbled_reads_are_separated(self):
+        """They want opposite fixes and are identical in a fill rate."""
+        shapes = dict(diagnose.raw_read_shapes(["", "", "", "S 106 -, HHK3535/704", "", "HH"]))
+        assert shapes["empty"] == 4 and shapes["garbled"] == 1
