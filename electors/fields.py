@@ -40,16 +40,25 @@ from PIL import Image
 
 from assam_rolls import schema
 
-from . import grid
+from . import batch, grid
 
 #: ``HHK0001471``. Three letters and seven digits is the modern format; the bounds are loose
 #: because older cards and OCR both stray.
 EPIC_RE = re.compile(r"[A-Z]{2,4}\d{6,9}")
 
 #: Read at these upscales and compared. Scale, not page-segmentation mode, decides a
-#: marginal read -- measured on the info pages, and unchanged here.
+#: marginal read -- measured on the info pages.
+#:
+#: Native resolution was tried and rejected. Counting how many crops still contained the
+#: *label* said scale 1 was as good as scale 2 for half the cost (51 vs 52 lines with ``নাম``)
+#: -- but that measured the wrong thing. Extracting the *values* on a whole page, scale 1 cost
+#: age 77% -> 63% and sex 83% -> 73%: the printed label survives a coarse read, the
+#: handwritten-looking digits beside it do not. Speed is not worth a seventh of the ages.
 NAME_SCALES: Tuple[int, ...] = (2, 3)
-HEADER_SCALES: Tuple[int, ...] = (2, 3)
+
+#: The header holds the EPIC in small Latin type, which does gain from an upscale. One pass:
+#: the two scales agreed on almost every box, so the second bought nothing per page.
+HEADER_SCALES: Tuple[int, ...] = (2,)
 
 #: Label -> field. Longest first, because ``পিতাৰ নাম`` contains ``নাম``.
 LABELS: Sequence[Tuple[str, str]] = (
@@ -279,84 +288,115 @@ def consensus(readings: Sequence[str]) -> Tuple[str, bool]:
     return max(cleaned, key=len), False
 
 
-def read_header(
-    engine, image: Image.Image, box: grid.Box, band_top: int
-) -> Tuple[str, Optional[int]]:
-    """EPIC and the OCR'd serial from the strip above the text.
+def read_page(image: Image.Image, boxes: Sequence[grid.Box]) -> List[Tuple[grid.Box, "Elector"]]:
+    """Every elector on one page, in three tesseract invocations instead of three hundred.
 
-    Read with ``eng``: the strip is Latin and digits, and the Assamese model turns
-    ``HHK0001471`` into ``1414140001471``.
+    Reading box by box cost ten process spawns per elector. Here the whole page's crops go in
+    one batch each: the text lines, then the name line again at a second scale for the
+    consensus, then the headers in the English model. Everything else is unchanged -- the same
+    crops, the same models -- so this is purely the cost of asking, not of the answer.
+
+    Boxes without ink are skipped before any OCR, since a blank box at the end of a part is
+    the publisher's doing and there is nothing in it to read.
     """
-    top = box.top + 4
-    bottom = max(top + 8, band_top)
-    reads = [
-        engine._run(image.crop((box.left, top, box.right, bottom)), "eng", None, scale, psm=7)
-        for scale in HEADER_SCALES
-    ]
-    epics = [m.group() for m in (EPIC_RE.search(r.replace(" ", "").upper()) for r in reads) if m]
-    epic, _ = consensus(epics)
+    live = [box for box in boxes if grid.has_ink(image, box)]
+    if not live:
+        return []
 
-    serial = None
-    for raw in reads:
-        head = raw.split(epic)[0] if epic and epic in raw.replace(" ", "").upper() else raw
-        found = re.findall(r"\d{1,4}", schema.normalize_digits(head))
-        if found:
-            serial = int(found[0])
-            break
-    return epic, serial
+    bands = {box: grid.text_bands(image, box) for box in live}
+    crops: List[Image.Image] = []
+    spans: List[Tuple[grid.Box, int]] = []
+    for box in live:
+        for top, bottom in bands[box]:
+            crops.append(image.crop((box.left, top, box.text_right, bottom)))
+            spans.append((box, len(crops) - 1))
 
+    first_scale = batch.texts(crops, lang="asm", psm=7, scale=NAME_SCALES[0])
 
-def read_box(engine, image: Image.Image, box: grid.Box) -> Elector:
-    """Everything readable in one box."""
-    bands = grid.text_bands(image, box)
-    if not bands:
-        return Elector(flags=["no_text_bands"])
+    # The second scale is for the *name* consensus, so only the name band pays for it.
+    # Running it over all four bands cost three-quarters of the page's OCR time for a
+    # second opinion on the house number, which nothing uses.
+    name_index = {}
+    for box in live:
+        first = next((i for b, i in spans if b is box), None)
+        if first is not None:
+            name_index[box] = first
+    name_crops = [crops[name_index[box]] for box in live if box in name_index]
+    name_second = batch.texts(name_crops, lang="asm", psm=7, scale=NAME_SCALES[1])
+    second_by_box = {
+        box: name_second[position]
+        for position, box in enumerate(box for box in live if box in name_index)
+    }
 
-    lines_by_scale: List[List[str]] = []
-    for scale in NAME_SCALES:
-        lines_by_scale.append(
-            [
-                engine._run(
-                    image.crop((box.left, top, box.text_right, bottom)), "asm", None, scale, psm=7
-                )
-                for top, bottom in bands
-            ]
+    headers = [
+        (
+            image.crop((box.left, box.top + 4, box.right, max(box.top + 12, bands[box][0][0])))
+            if bands[box]
+            else image.crop((box.left, box.top + 4, box.right, box.top + 110))
         )
+        for box in live
+    ]
+    header_reads = [batch.texts(headers, lang="eng", psm=7, scale=scale) for scale in HEADER_SCALES]
 
-    assigned = [assign_bands(lines) for lines in lines_by_scale]
+    lines_by_box: Dict[grid.Box, Tuple[List[str], List[str]]] = {box: ([], []) for box in live}
+    for box, index in spans:
+        lines_by_box[box][0].append(first_scale[index])
+    for box in live:
+        if box in second_by_box:
+            lines_by_box[box][1].append(second_by_box[box])
+
+    out: List[Tuple[grid.Box, Elector]] = []
+    for position, box in enumerate(live):
+        reads = [reading[position] for reading in header_reads]
+        out.append((box, _assemble(lines_by_box[box], reads)))
+    return out
+
+
+def _assemble(lines: Tuple[List[str], List[str]], header_reads: Sequence[str]) -> Elector:
+    """Build one elector from its lines at two scales and its header at two scales."""
+    assigned = [assign_bands(scale_lines) for scale_lines in lines]
     elector = Elector()
 
-    name_reads = [value_after(a.get("name", ""), NAME_LABEL) for a in assigned]
-    elector.name, agreed_name = consensus(name_reads)
-    if not agreed_name:
+    elector.name, agreed = consensus([value_after(a.get("name", ""), NAME_LABEL) for a in assigned])
+    if not agreed:
         elector.flags.append("name_disagreement")
 
-    relation_reads = [relation_of(a.get("relation", "")) for a in assigned]
-    elector.relation_name, agreed_relation = consensus([r for r, _ in relation_reads])
-    elector.relation_type = next((k for _, k in relation_reads if k), "")
-    if not agreed_relation:
+    relations = [relation_of(a.get("relation", "")) for a in assigned]
+    elector.relation_name, agreed = consensus([name for name, _ in relations])
+    elector.relation_type = next((kind for _, kind in relations if kind), "")
+    if not agreed:
         elector.flags.append("relation_disagreement")
 
-    house_line = next((a.get("house", "") for a in assigned if a.get("house")), "")
-    elector.house_no = house_number(house_line)
-
-    # Every scale gets a vote on age and sex: the line is the same one, but a digit the
-    # first scale doubled the second often reads cleanly.
-    age_lines = [a.get("age", "") for a in assigned if a.get("age")]
-    for line in age_lines:
+    elector.house_no = house_number(
+        next((a.get("house", "") for a in assigned if a.get("house")), "")
+    )
+    for line in (a.get("age", "") for a in assigned if a.get("age")):
         age, sex = age_and_sex(line)
         elector.age = elector.age if elector.age is not None else age
         elector.sex = elector.sex or sex
 
-    elector.epic_no, elector.serial_no_ocr = read_header(engine, image, box, bands[0][0])
+    epics = [
+        m.group()
+        for m in (EPIC_RE.search(raw.replace(" ", "").upper()) for raw in header_reads)
+        if m
+    ]
+    elector.epic_no, _ = consensus(epics)
+    for raw in header_reads:
+        # The serial sits left of the EPIC, so the EPIC marks where to stop looking -- but
+        # only when one was found. Splitting on an empty string raises.
+        head = raw.split(elector.epic_no)[0] if elector.epic_no else raw
+        found = re.findall(r"\d{1,4}", schema.normalize_digits(head))
+        if found:
+            elector.serial_no_ocr = int(found[0])
+            break
 
     if not elector.is_empty:
-        if not elector.epic_no:
-            elector.flags.append("no_epic")
-        if not elector.name:
-            elector.flags.append("no_name")
-        if elector.age is None:
-            elector.flags.append("no_age")
-        if not elector.sex:
-            elector.flags.append("no_sex")
+        for value, flag in (
+            (elector.epic_no, "no_epic"),
+            (elector.name, "no_name"),
+            (elector.age, "no_age"),
+            (elector.sex, "no_sex"),
+        ):
+            if not value:
+                elector.flags.append(flag)
     return elector

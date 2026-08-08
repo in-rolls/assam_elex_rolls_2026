@@ -109,10 +109,11 @@ def read_part(
                     continue
                 result.elector_pages += 1
 
-                for box in boxes:
-                    elector = fields.read_box(engine, image, box)
+                for box, elector in fields.read_page(image, boxes):
                     if elector.is_empty:
-                        continue
+                        # Ink but nothing readable. Emitted anyway: the row exists in the
+                        # source, and dropping it makes the count agree with nothing.
+                        elector.flags.append("unreadable")
                     serial += 1
                     elector.serial_no = serial
                     # The OCR'd serial is *recorded*, not used to flag. It disagreed on 68%

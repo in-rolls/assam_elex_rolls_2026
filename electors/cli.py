@@ -17,25 +17,43 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
-from assam_rolls import ocr, render
+from assam_rolls import cache, ocr, render
 
 from . import extract, output, validate
 
 
 def _one_part(args) -> Dict[str, Any]:
-    """Worker entry point. Top-level so it pickles; the engine is built per process."""
-    zip_path, pdf_name = args
+    """Worker entry point. Top-level so it pickles; the engine is built per process.
+
+    Each part is cached as soon as it is read, and a cached part is never re-read. A run
+    over one constituency is hours long on a busy machine, and the first version wrote
+    nothing until all 154 parts were done -- so an interruption at hour four discarded four
+    hours. ``assam_rolls.cache`` already solved this for the info pages, atomically and keyed
+    to the source bytes; this simply uses it.
+    """
+    zip_path, pdf_name, cache_dir = args
+    zip_path, cache_dir = Path(zip_path), Path(cache_dir)
+
+    key = Path(pdf_name).stem
+    pdf_sha256 = render.sha256_bytes(render.read_pdf_bytes(zip_path, pdf_name))
+    entry = cache.read_entry(cache_dir, key)
+    if cache.is_fresh(entry, pdf_sha256):
+        return dict(entry["row"], electors=entry["sections"], cached=True)
+
     engine = ocr.get_engine("tesseract", lang="asm")
-    result = extract.read_part(Path(zip_path), pdf_name, engine=engine)
-    return {
+    result = extract.read_part(zip_path, pdf_name, engine=engine)
+    summary = {
         "ac_no": result.ac_no,
         "part_no": result.part_no,
-        "electors": result.electors,
         "page_count": result.page_count,
         "elector_pages": result.elector_pages,
         "unknown_pages": result.unknown_pages,
         "error": result.error,
+        "cached": False,
     }
+    if not result.error:
+        cache.write_entry(cache_dir, key, summary, result.electors, pdf_sha256)
+    return dict(summary, electors=result.electors)
 
 
 def cmd_parse(args: argparse.Namespace) -> int:
@@ -53,23 +71,32 @@ def cmd_parse(args: argparse.Namespace) -> int:
         return 1
 
     ac_no = parts[0].ac_no
-    print(f"{zip_path.name}: {len(parts)} parts, AC {ac_no}, {args.workers} workers")
+    cache_dir = Path(args.cache) / f"AC{ac_no:03d}"
+    already = len(list(cache_dir.glob("*.json"))) if cache_dir.exists() else 0
+    print(
+        f"{zip_path.name}: {len(parts)} parts, AC {ac_no}, {args.workers} workers"
+        + (f" ({already} already cached)" if already else "")
+    )
 
     rows: List[Dict[str, Any]] = []
     failures: List[Dict[str, Any]] = []
     done = 0
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
-        payload = [(str(zip_path), p.pdf_name) for p in parts]
+        payload = [(str(zip_path), p.pdf_name, str(cache_dir)) for p in parts]
         for result in pool.map(_one_part, payload):
             done += 1
             if result["error"] or result["unknown_pages"]:
                 failures.append(result)
             rows.extend(result["electors"])
-            if done % 10 == 0 or done == len(parts):
-                print(
-                    f"  {done}/{len(parts)} parts | {len(rows):,} electors | "
-                    f"{len(failures)} with problems"
-                )
+            # Every part, not every tenth. A run that prints only every tenth part gives no
+            # sign of life for its first hour, which is exactly when you need to know
+            # whether it is working or wedged.
+            print(
+                f"  {done}/{len(parts)} part {result['part_no']}: "
+                f"{len(result['electors'])} electors | {len(rows):,} total | "
+                f"{len(failures)} with problems" + (" (cached)" if result.get("cached") else ""),
+                flush=True,
+            )
 
     if not rows:
         print("no electors extracted", file=sys.stderr)
@@ -142,6 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_parse.add_argument("--out", default=str(output.SHARD_DIR))
     p_parse.add_argument("--workers", type=int, default=8)
     p_parse.add_argument("--limit", type=int, default=0, help="first N parts only")
+    p_parse.add_argument("--cache", default="out/electors/cache")
     p_parse.set_defaults(func=cmd_parse)
 
     p_report = sub.add_parser("report", help="reconcile a shard against the info pages")

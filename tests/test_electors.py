@@ -179,6 +179,52 @@ class TestFieldParsing:
         assert value == "ৰাভা" and not agreed
 
 
+class TestResume:
+    """A part is durable the moment it is read.
+
+    The first version wrote nothing until all 154 parts finished, so stopping a four-hour run
+    discarded four hours. Worse, the commit message claimed the stage was "cached and
+    resumable" before any of it existed.
+    """
+
+    def payload(self, tmp_path, zip_path="z.zip", pdf="p.pdf"):
+        return (str(zip_path), pdf, str(tmp_path))
+
+    def test_a_read_part_is_cached_and_not_read_twice(self, tmp_path, monkeypatch):
+        from assam_rolls import cache
+        from electors import cli, extract
+
+        calls = []
+
+        def fake_read_part(zip_path, pdf_name, engine=None):
+            calls.append(pdf_name)
+            result = extract.PartResult(1, 7, "ASM", "z.zip", pdf_name, "sha")
+            result.electors = [{"ac_no": 1, "part_no": 7, "name": "x"}]
+            return result
+
+        monkeypatch.setattr(extract, "read_part", fake_read_part)
+        monkeypatch.setattr(cli.render, "read_pdf_bytes", lambda *a: b"bytes")
+        monkeypatch.setattr(cli.render, "sha256_bytes", lambda *a: "sha")
+        monkeypatch.setattr(cli.ocr, "get_engine", lambda *a, **k: None)
+
+        first = cli._one_part((str(tmp_path / "z.zip"), "part7.pdf", str(tmp_path)))
+        second = cli._one_part((str(tmp_path / "z.zip"), "part7.pdf", str(tmp_path)))
+
+        assert calls == ["part7.pdf"], "the second call must come from cache"
+        assert not first["cached"] and second["cached"]
+        assert second["electors"] == first["electors"]
+        assert cache.read_entry(tmp_path, "part7") is not None
+
+    def test_reissued_source_bytes_invalidate_the_entry(self, tmp_path, monkeypatch):
+        """Resumption must never serve data derived from a file that no longer exists."""
+        from assam_rolls import cache
+
+        cache.write_entry(tmp_path, "part7", {"part_no": 7}, [], "old-sha")
+        entry = cache.read_entry(tmp_path, "part7")
+        assert cache.is_fresh(entry, "old-sha")
+        assert not cache.is_fresh(entry, "new-sha")
+
+
 class TestReconciliation:
     """The check that makes this stage trustworthy: the source published the answer."""
 
