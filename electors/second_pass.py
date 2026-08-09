@@ -148,7 +148,12 @@ class Reading:
         """
         repeat = REPEAT.search(self.text)
         if repeat:
-            return repeat.group(1)
+            # Keep what came *before* the loop, not the loop itself. These models finish the
+            # record and then pad -- "||\n||\n||\n" for hundreds of characters -- and returning
+            # the repeated cycle handed back the padding and discarded the answer. Three
+            # electors' names came out empty from responses that plainly contained them.
+            head = self.text[: repeat.start()]
+            return head if head.strip() else repeat.group(1)
         return "" if self.capped else self.text
 
     @property
