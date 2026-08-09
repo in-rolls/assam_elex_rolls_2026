@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import difflib
 import json
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
@@ -58,38 +57,21 @@ class Score:
 
 
 def terse_fields(text: str) -> Dict[str, Any]:
-    """The fields out of a terse-model answer, whatever shape it arrived in.
+    """The fields out of an engine's answer, whatever shape it arrived in.
 
-    The same prompt returns bare pipes, ``<p>`` wrappers and table rows, so every field is
-    found by its label and the name is whatever Assamese run is left once the labelled lines
-    are accounted for.
+    Delegates to :mod:`electors.second_pass`, which is the one place this format is read. An
+    earlier version of this module carried its own copy, and two readers for one format is
+    exactly the bug that put the elector's own name in the relation field.
     """
-    parts = [p.strip() for p in re.split(r"\||\n", text) if p.strip()]
-    out: Dict[str, Any] = {"name": "", "age": None, "house": "", "sex": ""}
-    for part in parts:
-        if "বয়স" in part:
-            found = re.search(r"বয়স\s*[:：]?\s*([0-9০-৯]{1,3})", part)
-            if found:
-                out["age"] = int(found.group(1).translate(BENGALI_DIGITS))
-        if re.search(r"ঘৰ\s*নং", part):
-            found = re.search(r"ঘৰ\s*নং\s*[:：]?\s*([0-9০-৯]{1,6})", part)
-            if found:
-                out["house"] = found.group(1).translate(BENGALI_DIGITS)
-        if "লিঙ্গ" in part:
-            if "পুৰুষ" in part or "পুরুষ" in part:
-                out["sex"] = "M"
-            elif "মহিলা" in part:
-                out["sex"] = "F"
-        if not out["name"]:
-            if re.search(r"নাম\s*[:：]", part) and not re.search(r"পিতাৰ|স্বামী|মাতা", part):
-                out["name"] = re.sub(r".*নাম\s*[:：]\s*", "", part).strip()
-            elif (
-                not part.isdigit()
-                and re.search(r"[ঀ-৿]{3,}", part)
-                and not re.search(r"ঘৰ|বয়স|লিঙ্গ|পিতাৰ|স্বামী|মাতা|<", part)
-            ):
-                out["name"] = part
-    return out
+    from . import second_pass
+
+    found = second_pass.Reading(text).fields()
+    return {
+        "name": found.get("name", ""),
+        "age": found.get("age"),
+        "house": found.get("house_no", ""),
+        "sex": found.get("sex", ""),
+    }
 
 
 def score_one(got: Dict[str, Any], want: Dict[str, Any], tally: Score) -> None:
@@ -109,7 +91,11 @@ def score(
 ) -> Dict[str, Score]:
     """Both engines over every box that has been read by eye."""
     by_key = {row["key"]: row for row in sample}
-    tallies = {"tesseract": Score("tesseract"), "savitr": Score("savitr")}
+    tallies = {
+        "tesseract": Score("tesseract"),
+        "savitr-terse": Score("savitr-terse"),
+        "surya-full": Score("surya-full"),
+    }
     for key, want in truth.items():
         row = by_key.get(key)
         if not row:
@@ -124,13 +110,15 @@ def score(
             want,
             tallies["tesseract"],
         )
-        score_one(terse_fields(row.get("surya") or ""), want, tallies["savitr"])
-    return tallies
+        score_one(terse_fields(row.get("surya") or ""), want, tallies["savitr-terse"])
+        if row.get("surya_full"):
+            score_one(terse_fields(row["surya_full"]), want, tallies["surya-full"])
+    return {name: t for name, t in tallies.items() if t.total}
 
 
 def render(tallies: Dict[str, Score]) -> str:
     names = list(tallies)
-    total = tallies[names[0]].total
+    total = max(t.total for t in tallies.values())
     lines = [
         f"ENGINE ACCURACY over {total} boxes read off the page",
         "",
@@ -146,6 +134,8 @@ def render(tallies: Dict[str, Score]) -> str:
     lines += [
         "",
         "   Ground truth is the crop, read by eye. Small, and the only real truth here.",
+        "   Compare engines only at the same token budget: a smaller one truncates fewer",
+        "   answers into loops, and the loop, not the model, is what the score then measures.",
     ]
     return "\n".join(lines)
 

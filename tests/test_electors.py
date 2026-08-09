@@ -1340,11 +1340,19 @@ class TestUnreadableAges:
 class TestSecondPass:
     """A second engine is only worth its cost if what it returns can be trusted."""
 
-    def test_it_reads_the_fields_out_of_a_pipe_separated_answer(self):
+    def test_it_reads_every_field_out_of_a_pipe_separated_answer(self):
+        """Names and relations included: the first pass gets 0 of 16 names exactly right."""
         reading = second_pass.Reading(
             "61|মৌকথাং|পিতাৰ নাম: বীজেন্দ্ৰ|ঘৰ নং : ১৩|বয়স : 24 লিঙ্গ : পুৰুষ|"
         )
-        assert reading.fields() == {"age": 24, "house_no": "13", "sex": "M"}
+        assert reading.fields() == {
+            "name": "মৌকথাং",
+            "relation_name": "বীজেন্দ্ৰ",
+            "relation_type": "father",
+            "age": 24,
+            "house_no": "13",
+            "sex": "M",
+        }
 
     def test_the_same_answer_wrapped_in_markup_reads_the_same(self):
         """The model returns bare pipes, <p> wrappers and table rows for one prompt.
@@ -1352,7 +1360,24 @@ class TestSecondPass:
         Fields are found by label because position is the thing that moves.
         """
         wrapped = second_pass.Reading("<p>63|নাম : কৌশিলা|ঘৰ নং : ১৪|বয়স : 52 লিঙ্গ : মহিলা</p>")
-        assert wrapped.fields() == {"age": 52, "house_no": "14", "sex": "F"}
+        assert wrapped.fields() == {"name": "কৌশিলা", "age": 52, "house_no": "14", "sex": "F"}
+
+    def test_html_from_the_full_model_reads_the_same_as_pipes(self):
+        """The full model answers in HTML and the distilled one in pipes; one reader for both.
+
+        A span is inline, not a line break -- treating it as one severed নাম from the value
+        after it, and the label itself became the name.
+        """
+        html = (
+            "<p>নাম<span> </span>: কৌশিলা<br/>ঘৰ নং<span> </span>: ১৪<br/>"
+            "বয়স<span> </span>: 52 লিঙ্গ<span> </span>: মহিলা</p>"
+        )
+        assert second_pass.Reading(html).fields() == {
+            "name": "কৌশিলা",
+            "age": 52,
+            "house_no": "14",
+            "sex": "F",
+        }
 
     def test_a_truncated_answer_is_refused(self):
         """A cap landing mid-value yields a plausible wrong number, which is the whole point."""
@@ -1418,10 +1443,10 @@ class TestEngineEvaluation:
             }
         ]
         tallies = evaluate.score(self.TRUTH, sample)
-        assert tallies["tesseract"].name_exact == 0 and tallies["savitr"].name_exact == 1
-        assert tallies["tesseract"].age == 0 and tallies["savitr"].age == 1
-        assert tallies["tesseract"].house == 0 and tallies["savitr"].house == 1
-        assert tallies["tesseract"].sex == 1 and tallies["savitr"].sex == 1
+        assert tallies["tesseract"].name_exact == 0 and tallies["savitr-terse"].name_exact == 1
+        assert tallies["tesseract"].age == 0 and tallies["savitr-terse"].age == 1
+        assert tallies["tesseract"].house == 0 and tallies["savitr-terse"].house == 1
+        assert tallies["tesseract"].sex == 1 and tallies["savitr-terse"].sex == 1
 
     def test_a_name_off_by_a_matra_counts_as_nearly_right(self):
         """Distinguishes a different spelling from a different person."""

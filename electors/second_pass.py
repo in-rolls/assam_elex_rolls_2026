@@ -70,6 +70,13 @@ OVERRULED = ("age",)
 AGE_RE = re.compile(r"বয়স\s*[:：]?\s*([0-9০-৯]{1,3})")
 HOUSE_RE = re.compile(r"ঘৰ\s*নং\s*[:：]?\s*([0-9০-৯]{1,6}\s*[ক-হ]?)")
 SEX_RE = re.compile(r"লিঙ্গ\s*[:：]?\s*(\S+)")
+RELATION_RE = re.compile(r"(পিতাৰ|স্বামীৰ|মাতাৰ|মাতৃৰ)\s*নাম\s*[:：]?\s*([^|<\n]{2,40})")
+NAME_RE = re.compile(r"(?<!পিতাৰ )(?<!স্বামীৰ )(?<!মাতাৰ )নাম\s*[:：]\s*([^|<\n]{2,40})")
+
+RELATION_KIND = {"পিতাৰ": "father", "স্বামীৰ": "husband", "মাতাৰ": "mother", "মাতৃৰ": "mother"}
+
+#: Assamese text long enough to be a name, used when the model omits the ``নাম :`` label.
+BARE_NAME = re.compile(r"^[^|<>\n]*[ঀ-৿]{3,}[^|<>\n]*$")
 
 SEX_WORDS = (("পুৰুষ", "M"), ("পুরুষ", "M"), ("মহিলা", "F"), ("তৃতীয়", "T"))
 
@@ -77,6 +84,27 @@ MIN_AGE, MAX_AGE = 18, 120
 
 #: A response repeating itself is a runaway even when it stopped short of the cap.
 REPEAT = re.compile(r"(.{20,}?)\1{2,}", re.S)
+
+
+#: The full Surya model answers in HTML and the distilled one in pipes. Both are normalised to
+#: the same shape here rather than parsed twice: two readers for one format is the bug that put
+#: the elector's own name in the relation field, and it would be the fourth time.
+#: Only these end a line. ``<span>`` is inline -- treating it as a break severed ``নাম`` from
+#: the value after it and the label became the name.
+BREAK = re.compile(r"<br\s*/?>|</?p>|</?div>|</?tr>|</?li>", re.I)
+ANY_TAG = re.compile(r"<[^>]+>")
+
+
+def normalise(text: str) -> str:
+    """One line-delimited shape, whether the engine answered in HTML or in pipes."""
+    out = BREAK.sub("|", text)
+    out = ANY_TAG.sub("", out)
+    return out.replace("\xa0", " ")
+
+
+def _clean_value(text: str) -> str:
+    """Trim the punctuation the terse format leaves around a value."""
+    return re.sub(r"\s+", " ", text).strip(" :|<>\"'৷,.").strip()
 
 
 @dataclass
@@ -110,10 +138,37 @@ class Reading:
         return bool(self.settled.strip())
 
     def fields(self) -> Dict[str, Any]:
-        text = self.settled
+        text = normalise(self.settled)
         if not text.strip():
             return {}
         found: Dict[str, Any] = {}
+
+        relation = RELATION_RE.search(text)
+        if relation:
+            value = _clean_value(relation.group(2))
+            if value:
+                found["relation_name"] = value
+                found["relation_type"] = RELATION_KIND[relation.group(1)]
+
+        name = NAME_RE.search(text)
+        if name:
+            value = _clean_value(name.group(1))
+            if value:
+                found["name"] = value
+        else:
+            # The model often drops the label and leads with the name. Take the first field
+            # that is Assamese text and is not one of the labelled ones.
+            for part in (p.strip() for p in re.split(r"\||\n", text)):
+                if not part or part.isdigit():
+                    continue
+                if re.search(r"ঘৰ|বয়স|লিঙ্গ|নাম\s*[:：]|<", part):
+                    continue
+                if BARE_NAME.match(part):
+                    value = _clean_value(part)
+                    if value:
+                        found["name"] = value
+                    break
+
         age = AGE_RE.search(text)
         if age:
             digits = schema.normalize_digits(age.group(1))
