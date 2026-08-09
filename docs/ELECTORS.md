@@ -48,8 +48,8 @@ hours**. One page of thirty electors costs about 53 seconds, and it divides:
 | rasterising the page | 11% |
 | EPIC strips | 2% |
 
-Three attempts to cut it, two of which failed and are recorded because a failed optimisation
-tried twice is worse than one written down:
+Four attempts to cut it, three of which failed and are recorded because a failed
+optimisation tried twice is worse than one written down:
 
 - **`OMP_THREAD_LIMIT=1`.** Tesseract multithreads, and five workers spawn far more threads
   than there are cores. Interleaved A/B: **0.97x, faster in 5 rounds of 8** — noise. An earlier
@@ -57,7 +57,17 @@ tried twice is worse than one written down:
   machine was quietening, so "second in the round" was worth the entire effect.
 - **Whole text column at `psm 6` instead of four band crops at `psm 7`.** Five times faster,
   4.1s against 20.0s — and it recovered 34 of 120 fields against 104. Rejected.
+- **Rasterising in grey rather than colour.** Every consumer converts to grey anyway, so the
+  colour channels looked like pure waste, and a first A/B said 13% faster with byte-identical
+  text on 123 of 123 crops. Isolating the stages that actually change killed it: the PNG is the
+  **same size either way** (2.88 MB), because the source PDFs are already grey. Render 0.99x,
+  load 0.97x, 0.04s saved per page. The 13% was the machine.
 - **The serial zone.** This one worked: see above.
+
+Three of the four failed, and all three failures looked like wins first. On a machine shared
+with other work a single A/B round swings 15-30%, which is larger than any of the effects being
+chased -- so a plausible number from one comparison is worth nothing here. What settled each
+case was isolating the stage that actually differs and checking whether it differs at all.
 
 **Cost is dominated by OCR and by whatever else the machine is doing.** A part is roughly 30
 pages, and each page costs about four tesseract invocations, so a constituency is a multi-hour
