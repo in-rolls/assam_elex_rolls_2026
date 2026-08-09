@@ -38,6 +38,20 @@ from assam_rolls import schema
 #: (নার্জাৰি for নাজ্জাৰা), so accepting them would churn values that were not in question.
 RECOVERABLE = ("age", "house_no", "sex")
 
+#: Fields where the second pass **overrules** a value the first pass already produced.
+#:
+#: Only ``age``, and only on evidence. The two engines disagreed on 7 of the 20 ages both read
+#: on one page; the age lines were cropped and read by eye, and the second pass was right on
+#: every one of the six checked -- 24 against 25, 59 against 92, 52 against 92, 25 against 85,
+#: 54 against 25, 45 against 55. Tesseract's errors are also the *shape* already flagged from
+#: the distribution: implausibly old readings, which is where the excess of nonagenarians came
+#: from.
+#:
+#: That measurement is small (six crops) but one-sided, and it is corroborated by a corpus-wide
+#: anomaly it explains. House and sex are not on this list because the second pass has only
+#: ever filled gaps in them, never contradicted a value.
+OVERRULED = ("age",)
+
 #: Label-anchored, because the layout of the response is what varies. Bengali and Latin digits
 #: both appear, sometimes in the same line.
 AGE_RE = re.compile(r"বয়স\s*[:：]?\s*([0-9০-৯]{1,3})")
@@ -119,11 +133,12 @@ def wanted(row: Dict[str, Any]) -> bool:
 def merge(row: Dict[str, Any], reading: Reading) -> Dict[str, Any]:
     """The row with recovered fields filled in, never overwritten.
 
-    A value the cheap pass produced is left alone even where the two disagree. That is the
-    conservative choice and not obviously the right one -- the disagreements measured so far
-    favour the second engine -- but overwriting silently would replace a known quantity with an
-    unmeasured one across the whole corpus. Disagreements are recorded so the choice can be
-    revisited with evidence rather than reversed on a hunch.
+    Gaps are filled from the second pass. A *disagreement* is resolved in its favour only for
+    the fields in :data:`OVERRULED`, and only because the crops were read by eye and it won
+    every one. Everywhere else the first pass's value stands.
+
+    Both the old and the new value are recorded on an overrule, because the evidence behind it
+    is six crops on one page: enough to act on, not enough to discard what it replaced.
     """
     out = dict(row)
     recovered, disagreed = [], []
@@ -135,12 +150,17 @@ def merge(row: Dict[str, Any], reading: Reading) -> Dict[str, Any]:
             recovered.append(field)
         elif str(out[field]) != str(value):
             disagreed.append(f"{field}:{out[field]}!={value}")
+            if field in OVERRULED:
+                out[f"{field}_first_pass"] = out[field]
+                out[field] = value
 
     flags = [f for f in (out.get("flags") or "").split(",") if f]
     if recovered:
         flags.append("second_pass_" + "_".join(recovered))
     if disagreed:
         flags.append("second_pass_disagreed")
+    if any(d.split(":")[0] in OVERRULED for d in disagreed):
+        flags.append("second_pass_overruled")
     out["flags"] = ",".join(flags)
     out["second_pass_disagreements"] = ";".join(disagreed)
     return out
@@ -154,6 +174,7 @@ def summarise(before: Sequence[Dict[str, Any]], after: Sequence[Dict[str, Any]])
         has = sum(1 for r in after if r.get(field) not in (None, ""))
         out[field] = {"before": had, "after": has, "recovered": has - had}
     out["disagreements"] = sum(1 for r in after if r.get("second_pass_disagreements"))
+    out["overruled"] = sum(1 for r in after if "second_pass_overruled" in (r.get("flags") or ""))
     return out
 
 
@@ -170,7 +191,8 @@ def render(found: Dict[str, Any]) -> str:
     lines += [
         "",
         f"   rows where the two engines contradicted each other: {found['disagreements']:,}",
-        "   the first engine's value was kept in every one of them",
+        f"   of those, ages the second pass overruled: {found['overruled']:,}",
+        "   the first pass's value is kept alongside, in <field>_first_pass",
     ]
     return "\n".join(lines)
 

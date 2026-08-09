@@ -1367,17 +1367,29 @@ class TestSecondPass:
     def test_an_implausible_age_is_not_accepted_from_the_second_engine_either(self):
         assert "age" not in second_pass.Reading("ঘৰ নং : ১৪|বয়স : 7 লিঙ্গ : পুৰুষ").fields()
 
-    def test_it_fills_gaps_and_never_overwrites(self):
-        """Where the engines contradict each other the first value stands and is recorded.
+    def test_it_fills_gaps(self):
+        row = {"age": 35, "house_no": "", "sex": "M", "flags": ""}
+        merged = second_pass.merge(row, second_pass.Reading("ঘৰ নং : ১৪|বয়স : 35 লিঙ্গ : পুৰুষ"))
+        assert merged["house_no"] == "14"
 
-        Overwriting silently would swap a measured quantity for an unmeasured one corpus-wide.
+    def test_a_disputed_age_goes_to_the_second_pass_and_keeps_the_first(self):
+        """The crops were read by eye and the second pass won every one: 59 against 92.
+
+        Both values are kept, because the evidence is six crops on one page -- enough to act
+        on, not enough to throw away what it replaced.
         """
         row = {"age": 92, "house_no": "", "sex": "M", "flags": ""}
-        reading = second_pass.Reading("ঘৰ নং : ১৪|বয়স : 59 লিঙ্গ : পুৰুষ")
-        merged = second_pass.merge(row, reading)
-        assert merged["house_no"] == "14", "the gap is filled"
-        assert merged["age"] == 92, "the existing value stands"
-        assert "age:92!=59" in merged["second_pass_disagreements"]
+        merged = second_pass.merge(row, second_pass.Reading("ঘৰ নং : ১৪|বয়স : 59 লিঙ্গ : পুৰুষ"))
+        assert merged["age"] == 59
+        assert merged["age_first_pass"] == 92
+        assert "second_pass_overruled" in merged["flags"]
+
+    def test_a_disputed_house_number_is_not_overruled(self):
+        """The second pass has only ever filled gaps in house numbers, never contradicted one."""
+        row = {"age": 35, "house_no": "42", "sex": "M", "flags": ""}
+        merged = second_pass.merge(row, second_pass.Reading("ঘৰ নং : ১৪|বয়স : 35 লিঙ্গ : পুৰুষ"))
+        assert merged["house_no"] == "42"
+        assert "house_no:42!=14" in merged["second_pass_disagreements"]
 
     def test_only_rows_missing_something_it_can_supply_are_sent(self):
         """A second read returning what we already had is six seconds spent on nothing."""
