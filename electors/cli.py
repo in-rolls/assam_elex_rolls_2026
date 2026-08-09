@@ -326,8 +326,11 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
 
 
 def cmd_bench(args: argparse.Namespace) -> int:
-    """Record a baseline, or measure the current code against one."""
+    """Gate against a git revision, or record and compare a baseline file."""
     from . import bench, quality
+
+    if args.against:
+        return _bench_against(args)
 
     rows, roll_totals = _cached(Path(args.cache), args.ac)
     if not rows:
@@ -360,6 +363,32 @@ def cmd_bench(args: argparse.Namespace) -> int:
         return 1
     print(bench.render(bench.compare(args.target, baseline, current)))
     return 0
+
+
+def _bench_against(args: argparse.Namespace) -> int:
+    """Replay the line cache through a revision's parser and today's, and print the gates."""
+    from . import against, bench
+
+    parts = list(args.parts) if args.parts else replay.cached_parts(ac=args.ac)
+    absent = replay.missing(parts, ac=args.ac)
+    if absent:
+        print(f"no capture for parts {absent} -- run `capture` first", file=sys.stderr)
+        parts = [p for p in parts if p not in absent]
+    if not parts:
+        print("nothing captured to replay", file=sys.stderr)
+        return 1
+
+    _, roll_totals = _cached(Path(args.cache), args.ac)
+    found = against.compare(
+        args.against,
+        parts,
+        roll_totals,
+        target=args.target,
+        higher_is_better=args.higher_is_better,
+        ac=args.ac,
+    )
+    print(against.render(found, args.target))
+    return 0 if bench.verdict(found["gates"]) else 1
 
 
 def _cached(cache_root: Path, ac_no: int):
@@ -514,6 +543,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_bench.add_argument("--seconds", type=float, default=0.0, help="measured seconds per part")
     p_bench.add_argument("--cache", default="out/electors/cache")
     p_bench.add_argument("--ac", type=int, default=1)
+    p_bench.add_argument(
+        "--against",
+        help="git revision to compare against, replaying the line cache (e.g. HEAD~1)",
+    )
+    p_bench.add_argument("--parts", type=int, nargs="*")
+    p_bench.add_argument(
+        "--higher-is-better",
+        action="store_true",
+        help="the target improves by rising (default: it is an error rate and improves by falling)",
+    )
     p_bench.set_defaults(func=cmd_bench)
 
     p_capture = sub.add_parser("capture", help="cache the OCR text so parsing fixes score fast")

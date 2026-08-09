@@ -66,11 +66,17 @@ def metrics_for(rows: Sequence[Dict[str, Any]], roll_totals: Dict[Any, Any]) -> 
 
 
 def split(parts: Sequence[int]) -> Dict[str, List[int]]:
-    """In-sample against out-of-sample, by the written-down diagnosis set."""
-    diagnosed = set(bench.DIAGNOSE)
+    """The three written-down sets, so a part is not scored under the wrong name.
+
+    Regression parts are held apart from out-of-sample rather than lumped in with it. They
+    exist to catch collateral damage on data with measured roll totals, and counting them as
+    held-out evidence would let a part that has been looked at be quoted as if it had not.
+    """
+    diagnosed, regression = set(bench.DIAGNOSE), set(bench.REGRESSION)
     return {
         "in-sample": [p for p in parts if p in diagnosed],
-        "out-of-sample": [p for p in parts if p not in diagnosed],
+        "out-of-sample": [p for p in parts if p not in diagnosed and p not in regression],
+        "regression": [p for p in parts if p in regression],
     }
 
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import random
 
 from electors import (
+    against,
     bench,
     diagnose,
     escalate,
@@ -1113,3 +1114,31 @@ class TestRunTiming:
         clock = timing.RunClock(total=154)
         clock.record(None, was_cached=True)
         assert "(cached)" in clock.progress(8, 850, None, True)
+
+
+class TestGatingAgainstARevision:
+    """Git already stores every previous parser, so there is no baseline file to go stale."""
+
+    def test_the_three_written_down_sets_stay_separate(self):
+        """A regression part has been looked at; quoting it as held-out evidence is a lie."""
+        parts = [1, 5, 12, 16, 41, 64]
+        found = against.split(parts)
+        assert found["in-sample"] == [12, 16]
+        assert found["regression"] == [1, 5]
+        assert found["out-of-sample"] == [41, 64]
+
+    def test_an_empty_split_is_named_rather_than_dropped(self):
+        assert against.split([41, 64])["in-sample"] == []
+
+    def test_a_split_with_nothing_in_it_cannot_pass_its_gate(self):
+        """A gate that quietly skips an unmeasured split passes by omission."""
+        before, after = against._pair(None, "definitely_wrong")
+        assert before == after == 0.0
+        gate = bench.gate_target("out-of-sample", before, after, 0.005, higher_is_better=False)
+        assert not gate.passed
+
+    def test_the_baseline_parser_is_loaded_not_reimplemented(self):
+        """A rewrite that drifts makes the fix look better or worse than it was."""
+        module = against.field_module("HEAD")
+        assert hasattr(module, "assemble") and hasattr(module, "assign_bands")
+        assert module.assemble is not fields.assemble
