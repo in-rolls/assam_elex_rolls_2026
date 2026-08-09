@@ -164,7 +164,11 @@ def _clean(text: str) -> str:
 #: trail it, and **17 fall strictly inside a word**. Only that last group could be a misread
 #: letter rather than a speck -- and even there ``নেম2্ৰা`` reads as a repair once the digit
 #: goes, not as a loss.
-FOREIGN = re.compile(r"[A-Za-z0-9]+")
+#: Bengali digits are in here too. ``quality`` tests names with ``\d``, which in Python matches
+#: any Unicode decimal -- so ``২`` was provably wrong to the detector and invisible to this,
+#: and 261 rows stayed flagged after the strip that was supposed to clear them. The same two
+#: definitions of one thing that put the elector's own name in the relation field.
+FOREIGN = re.compile(r"[A-Za-z0-9\u09E6-\u09EF]+")
 
 #: Assamese, for deciding whether a run is inside a word or beside it.
 ASSAMESE = re.compile(r"[\u0980-\u09FF]")

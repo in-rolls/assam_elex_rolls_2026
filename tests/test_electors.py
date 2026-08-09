@@ -1199,6 +1199,16 @@ class TestForeignDebris:
     def test_a_clean_name_is_untouched(self):
         assert fields.strip_foreign("খাদৰাম ৰাভা") == ("খাদৰাম ৰাভা", False)
 
+    def test_bengali_digits_count_as_debris_too(self):
+        """quality tests names with \\d, which in Python matches any Unicode decimal.
+
+        While this pattern was Latin-only, ২ was provably wrong to the detector and invisible
+        to the repair, and 261 rows stayed flagged after the strip meant to clear them.
+        """
+        cleaned = fields.strip_foreign("ৰোমোছ বসমতাুূৰ ২ ৷")[0]
+        assert cleaned == "ৰোমোছ বসমতাুূৰ ৷"
+        assert "name_has_latin_or_digits" not in quality.problems_with({"name": cleaned})
+
     def test_only_the_uncertain_case_reaches_the_router(self):
         """A speck beside a word is repaired with confidence and does not need re-reading."""
         clean = [
