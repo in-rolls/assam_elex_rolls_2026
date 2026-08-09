@@ -40,7 +40,11 @@ DPI = 400
 #:          Bumped despite the cost of discarding 10,245 cached rows: the flag it feeds was
 #:          raised zero times under 1.4.0, and a cache mixing the two would report a
 #:          disagreement rate that is part real and part an artefact of when a part was read.
-PIPELINE_VERSION = "1.5.0"
+#: 1.6.0 -- bands anchor on the relation label rather than counting inwards from the ends, the
+#:          two scales are compared once against a measured threshold instead of twice against
+#:          two different rules, debris stranded after punctuation is stripped, and an age zone
+#:          holding more digits than an age can account for is flagged rather than guessed.
+PIPELINE_VERSION = "1.6.0"
 
 
 @dataclass

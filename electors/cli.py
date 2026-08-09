@@ -106,7 +106,7 @@ def cmd_parse(args: argparse.Namespace) -> int:
     failures: List[Dict[str, Any]] = []
     done = 0
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
-        payload = [(str(zip_path), p.pdf_name, str(cache_dir)) for p in parts]
+        payload = [(str(zip_path), p.pdf_name, str(cache_dir), args.capture) for p in parts]
         for result in pool.map(_one_part, payload):
             done += 1
             if result["error"] or result["unknown_pages"]:
@@ -449,6 +449,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_parse.add_argument("--workers", type=int, default=8)
     p_parse.add_argument("--limit", type=int, default=0, help="first N parts only")
     p_parse.add_argument("--cache", default="out/electors/cache")
+    p_parse.add_argument(
+        "--capture",
+        action="store_true",
+        help="also cache the OCR text, so later parsing fixes score without re-reading",
+    )
     p_parse.set_defaults(func=cmd_parse)
 
     p_quality = sub.add_parser("quality", help="measure field quality on a sample of parts")
