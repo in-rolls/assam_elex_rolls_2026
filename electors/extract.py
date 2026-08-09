@@ -44,6 +44,13 @@ DPI = 400
 #:          two scales are compared once against a measured threshold instead of twice against
 #:          two different rules, debris stranded after punctuation is stripped, and an age zone
 #:          holding more digits than an age can account for is flagged rather than guessed.
+#:
+#: Deliberately *not* bumped for the narrowed serial zone. The version exists so a resume does
+#: not serve rows produced by code since fixed, and that concern is about data. The serial crop
+#: feeds only ``serial_no_ocr`` -- an independent check on the derived row order, itself noisy
+#: enough to disagree on most rows -- and no field a consumer reads. Bumping would have thrown
+#: away a seventeen-hour constituency to improve a diagnostic, so a 1.6.0 shard may carry
+#: serial_no_ocr from either crop and nothing else differs.
 PIPELINE_VERSION = "1.6.0"
 
 

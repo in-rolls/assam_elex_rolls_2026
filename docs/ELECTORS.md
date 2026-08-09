@@ -34,6 +34,31 @@ estimate is offered until each worker has actually read a part — a resumed run
 parts in about a second each, and counting those as throughput put the first estimate for a
 two-hour job at 57 seconds.
 
+### Measured cost, and three optimisations that did not survive measurement
+
+On a 10-core machine shared with other work (load ~25), 5 workers: **a part takes about 47
+minutes** (822 electors in 46m58s; 873 in 47m34s) and a constituency projects to **16-17
+hours**. One page of thirty electors costs about 53 seconds, and it divides:
+
+| | share of a page |
+|---|--:|
+| text bands, 123 crops at scale 2 | 56% |
+| name band, 30 crops at scale 3 | 17% |
+| serial strips | 11% |
+| rasterising the page | 11% |
+| EPIC strips | 2% |
+
+Three attempts to cut it, two of which failed and are recorded because a failed optimisation
+tried twice is worse than one written down:
+
+- **`OMP_THREAD_LIMIT=1`.** Tesseract multithreads, and five workers spawn far more threads
+  than there are cores. Interleaved A/B: **0.97x, faster in 5 rounds of 8** — noise. An earlier
+  version of the same test said 15%, but it ran the default arm first every round while the
+  machine was quietening, so "second in the round" was worth the entire effect.
+- **Whole text column at `psm 6` instead of four band crops at `psm 7`.** Five times faster,
+  4.1s against 20.0s — and it recovered 34 of 120 fields against 104. Rejected.
+- **The serial zone.** This one worked: see above.
+
 **Cost is dominated by OCR and by whatever else the machine is doing.** A part is roughly 30
 pages, and each page costs about four tesseract invocations, so a constituency is a multi-hour
 job. Any per-constituency figure quoted from a loaded machine describes the load. The manifest
