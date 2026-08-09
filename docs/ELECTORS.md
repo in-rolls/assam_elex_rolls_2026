@@ -135,6 +135,24 @@ Three details that took a mistake each to get right:
   way to gate a fix aimed at reducing wrong values is to gate it on some other metric that
   happens to rise — judging a change on something it never set out to do.
 
+### What the loop produced
+
+The band-assignment work is the first change taken through all four gates end to end, scored by
+replaying identical cached OCR text through the old code and the new. 5,664 rows, eight parts,
+splits disjoint.
+
+| | in-sample (3,567) | out-of-sample (2,097) |
+|---|--:|--:|
+| name present and not provably wrong | 72.0% → **86.9%** | 73.4% → **89.2%** |
+| relation present and not provably wrong | 77.5% → **93.2%** | 76.1% → **94.3%** |
+| provably wrong | 19.2% → **6.3%** | 19.2% → **4.0%** |
+| name identical to relation | 486 → 2 | 325 → 3 |
+
+Out-of-sample matched and slightly exceeded in-sample, which is what says the diagnosis set was
+not fitted. Nothing degraded: age, EPIC and sex were flat, completeness stayed at every
+measured part exact, and the sex ratio did not move. Parsing cost rose 1.05× — under 0.1% of
+pipeline time, which is OCR.
+
 ### `escalate` — know which rows are wrong rather than perfecting the pass
 
 A cheap pass will always leave errors; what makes that acceptable is knowing which rows they
