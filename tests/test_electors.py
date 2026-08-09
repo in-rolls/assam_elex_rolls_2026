@@ -1746,3 +1746,27 @@ class TestVisionLinesByPosition:
 
     def test_the_threshold_sits_on_the_measured_plateau(self):
         assert 0.6 <= vision.LINE_SHARE <= 0.8
+
+
+class TestTruthAlignment:
+    """Ground truth attached to the wrong box is worse than no ground truth.
+
+    Half a truth set was once misattributed: crop sheets were drawn from one ordered list, and
+    the list was recomputed between recording sheets, so after twelve boxes gained truth the
+    slice no longer pointed at the boxes the sheet had shown. Every engine scored ~20 points
+    low and the pipeline looked broken.
+
+    The tell is a name appearing as both a reading and an expectation on different rows.
+    """
+
+    def test_a_name_appearing_on_both_sides_signals_misalignment(self):
+        pairs = [("ছেকেন্দাৰ আলী", "কৃষ্টপাৰ মুৰ্মু"), ("আবনেৰ লামা", "ছেকেন্দাৰ আলী")]
+        got = {evaluate.fold(a) for a, _ in pairs}
+        want = {evaluate.fold(b) for _, b in pairs}
+        assert got & want, "a value on both sides is a shifted alignment, not a bad engine"
+
+    def test_a_correctly_aligned_set_has_no_such_overlap(self):
+        pairs = [("খাদৰাম ৰাভা", "খাদৰাম ৰাভা"), ("গংগাৰাম", "গংগাৰাম ৰাভা")]
+        got = {evaluate.fold(a) for a, _ in pairs}
+        want = {evaluate.fold(b) for _, b in pairs}
+        assert not (got - want) & (want - got)
