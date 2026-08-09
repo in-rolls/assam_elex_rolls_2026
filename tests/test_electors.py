@@ -1692,24 +1692,23 @@ class TestFairComparison:
         assert "NOT COMPARABLE" not in evaluate.render({"a": a, "b": b})
 
     def test_the_common_subset_is_what_every_engine_answered(self):
+        """Built from one complete row so adding an engine cannot silently empty the subset.
+
+        Spelling every engine out per row meant that adding cloud-vision left every fixture row
+        missing a field, and the subset went to nothing without the test saying why.
+        """
+        answered = {
+            "t_name": "a",
+            "surya": "a",
+            "surya_full": "a",
+            "gemini": {"name": "a"},
+            "dots": "a",
+            "vision": "a",
+        }
         truth = {"x": {}, "y": {}, "z": {}}
         sample = [
-            {
-                "key": "x",
-                "t_name": "a",
-                "surya": "a",
-                "surya_full": "a",
-                "gemini": {"name": "a"},
-                "dots": "a",
-            },
-            {"key": "y", "t_name": "a", "surya": "a", "surya_full": "a", "gemini": {}, "dots": "a"},
-            {
-                "key": "z",
-                "t_name": "a",
-                "surya": "a",
-                "surya_full": "a",
-                "gemini": {"name": "a"},
-                "dots": "",
-            },
+            dict(answered, key="x"),
+            dict(answered, key="y", gemini={}),
+            dict(answered, key="z", vision=""),
         ]
         assert evaluate.common_keys(truth, sample) == ["x"]

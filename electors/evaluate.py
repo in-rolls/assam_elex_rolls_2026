@@ -113,6 +113,7 @@ def score(
         "surya-full": Score("surya-full"),
         "gemini": Score("gemini"),
         "dots.ocr": Score("dots.ocr"),
+        "cloud-vision": Score("cloud-vision"),
     }
     for key, want in truth.items():
         row = by_key.get(key)
@@ -137,6 +138,8 @@ def score(
             score_one(gemini_engine.fields_of(row["gemini"]), want, tallies["gemini"])
         if row.get("dots"):
             score_one(terse_fields(row["dots"]), want, tallies["dots.ocr"])
+        if row.get("vision"):
+            score_one(terse_fields(row["vision"]), want, tallies["cloud-vision"])
     return {name: t for name, t in tallies.items() if t.total}
 
 
@@ -147,7 +150,7 @@ def common_keys(truth: Dict[str, Any], sample: Sequence[Dict[str, Any]]) -> List
     boxes and another on 36. Comparing those is the same error as scoring two models at
     different token budgets -- which happened here, and reversed the ranking.
     """
-    fields = ("t_name", "surya", "surya_full", "gemini", "dots")
+    fields = ("t_name", "surya", "surya_full", "gemini", "dots", "vision")
     by_key = {row["key"]: row for row in sample}
     return [key for key in truth if key in by_key and all(by_key[key].get(f) for f in fields)]
 
