@@ -132,16 +132,24 @@ EDGE_PUNCTUATION = " :;.,'\"-\u2018\u2019"
 LEADING_MARKS = "\u09bc\u09be\u09bf\u09c0\u09c1\u09c2\u09c7\u09c8\u09cb\u09cc\u09cd"
 
 
+#: A trailing matra that follows punctuation or a space rather than a letter. ``ৰাভা`` ends in
+#: one and it is the word; ``ৰেহমাত বসমাতাৰা .ে`` ends in one too and it is a speck the scanner
+#: found. What separates them is what comes *before*: no Assamese syllable puts a vowel sign
+#: after a full stop. Left in, it survived every strip, and consensus -- which keeps the longer
+#: of two readings -- then preferred the dirtier one over the clean one beside it.
+ORPHAN_MARK = re.compile(f"[{re.escape(EDGE_PUNCTUATION)}][{re.escape(LEADING_MARKS)}]+$")
+
+
 def _clean(text: str) -> str:
     """Strip the debris around a value, repeatedly.
 
-    Repeatedly, because the two kinds interleave: a real read of ``ু ' বাসন্তা ৰাভা`` has a
-    stray matra *then* a quote, and a single pass in either order leaves the other behind.
+    Repeatedly, because the kinds interleave: a real read of ``ু ' বাসন্তা ৰাভা`` has a stray
+    matra *then* a quote, and a single pass in either order leaves the other behind.
     """
     out = re.sub(r"[|\[\]{}_~`^*=<>]+", " ", text)
     out = re.sub(r"\s+", " ", out).strip()
     while True:
-        stripped = out.strip(EDGE_PUNCTUATION).lstrip(LEADING_MARKS + " ")
+        stripped = ORPHAN_MARK.sub("", out).strip(EDGE_PUNCTUATION).lstrip(LEADING_MARKS + " ")
         if stripped == out:
             return stripped
         out = stripped
@@ -357,7 +365,22 @@ def assign_bands(lines: Sequence[str]) -> Dict[str, str]:
         # box, so it is lost often. The label says which line this is; position need only say
         # what is on either side of it.
         out["relation"] = above[relation_index]
-        if relation_index > 0:
+        # The name by its *own* label first, and only then by position. Boxes routinely yield
+        # five or six bands rather than four -- the scanner finds a rule or a speck between two
+        # real lines -- and then the band immediately above the relation is debris while the
+        # name sits higher up, still labelled. Positional-only cost 37 names in 3,567 rows.
+        named = next(
+            (
+                line
+                for line in above
+                if NAME_LABEL in line
+                and not any(pattern.search(line) for pattern, _ in LABEL_PATTERNS)
+            ),
+            None,
+        )
+        if named is not None:
+            out["name"] = named
+        elif relation_index > 0:
             out["name"] = above[relation_index - 1]
         if relation_index + 1 < len(above):
             out["house"] = above[relation_index + 1]
@@ -497,6 +520,21 @@ def read_page(
 NON_ALNUM = re.compile(r"[^A-Za-z0-9]")
 
 
+#: How close two readings of the same band may be and still count as agreement.
+#:
+#: Measured, not chosen: over 1,733 boxes where both scales produced a name, they differed on
+#: 53% -- but 83% of those differences were a character or two, a stray matra or a speck of
+#: punctuation. A flag that fires on half the corpus carries no information, and it took the
+#: escalation router from 21.6% of rows to 56%, which is a re-run rather than a triage. Below
+#: 0.90 the readings differ by more than noise, and that is 9.1% of rows.
+NAME_AGREEMENT = 0.90
+
+
+def materially_different(first: str, second: str) -> bool:
+    """Whether two readings of the same band disagree by more than scanner noise."""
+    return difflib.SequenceMatcher(None, first, second).ratio() < NAME_AGREEMENT
+
+
 def second_name(first: Sequence[str], second: Sequence[str], assigned: Dict[str, str]) -> str:
     """The second scale's reading of the name, when it read the same band.
 
@@ -512,7 +550,15 @@ def second_name(first: Sequence[str], second: Sequence[str], assigned: Dict[str,
     """
     if not second or not first:
         return ""
-    if assigned.get("name") != first[0]:
+    named = assigned.get("name")
+    if named is not None and named != first[0]:
+        # The name came from some other band, so the top band is a different line and the two
+        # are not comparable.
+        return ""
+    if any(pattern.search(line) for line in (first[0], second[0]) for pattern, _ in LABEL_PATTERNS):
+        # The top band is the *relation* line -- the name line was lost. Reading it as the
+        # name is the swap this module exists to avoid, and every relation label ends in নাম,
+        # so ``value_after`` would happily return the father's name for the elector's.
         return ""
     return value_after(second[0], NAME_LABEL)
 
@@ -528,13 +574,15 @@ def assemble(lines: Tuple[List[str], List[str]], epic_read: str, serial_read: st
     assigned = [assign_bands(scale_lines) for scale_lines in lines]
     elector = Elector()
 
-    elector.name, agreed = consensus([value_after(a.get("name", ""), NAME_LABEL) for a in assigned])
-    if not agreed:
-        elector.flags.append("name_disagreement")
-    if second_name(first_lines, second_lines, assigned[0]) not in ("", elector.name):
-        # The second scale read the same band differently. Flagged rather than resolved: the
-        # two are equally entitled to be right and picking one silently is how a plausible
-        # wrong name gets published as fact.
+    # One comparison, not two. ``consensus`` tested the two readings for exact equality while
+    # ``materially_different`` tested them against a measured threshold, so the same pair was
+    # a disagreement to one and not the other -- the same two-paths-one-decision bug that put
+    # the elector's own name in the relation field. The strict test won by firing first, and
+    # the router went back to flagging half the corpus.
+    primary = value_after(assigned[0].get("name", ""), NAME_LABEL)
+    other = second_name(first_lines, second_lines, assigned[0])
+    elector.name = primary or other
+    if primary and other and materially_different(primary, other):
         elector.flags.append("name_disagreement")
 
     relations = [relation_of(a.get("relation", "")) for a in assigned]

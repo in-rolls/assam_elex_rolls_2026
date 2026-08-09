@@ -87,13 +87,21 @@ def gate_target(
     before: float,
     after: float,
     minimum: float = 0.02,
+    higher_is_better: bool = True,
 ) -> GateResult:
-    """Did the metric the fix was aimed at actually move, and by enough to be real?"""
+    """Did the metric the fix was aimed at actually move, and by enough to be real?
+
+    ``higher_is_better=False`` for error rates. Without it the only way to gate a fix aimed at
+    reducing wrong values was to gate it on some *other* metric that happened to rise, which
+    is how a change gets judged on something it was never trying to do.
+    """
     delta = improvement(before, after)
+    gain = delta if higher_is_better else -delta
+    direction = "+" if higher_is_better else "-"
     return GateResult(
         name=label,
-        passed=delta >= minimum,
-        detail=f"{before:.1%} -> {after:.1%} ({delta:+.1%}, needs +{minimum:.0%})",
+        passed=gain >= minimum,
+        detail=f"{before:.1%} -> {after:.1%} ({delta:+.1%}, needs {direction}{minimum:.0%})",
     )
 
 

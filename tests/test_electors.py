@@ -777,8 +777,17 @@ class TestNameConsensus:
         in ``house`` -- so the second reading of the *name* was always empty, consensus always
         saw one value, and a full scale-3 pass over every name crop was computed and discarded.
         """
-        elector = fields.assemble((self.LINES, ["নাম : খাদৰম ৰাভা"]), "HHK0001471", "106")
+        elector = fields.assemble((self.LINES, ["নাম : লঙ্ষু্ন কঙস্ত্ু"]), "HHK0001471", "106")
         assert "name_disagreement" in elector.flags
+
+    def test_a_one_character_difference_is_noise_and_not_flagged(self):
+        """53% of boxes differ between the scales; 83% of those by a character or two.
+
+        Flagging all of them took the escalation router to 56% of rows, which is a re-run
+        rather than a triage.
+        """
+        elector = fields.assemble((self.LINES, ["নাম : খাদৰম ৰাভা"]), "HHK0001471", "106")
+        assert elector.flags == []
 
     def test_agreement_is_not_flagged(self):
         elector = fields.assemble((self.LINES, ["নাম : খাদৰাম ৰাভা"]), "HHK0001471", "106")
@@ -877,3 +886,58 @@ class TestSwapDetection:
 
     def test_an_empty_relation_is_not_a_swap_suspect(self):
         assert escalate.unlabelled_relation({"relation_name": "", "relation_type": ""}) == []
+
+
+class TestCleaningValues:
+    """A trailing matra is usually the word; stripping it truncates almost every surname."""
+
+    def test_real_trailing_matras_survive(self):
+        for name in ("খাদৰাম ৰাভা", "শৰ্মা", "বৰুৱা", "গংগাৰাম ৰাভা", "চন্দা মাড"):
+            assert fields._clean(name) == name
+
+    def test_a_matra_stranded_after_punctuation_is_debris(self):
+        """No Assamese syllable puts a vowel sign after a full stop.
+
+        Left in, it survived every strip, and consensus -- which keeps the longer of two
+        readings -- then preferred the dirtier reading over the clean one beside it.
+        """
+        assert fields._clean("ৰেহমাত বসমাতাৰা .ে") == "ৰেহমাত বসমাতাৰা"
+
+    def test_the_punctuation_class_is_escaped(self):
+        """EDGE_PUNCTUATION contains a hyphen, which is a range operator in a character class.
+
+        Unescaped it spanned U+0022 to U+2018 -- every Bengali letter -- so the debris pattern
+        matched any trailing mark and truncated শৰ্মা to শ.
+        """
+        assert fields.ORPHAN_MARK.search("শৰ্মা") is None
+        assert fields.ORPHAN_MARK.search("নাম .ে") is not None
+
+
+class TestDisagreementThreshold:
+    """A flag that fires on half the corpus carries no information."""
+
+    def test_noise_is_not_disagreement(self):
+        assert not fields.materially_different("ৰেহমাত বসমাতাৰা", "ৰেহমাত বসমাতাৰা")
+        assert not fields.materially_different("নলৈেন বসমাতাৰা", "নলৈন বসমাতাৰা")
+
+    def test_genuinely_different_readings_are(self):
+        assert fields.materially_different("ল্ষ্মা কস্ষু", "লঙ্ষু্ন কঙস্ত্ু")
+
+    def test_the_threshold_is_the_measured_one(self):
+        assert fields.NAME_AGREEMENT == 0.90
+
+
+class TestGateDirection:
+    """An error rate improves by falling; a gate that cannot say so judges the wrong thing."""
+
+    def test_a_falling_error_rate_passes_a_lower_is_better_gate(self):
+        result = bench.gate_target("wrong", 0.069, 0.063, minimum=0.005, higher_is_better=False)
+        assert result.passed
+
+    def test_a_rising_error_rate_fails_it(self):
+        result = bench.gate_target("wrong", 0.063, 0.069, minimum=0.005, higher_is_better=False)
+        assert not result.passed
+
+    def test_the_default_is_still_higher_is_better(self):
+        assert bench.gate_target("present", 0.80, 0.85).passed
+        assert not bench.gate_target("present", 0.85, 0.80).passed
