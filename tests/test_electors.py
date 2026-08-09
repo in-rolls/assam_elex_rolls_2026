@@ -1088,9 +1088,22 @@ class TestRunTiming:
         assert clock.worked == [60.0]
         assert "1 served from cache" in clock.summary()[0]
 
+    def test_no_estimate_until_each_worker_has_read_a_part(self):
+        """A resumed run serves cached parts in a second each.
+
+        Counting those as throughput put the first estimate for a two-hour job at 57 seconds.
+        """
+        clock = timing.RunClock(total=154, workers=5)
+        for _ in range(18):
+            clock.record(None, was_cached=True)
+        assert clock.eta is None, "eighteen instant parts are not evidence of throughput"
+        for _ in range(5):
+            clock.record(300.0, was_cached=False)
+        assert clock.eta is not None
+
     def test_the_estimate_comes_from_throughput_not_per_part_cost(self):
         """Per-part cost ignores how many workers are running and what else the machine does."""
-        clock = timing.RunClock(total=100)
+        clock = timing.RunClock(total=100, workers=5)
         clock.started -= 600
         for _ in range(10):
             clock.record(300.0, was_cached=False)

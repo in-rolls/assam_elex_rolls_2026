@@ -13,7 +13,7 @@ import argparse
 import json
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
@@ -111,7 +111,7 @@ def cmd_parse(args: argparse.Namespace) -> int:
         f", {already} already cached" if already else "",
         ", capturing OCR text" if args.capture else "",
     )
-    clock = timing.RunClock(total=len(parts))
+    clock = timing.RunClock(total=len(parts), workers=args.workers)
 
     rows: List[Dict[str, Any]] = []
     results: List[Dict[str, Any]] = []
@@ -119,7 +119,14 @@ def cmd_parse(args: argparse.Namespace) -> int:
     done = 0
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         payload = [(str(zip_path), p.pdf_name, str(cache_dir), args.capture) for p in parts]
-        for result in pool.map(_one_part, payload):
+        # Reported as each part *finishes*, not in submission order. `pool.map` yields in
+        # order, so one slow part at the front holds back every result behind it: parts 3 and
+        # 5 were on disk twenty minutes before the log mentioned either, because part 1 was
+        # still going. Order is nothing to us -- every row carries its own part number.
+        for result in (
+            future.result()
+            for future in as_completed([pool.submit(_one_part, item) for item in payload])
+        ):
             done += 1
             if result["error"] or result["unknown_pages"]:
                 failures.append(result)
@@ -271,7 +278,7 @@ def cmd_quality(args: argparse.Namespace) -> int:
     results: List[Dict[str, Any]] = []
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         payload = [(str(zip_path), p.pdf_name, str(cache_dir)) for p in chosen]
-        for done, result in enumerate(pool.map(_one_part, payload), start=1):
+        for done, result in enumerate(pool.map(_one_part, payload, chunksize=1), start=1):
             rows.extend(result["electors"])
             results.append(result)
             print(
@@ -443,7 +450,7 @@ def cmd_capture(args: argparse.Namespace) -> int:
 
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         payload = [(str(zip_path), p.pdf_name, str(cache_dir), True) for p in chosen]
-        for done, result in enumerate(pool.map(_one_part, payload), start=1):
+        for done, result in enumerate(pool.map(_one_part, payload, chunksize=1), start=1):
             print(
                 f"  {done}/{len(chosen)} part {result['part_no']}: "
                 f"{len(result['electors'])} electors captured",

@@ -69,6 +69,7 @@ class RunClock:
     """
 
     total: int
+    workers: int = 1
     started: float = field(default_factory=time.time)
     worked: List[float] = field(default_factory=list)
     cached: int = 0
@@ -93,15 +94,21 @@ class RunClock:
 
         Elapsed over parts done already accounts for however many workers are running and
         whatever else the machine is doing, both of which a per-part average ignores.
+
+        Withheld until at least one part per worker has actually been read. A resumed run
+        serves its cached parts in about a second each, and counting those as throughput put
+        the first estimate for a two-hour job at 57 seconds.
         """
         if not self.done or self.done >= self.total:
+            return None
+        if len(self.worked) < self.workers:
             return None
         return self.elapsed / self.done * (self.total - self.done)
 
     def progress(self, part: int, electors: int, seconds: Optional[float], was_cached: bool) -> str:
         note = " (cached)" if was_cached else f" in {human(seconds or 0.0)}"
         eta = self.eta
-        tail = f", eta {human(eta)}" if eta is not None else ""
+        tail = f", eta {human(eta)}" if eta is not None else ", eta pending"
         return (
             f"{self.done:>3}/{self.total} part {part:<4} {electors:>4} electors{note}"
             f" | elapsed {human(self.elapsed)}{tail}"
