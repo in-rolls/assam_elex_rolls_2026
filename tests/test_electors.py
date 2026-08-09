@@ -18,6 +18,7 @@ from electors import (
     pages,
     quality,
     replay,
+    second_pass,
     timing,
     validate,
 )
@@ -1333,3 +1334,53 @@ class TestUnreadableAges:
         elector = fields.assemble((lines, []), "HHK0001471", "1")
         assert "age_unreadable" in elector.flags
         assert escalate.REASON_FIELD["age_unreadable"] == "age"
+
+
+class TestSecondPass:
+    """A second engine is only worth its cost if what it returns can be trusted."""
+
+    def test_it_reads_the_fields_out_of_a_pipe_separated_answer(self):
+        reading = second_pass.Reading(
+            "61|মৌকথাং|পিতাৰ নাম: বীজেন্দ্ৰ|ঘৰ নং : ১৩|বয়স : 24 লিঙ্গ : পুৰুষ|"
+        )
+        assert reading.fields() == {"age": 24, "house_no": "13", "sex": "M"}
+
+    def test_the_same_answer_wrapped_in_markup_reads_the_same(self):
+        """The model returns bare pipes, <p> wrappers and table rows for one prompt.
+
+        Fields are found by label because position is the thing that moves.
+        """
+        wrapped = second_pass.Reading("<p>63|নাম : কৌশিলা|ঘৰ নং : ১৪|বয়স : 52 লিঙ্গ : মহিলা</p>")
+        assert wrapped.fields() == {"age": 52, "house_no": "14", "sex": "F"}
+
+    def test_a_truncated_answer_is_refused(self):
+        """A cap landing mid-value yields a plausible wrong number, which is the whole point."""
+        cut = second_pass.Reading("61|মৌকথাং|ঘৰ নং : ১৩|বয়স : 2", tokens=160, capped=True)
+        assert not cut.usable and cut.fields() == {}
+
+    def test_a_looping_answer_keeps_its_first_cycle(self):
+        text = "|76|সিবিৰানী|ঘৰ নং: ১৭|বয়স: 54|লিঙ্গ: মহিলা|" * 3
+        looped = second_pass.Reading(text, tokens=160, capped=True)
+        assert looped.usable
+        assert looped.fields()["age"] == 54
+
+    def test_an_implausible_age_is_not_accepted_from_the_second_engine_either(self):
+        assert "age" not in second_pass.Reading("ঘৰ নং : ১৪|বয়স : 7 লিঙ্গ : পুৰুষ").fields()
+
+    def test_it_fills_gaps_and_never_overwrites(self):
+        """Where the engines contradict each other the first value stands and is recorded.
+
+        Overwriting silently would swap a measured quantity for an unmeasured one corpus-wide.
+        """
+        row = {"age": 92, "house_no": "", "sex": "M", "flags": ""}
+        reading = second_pass.Reading("ঘৰ নং : ১৪|বয়স : 59 লিঙ্গ : পুৰুষ")
+        merged = second_pass.merge(row, reading)
+        assert merged["house_no"] == "14", "the gap is filled"
+        assert merged["age"] == 92, "the existing value stands"
+        assert "age:92!=59" in merged["second_pass_disagreements"]
+
+    def test_only_rows_missing_something_it_can_supply_are_sent(self):
+        """A second read returning what we already had is six seconds spent on nothing."""
+        assert not second_pass.wanted({"age": 35, "house_no": "14", "sex": "M"})
+        assert second_pass.wanted({"age": None, "house_no": "14", "sex": "M"})
+        assert second_pass.wanted({"age": 35, "house_no": "", "sex": "M"})

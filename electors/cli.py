@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -561,6 +562,102 @@ def cmd_rebuild(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_second_pass(args: argparse.Namespace) -> int:
+    """Re-read the boxes the cheap pass could not, with savitr's roll model.
+
+    Only boxes missing a field this engine can supply are sent. It costs about six seconds a
+    box against tesseract's 1.7, so asking it about a box we already answered is the one thing
+    that makes the tier not worth having.
+    """
+    import tempfile
+
+    from PIL import Image
+
+    from . import grid, pages, second_pass
+
+    zip_path = Path(args.zip)
+    if not zip_path.exists():
+        print(f"no such zip: {zip_path}", file=sys.stderr)
+        return 1
+    render.require_poppler()
+
+    wanted_parts = set(args.parts or [])
+    everything = [p for p in render.iter_zip_parts(zip_path) if p.part_no in wanted_parts]
+    if not everything:
+        print("no matching parts", file=sys.stderr)
+        return 1
+
+    log = timing.setup("second-pass", to_file=False)
+    engine = second_pass.TerseEngine()
+    clock = timing.RunClock(total=len(everything))
+    before_all: List[Dict[str, Any]] = []
+    after_all: List[Dict[str, Any]] = []
+
+    try:
+        for part in everything:
+            captured = replay.load(part.part_no, ac=part.ac_no)
+            if captured is None:
+                log.warning("part %s has no captured lines; skipped", part.part_no)
+                continue
+            rows = replay.replay(captured)
+            targets = {
+                (r["page_no"], r["box_row"], r["box_col"]): i
+                for i, r in enumerate(rows)
+                if second_pass.wanted(r)
+            }
+            log.info(
+                "part %s: %d of %d boxes want a second read", part.part_no, len(targets), len(rows)
+            )
+            if not targets:
+                continue
+
+            pdf_bytes = render.read_pdf_bytes(zip_path, part.pdf_name)
+            with tempfile.TemporaryDirectory() as tmp:
+                work = Path(tmp)
+                (work / "part.pdf").write_bytes(pdf_bytes)
+                subprocess.run(
+                    [
+                        "pdftoppm",
+                        "-r",
+                        str(extract.DPI),
+                        "-png",
+                        str(work / "part.pdf"),
+                        str(work / "page"),
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+                for image_path in sorted(work.glob("page-*.png")):
+                    number = int(image_path.stem.split("-")[-1])
+                    if not any(key[0] == number for key in targets):
+                        continue
+                    image = Image.open(image_path)
+                    signature = pages.classify(image, number)
+                    if not signature.is_elector:
+                        continue
+                    for box in grid.build(signature.h_rules, signature.v_rules):
+                        index = targets.get((number, box.row, box.column))
+                        if index is None:
+                            continue
+                        crop = image.crop((box.left, box.top, box.text_right, box.bottom))
+                        rows[index] = second_pass.merge(rows[index], engine.read(crop))
+                    image.close()
+
+            before_all.extend(replay.replay(captured))
+            after_all.extend(rows)
+            clock.record(0.0, was_cached=False)
+            log.info("%s", clock.progress(part.part_no, len(rows), 0.0, False))
+    finally:
+        engine.close()
+
+    if not after_all:
+        print("nothing was re-read", file=sys.stderr)
+        return 1
+    print()
+    print(second_pass.render(second_pass.summarise(before_all, after_all)))
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     rows = output.read_shard(Path(args.shard))
     checks = validate.reconcile(rows, validate.load_part_totals())
@@ -646,6 +743,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_rebuild.add_argument("--out", type=Path, default=Path("out/electors"))
     p_rebuild.add_argument("--cache", default="out/electors/cache")
     p_rebuild.set_defaults(func=cmd_rebuild)
+
+    p_second = sub.add_parser(
+        "second-pass", help="re-read boxes the cheap pass could not, with savitr's roll model"
+    )
+    p_second.add_argument("zip")
+    p_second.add_argument("--parts", type=int, nargs="+", required=True)
+    p_second.set_defaults(func=cmd_second_pass)
 
     p_report = sub.add_parser("report", help="reconcile a shard against the info pages")
     p_report.add_argument("shard")
