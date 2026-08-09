@@ -1674,3 +1674,42 @@ class TestParserScriptAndLines:
         """Replacing ৰ then র mangles the class just inserted: "[ৰর]" contains র."""
         assert second_pass._either_ra("ঘৰ") == "ঘ[ৰর]"
         assert second_pass._either_ra("ঘর") == "ঘ[ৰর]"
+
+
+class TestFairComparison:
+    """Columns scored on different numbers of boxes are not a ranking."""
+
+    def test_uneven_denominators_are_called_out_loudly(self):
+        """One engine on 16 boxes and another on 36 is the same error as unequal token
+        budgets, which reversed the ranking once already."""
+        a, b = evaluate.Score("a"), evaluate.Score("b")
+        a.total, b.total = 16, 36
+        assert "NOT COMPARABLE" in evaluate.render({"a": a, "b": b})
+
+    def test_equal_denominators_pass_without_the_warning(self):
+        a, b = evaluate.Score("a"), evaluate.Score("b")
+        a.total = b.total = 36
+        assert "NOT COMPARABLE" not in evaluate.render({"a": a, "b": b})
+
+    def test_the_common_subset_is_what_every_engine_answered(self):
+        truth = {"x": {}, "y": {}, "z": {}}
+        sample = [
+            {
+                "key": "x",
+                "t_name": "a",
+                "surya": "a",
+                "surya_full": "a",
+                "gemini": {"name": "a"},
+                "dots": "a",
+            },
+            {"key": "y", "t_name": "a", "surya": "a", "surya_full": "a", "gemini": {}, "dots": "a"},
+            {
+                "key": "z",
+                "t_name": "a",
+                "surya": "a",
+                "surya_full": "a",
+                "gemini": {"name": "a"},
+                "dots": "",
+            },
+        ]
+        assert evaluate.common_keys(truth, sample) == ["x"]

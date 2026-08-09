@@ -21,7 +21,7 @@ import difflib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 #: Bengali numerals, which both engines emit for the same fields as Latin ones.
 BENGALI_DIGITS = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
@@ -140,9 +140,22 @@ def score(
     return {name: t for name, t in tallies.items() if t.total}
 
 
+def common_keys(truth: Dict[str, Any], sample: Sequence[Dict[str, Any]]) -> List[str]:
+    """Boxes every engine answered, which is the only fair basis for comparing them.
+
+    Engines arrive at different times and the sample grows, so one column can be scored on 16
+    boxes and another on 36. Comparing those is the same error as scoring two models at
+    different token budgets -- which happened here, and reversed the ranking.
+    """
+    fields = ("t_name", "surya", "surya_full", "gemini", "dots")
+    by_key = {row["key"]: row for row in sample}
+    return [key for key in truth if key in by_key and all(by_key[key].get(f) for f in fields)]
+
+
 def render(tallies: Dict[str, Score]) -> str:
     names = list(tallies)
     total = max(t.total for t in tallies.values())
+    uneven = {t.total for t in tallies.values() if t.total}
     lines = [
         f"ENGINE ACCURACY over {total} boxes read off the page",
         "",
@@ -155,8 +168,14 @@ def render(tallies: Dict[str, Score]) -> str:
             hits = int(round(tally.rates()[field] * (tally.total or 1)))
             row += f"{hits:>6}/{tally.total} ({tally.rates()[field]:>3.0%})".rjust(14)
         lines.append(row)
+    lines += [""]
+    if len(uneven) > 1:
+        lines += [
+            "   *** COLUMNS ARE NOT COMPARABLE: they were scored on different numbers of",
+            f"   *** boxes ({sorted(uneven)}). Score the common subset before ranking these.",
+            "",
+        ]
     lines += [
-        "",
         "   Ground truth is the crop, read by eye. Small, and the only real truth here.",
         "   Compare engines only at the same token budget: a smaller one truncates fewer",
         "   answers into loops, and the loop, not the model, is what the score then measures.",
