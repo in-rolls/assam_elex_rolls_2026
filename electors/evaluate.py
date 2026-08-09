@@ -30,6 +30,21 @@ BENGALI_DIGITS = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
 #: matra, rather than a different person.
 NEARLY = 0.80
 
+#: Bengali RA (U+09B0) and Assamese RA (U+09F0) are the same letter written two ways, and the
+#: models emit the Bengali codepoint for Assamese text. Scoring them apart marked correct
+#: readings wrong: ``পবিত্র লাক্রা`` against ``পবিত্ৰ লাক্ৰা`` differs in nothing else. Folding it
+#: moves surya-full from 6 of 16 exact names to 10.
+#:
+#: Only RA. Bengali ``ব`` and Assamese ``ৱ`` look like a matching pair but are distinct letters
+#: in Assamese, and folding them changed no score -- which is the evidence for leaving them
+#: alone rather than an argument for it.
+SCRIPT_VARIANTS = str.maketrans({"র": "ৰ"})
+
+
+def fold(text: str) -> str:
+    """Normalise script variants that are the same letter, and collapse whitespace."""
+    return " ".join(str(text or "").translate(SCRIPT_VARIANTS).split())
+
 
 @dataclass
 class Score:
@@ -76,12 +91,13 @@ def terse_fields(text: str) -> Dict[str, Any]:
 
 def score_one(got: Dict[str, Any], want: Dict[str, Any], tally: Score) -> None:
     tally.total += 1
-    name, truth = (got.get("name") or "").strip(), want["name"]
-    tally.name_exact += name == truth
+    name, truth = fold(got.get("name")), fold(want["name"])
+    tally.name_exact += bool(name) and name == truth
     tally.name_nearly += bool(name) and difflib.SequenceMatcher(None, name, truth).ratio() >= NEARLY
     tally.first_name += bool(name) and name.split()[0] == truth.split()[0]
     tally.age += got.get("age") == want["age"]
-    tally.house += str(got.get("house") or "") == str(want["house"])
+    # Whitespace folded: a house number reads "20 ক" or "20ক" on the same page.
+    tally.house += fold(got.get("house")).replace(" ", "") == fold(want["house"]).replace(" ", "")
     tally.sex += (got.get("sex") or "") == want["sex"]
 
 
@@ -95,6 +111,7 @@ def score(
         "tesseract": Score("tesseract"),
         "savitr-terse": Score("savitr-terse"),
         "surya-full": Score("surya-full"),
+        "gemini": Score("gemini"),
     }
     for key, want in truth.items():
         row = by_key.get(key)
@@ -113,6 +130,10 @@ def score(
         score_one(terse_fields(row.get("surya") or ""), want, tallies["savitr-terse"])
         if row.get("surya_full"):
             score_one(terse_fields(row["surya_full"]), want, tallies["surya-full"])
+        if row.get("gemini"):
+            from . import gemini as gemini_engine
+
+            score_one(gemini_engine.fields_of(row["gemini"]), want, tallies["gemini"])
     return {name: t for name, t in tallies.items() if t.total}
 
 

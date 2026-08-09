@@ -15,6 +15,7 @@ from electors import (
     escalate,
     evaluate,
     fields,
+    gemini,
     grid,
     pages,
     quality,
@@ -1476,3 +1477,71 @@ class TestEngineEvaluation:
     def test_a_relation_line_is_not_taken_for_the_name(self):
         found = evaluate.terse_fields("31|নাম : সমে|স্বামীৰ নাম: তিৰেন|বয়স : 54 লিঙ্গ : মহিলা|")
         assert found["name"] == "সমে"
+
+
+class TestGeminiFields:
+    """The schema removes the parser as a variable; what is left is the digit script."""
+
+    def test_house_numbers_come_back_in_the_script_they_are_printed_in(self):
+        """The prompt asks for the page exactly as printed, and ১৩ is what is printed.
+
+        Scoring those against Latin digits marked the model wrong on 14 of 16 house numbers
+        it had read correctly.
+        """
+        assert gemini.fields_of({"house_no": "১৩"})["house"] == "13"
+        assert gemini.fields_of({"house_no": "13"})["house"] == "13"
+
+    def test_the_unknown_sentinel_becomes_an_empty_field(self):
+        """The API rejects an empty enum member, so the schema names the sentinel instead."""
+        assert gemini.fields_of({"sex": "unknown"})["sex"] == ""
+        assert gemini.fields_of({"name": "unknown"})["name"] == ""
+        assert gemini.fields_of({"sex": "F"})["sex"] == "F"
+
+    def test_cost_halves_in_batch_mode(self):
+        usage = gemini.Usage(input_tokens=1_000_000, output_tokens=1_000_000)
+        assert usage.cost(0.10, 0.40, batch=False) == 0.5
+        assert usage.cost(0.10, 0.40, batch=True) == 0.25
+
+    def test_a_request_covers_a_column_not_a_page(self):
+        """A page costs the same tokens as a box and loses the detail: 20% of names near-right
+        against 80%, and no house numbers at all."""
+        assert gemini.BOXES_PER_REQUEST == 10
+
+
+class TestScriptFolding:
+    """Two codepoints for one letter is not a reading error."""
+
+    def test_bengali_and_assamese_ra_are_the_same_letter(self):
+        """পবিত্র লাক্রা against পবিত্ৰ লাক্ৰা differs in nothing else.
+
+        Scoring them apart marked correct readings wrong and moved surya-full from 10 of 16
+        exact names down to 6.
+        """
+        assert evaluate.fold("পবিত্র লাক্রা") == evaluate.fold("পবিত্ৰ লাক্ৰা")
+
+    def test_ba_and_wa_are_left_alone(self):
+        """They look like a matching pair but are distinct letters in Assamese, and folding
+        them changed no score -- which is the evidence for leaving them, not an argument."""
+        assert evaluate.fold("বৰুৱা") != evaluate.fold("ৱৰুৱা")
+
+    def test_a_genuinely_different_name_still_fails(self):
+        assert evaluate.fold("সমে নাৰ্জাৰী") != evaluate.fold("দৌমেল নাৰ্জাৰী")
+
+    def test_house_numbers_fold_whitespace(self):
+        """The same page prints "20 ক" and "20ক"."""
+        tally = evaluate.Score("x")
+        evaluate.score_one(
+            {"house": "20 ক", "name": "", "age": None, "sex": ""},
+            {"house": "20ক", "name": "x", "age": 1, "sex": "M"},
+            tally,
+        )
+        assert tally.house == 1
+
+    def test_an_empty_name_is_never_exactly_right(self):
+        tally = evaluate.Score("x")
+        evaluate.score_one(
+            {"name": "", "age": None, "house": "", "sex": ""},
+            {"name": "", "age": 1, "house": "1", "sex": "M"},
+            tally,
+        )
+        assert tally.name_exact == 0
