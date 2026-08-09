@@ -282,6 +282,37 @@ And one remaining miss was the ground truth itself: `ঘৰ নং : 20 ক` was
 Eyeball truth has its own error rate, and 16 boxes is enough to separate 0% from 90%, not to
 rank two engines ten points apart.
 
+### Choosing an engine for 25 million electors
+
+31,486 parts, **24,958,139 electors**, about 921,000 pages. At that scale the accuracy winner
+and the usable engine are not the same thing.
+
+| | whole state | wall clock |
+|---|--:|---|
+| Cloud Vision, 8 pages per image | **$173** | hours, ~7,200 requests |
+| Gemini Flash-Lite, batch | ~$1,500 | a day per batch |
+| dots.ocr, per box | $0 in fees | **69,300 GPU-hours — 7.9 years on one Mac** |
+
+**dots.ocr reads best and cannot be scaled.** It wins every name metric per box -- 69% exactly
+right, 100% near -- and takes ten seconds a box. Reading thirty electors in one pass would make
+it affordable, and it does not work:
+
+- Asked to extract the text of a page, it returns **13 of 30 electors** and then repeats one
+  EPIC until the token cap.
+- Asked with its own layout prompt, it classifies **the entire elector grid as a single
+  `"Picture"`** and extracts nothing from it -- only the page header and footer come back. A
+  ruled grid of boxes is not text to it.
+
+That is the same under-generation every vision-language model here shows at page scale, and it
+is why the per-box rate is the real rate. Gemini fell from 94% to 20% on names for the related
+reason that its image tokens are relative to the image, so a page is thirty times the area at
+one budget.
+
+**Cloud Vision is the only engine that reads a page as well as a box** -- 46% exact against 50%,
+82% near-right names, 88% house numbers -- which is what makes eight-pages-per-image viable and
+the whole state $173. It is 25 points behind dots.ocr on exact names and 18 on near-right, and
+that is the price of finishing.
+
 ### Combining engines: three or one, nothing in between
 
 The engines fail differently -- Gemini regularises spellings toward commoner forms because it
