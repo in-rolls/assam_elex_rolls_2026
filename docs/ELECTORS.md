@@ -61,7 +61,9 @@ or digits in an Assamese name, a name identical to the relation, a field's own l
 into its value, a malformed EPIC, an age outside 18–120, and a supposedly unique EPIC repeating.
 
 **Ceiling — disagreement.** The name band is read at two scales and compared. Where they agree
-the value is very likely right; where they differ the longer is kept and the row is flagged.
+the value is very likely right; where they differ by more than scanner noise the row is
+flagged. The finer scale is not assumed better, so the primary reading is kept and the
+disagreement is recorded rather than resolved silently.
 
 **A fill rate is never reported as accuracy.** `epic = 83%` means 83% non-empty, which is
 equally consistent with 83% correct and 40% correct.
@@ -122,20 +124,28 @@ Splits are written down rather than drawn fresh, because an out-of-sample set th
 at stops being one. DIAGNOSE (parts 12–16) may be opened and stared at; VALIDATE is seeded and
 used only to score; REGRESSION (parts 1–11) has measured roll totals.
 
-Two details that took a mistake each to get right:
+Three details that took a mistake each to get right:
 
 - **Guarded on soundness, not fill.** A fill rate *falls* when a provably wrong value is
   correctly cleared, so guarding it rejects the one move that unambiguously improves the data.
   `*_sound` counts a field only when present and not provably wrong.
 - **A metric absent from either side is a failure, not a skip.** Otherwise the two checks with
   real ground truth pass by not being measured.
+- **Targets have a direction.** An error rate improves by falling. Without saying so, the only
+  way to gate a fix aimed at reducing wrong values is to gate it on some other metric that
+  happens to rise — judging a change on something it never set out to do.
 
 ### `escalate` — know which rows are wrong rather than perfecting the pass
 
 A cheap pass will always leave errors; what makes that acceptable is knowing which rows they
 are, so an expensive engine runs on those and only those. Four families feed the router:
 provably wrong, two-scale disagreement, a relation whose label was never recognised, and two or
-more missing core fields. On 10,245 rows it flags **21.6%**.
+more missing core fields. It flags **28.3%** of rows.
+
+The disagreement threshold is measured rather than chosen. Over 1,733 boxes where both scales
+produced a name they differ on 53%, but 83% of those differences are a character or two — a
+stray matra, a speck of punctuation. Flagging all of them took the router to 56%, which is a
+re-run rather than a triage. Below 0.90 similarity the readings differ by more than noise.
 
 Its precision is deliberately not reported. The floor detectors are half the router, so scoring
 it against them is a check that cannot fail. Volume and per-family contribution are reported
