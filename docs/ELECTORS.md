@@ -282,6 +282,30 @@ And one remaining miss was the ground truth itself: `ঘৰ নং : 20 ক` was
 Eyeball truth has its own error rate, and 16 boxes is enough to separate 0% from 90%, not to
 rank two engines ten points apart.
 
+### Combining engines: three or one, nothing in between
+
+The engines fail differently -- Gemini regularises spellings toward commoner forms because it
+is a language model, while dots.ocr, Surya and Vision are pure OCR with no such prior -- which
+is the condition under which a vote beats a single reader. Measured on 35 boxes:
+
+| engines | name exact | name near | age | house | sex |
+|---|--:|--:|--:|--:|--:|
+| dots.ocr | 46% | 69% | 74% | 57% | 91% |
+| gemini | 20% | 63% | 74% | 49% | 94% |
+| vision | 34% | 63% | 71% | 63% | 91% |
+| dots + gemini | 46% | 69% | 74% | 57% | 91% |
+| dots + vision | 46% | 69% | 74% | 57% | 91% |
+| gemini + vision | 20% | 63% | 74% | 49% | 94% |
+| **all three** | **51%** | **71%** | 74% | **63%** | **94%** |
+
+**Every pair scores exactly like its stronger member.** With two readers a majority cannot
+exist, so a disagreement falls back to the preferred engine and the second one changes nothing.
+Voting needs three, which makes this all-or-nothing rather than a gradient.
+
+The three-way gain over dots.ocr alone is +5 points on exact names -- two boxes in thirty-five,
+which this sample cannot separate from noise. It is best or tied on all six fields, which is
+suggestive, but not worth 3x the compute until the truth set is larger.
+
 ### The second pass, and what it revealed about the first
 
 Tesseract cannot read the house number on a third of boxes or the age on a fifth, and the line
