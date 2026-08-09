@@ -51,7 +51,9 @@ DPI = 400
 #: enough to disagree on most rows -- and no field a consumer reads. Bumping would have thrown
 #: away a seventeen-hour constituency to improve a diagnostic, so a 1.6.0 shard may carry
 #: serial_no_ocr from either crop and nothing else differs.
-PIPELINE_VERSION = "1.6.0"
+#: 1.7.0 -- Latin letters and digits are stripped from names and relations, where they are
+#:          scanner debris by definition: the roll prints those fields in Assamese only.
+PIPELINE_VERSION = "1.7.0"
 
 
 @dataclass

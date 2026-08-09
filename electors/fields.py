@@ -155,6 +155,46 @@ def _clean(text: str) -> str:
         out = stripped
 
 
+#: Latin letters and digits inside an Assamese name or relation. The roll prints these fields
+#: in Assamese only, so any of these is scanner debris rather than part of the value: a table
+#: rule read as ``1``, a speck read as ``0`` or ``2``.
+#:
+#: Measured over 519 such runs in 14,583 rows: 497 are a **single character**, and by position
+#: 376 are delimited by whitespace or punctuation, 54 lead the name, 61 sit at a word edge, 11
+#: trail it, and **17 fall strictly inside a word**. Only that last group could be a misread
+#: letter rather than a speck -- and even there ``নেম2্ৰা`` reads as a repair once the digit
+#: goes, not as a loss.
+FOREIGN = re.compile(r"[A-Za-z0-9]+")
+
+#: Assamese, for deciding whether a run is inside a word or beside it.
+ASSAMESE = re.compile(r"[\u0980-\u09FF]")
+
+
+def strip_foreign(text: str) -> Tuple[str, bool]:
+    """The value without its Latin and digit debris, and whether any of it was inside a word.
+
+    Applied to names and relations only. The house number is digits by nature, and the EPIC is
+    Latin by nature -- running this over either would empty the field it was meant to clean.
+
+    The flag is deliberately narrow. A speck beside a word is repaired with confidence and does
+    not need a second opinion; a digit *between* two Assamese letters might have displaced one,
+    and that is the only case worth the cost of re-reading.
+    """
+    if not FOREIGN.search(text):
+        return text, False
+
+    uncertain = False
+    for found in FOREIGN.finditer(text):
+        before = text[found.start() - 1] if found.start() else ""
+        after = text[found.end()] if found.end() < len(text) else ""
+        if ASSAMESE.match(before or " ") and ASSAMESE.match(after or " "):
+            uncertain = True
+    # Removed rather than replaced with a space. Any whitespace around the run survives on its
+    # own, so words stay apart -- while a digit *between* two letters closes up, which is the
+    # repair: ``নেম2্ৰা`` becomes ``নেম্ৰা`` and not ``নেম ্ৰা``.
+    return _clean(FOREIGN.sub("", text)), uncertain
+
+
 def value_after(line: str, label: str) -> str:
     """The text after ``label`` and its separator, or ``""`` when the label is absent."""
     index = line.find(label)
@@ -625,8 +665,15 @@ def assemble(lines: Tuple[List[str], List[str]], epic_read: str, serial_read: st
     if primary and other and materially_different(primary, other):
         elector.flags.append("name_disagreement")
 
+    elector.name, uncertain = strip_foreign(elector.name)
+    if uncertain:
+        elector.flags.append("name_repaired")
+
     relations = [relation_of(a.get("relation", "")) for a in assigned]
     elector.relation_name, agreed = consensus([name for name, _ in relations])
+    elector.relation_name, uncertain = strip_foreign(elector.relation_name)
+    if uncertain:
+        elector.flags.append("relation_repaired")
     elector.relation_type = next((kind for _, kind in relations if kind), "")
     if not agreed:
         elector.flags.append("relation_disagreement")

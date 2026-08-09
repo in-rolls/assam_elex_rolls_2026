@@ -1174,3 +1174,56 @@ class TestSerialZone:
         zone = int(box.text_width * fields.SERIAL_FRACTION)
         assert zone < box.text_width, "a full-width crop is what made this slow"
         assert zone > box.text_width // 3, "too narrow and the serial falls outside it"
+
+
+class TestForeignDebris:
+    """The roll prints names in Assamese only, so a Latin letter in one is scanner debris."""
+
+    def test_a_speck_beside_a_word_is_removed(self):
+        assert fields.strip_foreign("দিপক নাজাখৰা 0") == ("দিপক নাজাখৰা", False)
+        assert fields.strip_foreign("1পলাৰ ৰাভা") == ("পলাৰ ৰাভা", False)
+
+    def test_a_digit_between_two_letters_closes_up_and_is_flagged(self):
+        """It may have displaced a letter, so the value is repaired but the row stays routable.
+
+        Removing rather than replacing with a space is what makes this a repair: নেম2্ৰা reads
+        as নেম্ৰা, not as নেম ্ৰা.
+        """
+        value, uncertain = fields.strip_foreign("নেম2্ৰা নাজাৰা")
+        assert value == "নেম্ৰা নাজাৰা"
+        assert uncertain
+
+    def test_separate_words_are_not_joined(self):
+        assert fields.strip_foreign("ৰাম 1 কুমাৰ") == ("ৰাম কুমাৰ", False)
+
+    def test_a_clean_name_is_untouched(self):
+        assert fields.strip_foreign("খাদৰাম ৰাভা") == ("খাদৰাম ৰাভা", False)
+
+    def test_only_the_uncertain_case_reaches_the_router(self):
+        """A speck beside a word is repaired with confidence and does not need re-reading."""
+        clean = [
+            "নাম : দিপক নাজাখৰা 0",
+            "পিতাৰ নাম : গংগাৰাম",
+            "ঘৰ নং : 5",
+            "বয়স : 35 লিঙ্গ : পুৰুষ",
+        ]
+        assert "name_repaired" not in fields.assemble((clean, []), "HHK0001471", "1").flags
+        risky = [
+            "নাম : নেম2্ৰা নাজাৰা",
+            "পিতাৰ নাম : গংগাৰাম",
+            "ঘৰ নং : 5",
+            "বয়স : 35 লিঙ্গ : পুৰুষ",
+        ]
+        assert "name_repaired" in fields.assemble((risky, []), "HHK0001471", "1").flags
+
+    def test_the_house_number_and_epic_are_left_alone(self):
+        """Both are digits or Latin by nature; stripping would empty them."""
+        lines = [
+            "নাম : খাদৰাম ৰাভা",
+            "পিতাৰ নাম : গংগাৰাম",
+            "ঘৰ নং : 42",
+            "বয়স : 35 লিঙ্গ : পুৰুষ",
+        ]
+        elector = fields.assemble((lines, []), "HHK0001471", "106")
+        assert elector.house_no == "42"
+        assert elector.epic_no == "HHK0001471"

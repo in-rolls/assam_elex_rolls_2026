@@ -505,6 +505,62 @@ def cmd_escalate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rebuild(args: argparse.Namespace) -> int:
+    """Write the shard from the line cache, re-parsing with today's code and no OCR.
+
+    A parsing fix that lands mid-run would otherwise force the whole constituency to be read
+    again -- eleven hours to change how a string is interpreted. The captured lines are the
+    expensive asset; the rows are derived, so they are re-derived.
+    """
+    from . import quality
+
+    parts = list(args.parts) if args.parts else replay.cached_parts(ac=args.ac)
+    if not parts:
+        print(f"no captured lines for AC {args.ac}; run `parse --capture` first", file=sys.stderr)
+        return 1
+
+    log = timing.setup(f"rebuild-AC{args.ac:03d}", to_file=False)
+    clock = timing.RunClock(total=len(parts))
+    rows: List[Dict[str, Any]] = []
+    for part in parts:
+        captured = replay.load(part, ac=args.ac)
+        if captured is None:
+            continue
+        part_rows = replay.replay(captured)
+        rows.extend(part_rows)
+        clock.record(0.0, was_cached=False)
+        log.info("%s | %s rows", clock.progress(part, len(part_rows), 0.0, False), f"{len(rows):,}")
+
+    if not rows:
+        print("no rows rebuilt", file=sys.stderr)
+        return 1
+
+    _, roll_totals = _cached(Path(args.cache), args.ac)
+    checks = validate.reconcile(rows, validate.load_part_totals(), roll_totals)
+    summary = validate.summarize(checks, rows)
+    path = output.write_shard(rows, args.ac, Path(args.out))
+    output.update_manifest(
+        args.ac,
+        path,
+        {
+            "rows": summary["rows"],
+            "supplement_rows": summary["supplement_rows"],
+            "parts_matching_roll": summary["parts_matching_roll"],
+            "parts_measured": summary["parts_measured"],
+            "male_share": summary["male_share"],
+            "written_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            # Named so a shard rebuilt from cached text is never mistaken for a fresh read.
+            "rebuilt_from_lines": True,
+            "parts": len(parts),
+        },
+    )
+    for line in clock.summary():
+        log.info("%s", line)
+    print(f"\nwrote {path} from {len(parts)} captured parts, no OCR")
+    print(quality.format_report(quality.report(rows, summary)))
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     rows = output.read_shard(Path(args.shard))
     checks = validate.reconcile(rows, validate.load_part_totals())
@@ -581,6 +637,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_esc.add_argument("--parts", type=int, nargs="*")
     p_esc.add_argument("--replay", action="store_true", help="source rows from the line cache")
     p_esc.set_defaults(func=cmd_escalate)
+
+    p_rebuild = sub.add_parser(
+        "rebuild", help="rewrite the shard from cached OCR text, with today's parser and no OCR"
+    )
+    p_rebuild.add_argument("--parts", type=int, nargs="*")
+    p_rebuild.add_argument("--ac", type=int, default=1)
+    p_rebuild.add_argument("--out", type=Path, default=Path("out/electors"))
+    p_rebuild.add_argument("--cache", default="out/electors/cache")
+    p_rebuild.set_defaults(func=cmd_rebuild)
 
     p_report = sub.add_parser("report", help="reconcile a shard against the info pages")
     p_report.add_argument("shard")

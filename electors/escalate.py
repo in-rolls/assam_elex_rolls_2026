@@ -31,7 +31,14 @@ from . import quality
 
 #: Flags raised by the extractor when two upscales disagreed. Independent of the floor
 #: detectors, which look only at the final value.
-DOUBT_FLAGS = ("name_disagreement", "relation_disagreement", "unreadable", "age_ambiguous")
+DOUBT_FLAGS = (
+    "name_disagreement",
+    "relation_disagreement",
+    "unreadable",
+    "age_ambiguous",
+    "name_repaired",
+    "relation_repaired",
+)
 
 
 def certain(row: Dict[str, Any]) -> List[str]:
@@ -94,10 +101,12 @@ REASON_FIELD: Dict[str, str] = {
     "name_equals_relation": "name",
     "name_implausible_length": "name",
     "name_disagreement": "name",
+    "name_repaired": "name",
     "no_name": "name",
     "relation_has_latin_or_digits": "relation",
     "relation_type_unknown": "relation",
     "relation_disagreement": "relation",
+    "relation_repaired": "relation",
     "no_relation_name": "relation",
     "age_out_of_range": "age",
     "age_ambiguous": "age",
