@@ -287,15 +287,46 @@ rank two engines ten points apart.
 31,486 parts, **24,958,139 electors**, about 921,000 pages. At that scale the accuracy winner
 and the usable engine are not the same thing.
 
+Scored on the 25 boxes every engine answered -- the only basis on which they can be ranked:
+
+| field | tesseract | savitr | surya-full | gemini | dots.ocr | cloud-vision |
+|---|--:|--:|--:|--:|--:|--:|
+| name exactly right | 0% | **76%** | 60% | 28% | 72% | 72% |
+| name nearly right | 36% | 92% | 76% | 88% | **100%** | **100%** |
+| age right | 60% | 92% | 92% | **100%** | **100%** | **100%** |
+| house no right | 0% | 80% | 68% | 60% | **88%** | **88%** |
+| sex right | 96% | 92% | 92% | **100%** | **100%** | **100%** |
+
+**dots.ocr and Cloud Vision are tied**, field for field, and the tie is what decides the state:
+
 | | whole state | wall clock |
 |---|--:|---|
 | Cloud Vision, 8 pages per image | **$173** | hours, ~7,200 requests |
 | Gemini Flash-Lite, batch | ~$1,500 | a day per batch |
-| dots.ocr, per box | $0 in fees | **69,300 GPU-hours — 7.9 years on one Mac** |
+| dots.ocr, per box | $350–$10,400 in GPU rental | unmeasured; 7.9 years on this Mac |
 
-**dots.ocr reads best and cannot be scaled.** It wins every name metric per box -- 69% exactly
-right, 100% near -- and takes ten seconds a box. Reading thirty electors in one pass would make
-it affordable, and it does not work:
+Cloud Vision reads as well, costs $173, needs no hardware, and is the only engine here whose
+throughput at scale is a measured quantity rather than a guess spanning thirty-fold. **It runs
+the state.**
+
+#### The fourth measurement artifact, and the one that decided this
+
+Vision scored **44% on exact names until the parser was fixed, and 72% after** -- and the
+recognition never changed. Vision reads the printed `নাম` label as `নামু`, a matra that is not
+on the page, on 12 of 34 boxes. `NAME_RE` required the correct spelling, so the label did not
+match, the line fell through to the unlabelled-name branch, and the elector was recorded as
+`নামু : অঙেলা মুছাহাৰী`. Ten names Vision had read perfectly were scored wrong.
+
+Every other engine's parse is byte-identical across the fix -- `নামু` appears only in Vision's
+output -- so this was one engine's column being wrong, in the direction of looking worse.
+
+That is four for four. **Every measurement artifact found in this stage understated an engine**:
+unequal token budgets, a truth set attached to the wrong boxes, a loop guard that returned the
+padding instead of the answer, and now a label the parser could not see. Three of the four were
+found by refusing to accept a number that looked too bad, which is the only method that has
+worked here.
+
+**dots.ocr still cannot read a page**, which is why it was never the cheap option:
 
 - Asked to extract the text of a page, it returns **13 of 30 electors** and then repeats one
   EPIC until the token cap.
@@ -303,39 +334,41 @@ it affordable, and it does not work:
   `"Picture"`** and extracts nothing from it -- only the page header and footer come back. A
   ruled grid of boxes is not text to it.
 
-That is the same under-generation every vision-language model here shows at page scale, and it
-is why the per-box rate is the real rate. Gemini fell from 94% to 20% on names for the related
-reason that its image tokens are relative to the image, so a page is thirty times the area at
-one budget.
+That is the same under-generation every vision-language model here shows at page scale. Gemini
+fell from 94% to 20% on names for the related reason that its image tokens are relative to the
+image, so a page is thirty times the area at one budget. Cloud Vision is the only engine that
+reads a page as well as it reads a box, which is what makes eight-pages-per-image viable.
 
-**Cloud Vision is the only engine that reads a page as well as a box** -- 46% exact against 50%,
-82% near-right names, 88% house numbers -- which is what makes eight-pages-per-image viable and
-the whole state $173. It is 25 points behind dots.ocr on exact names and 18 on near-right, and
-that is the price of finishing.
+**dots.ocr's remaining job is to check Vision.** Once Vision has run the state nothing else
+verifies it, and with no labels the only automatic error signal is two independent engines
+disagreeing. dots.ocr is the strongest available second reader and it fails differently, so
+running it over a sample and reporting per-field agreement is worth the local time -- as
+agreement, never as accuracy, because two engines can be wrong together.
 
 ### Combining engines: three or one, nothing in between
 
 The engines fail differently -- Gemini regularises spellings toward commoner forms because it
 is a language model, while dots.ocr, Surya and Vision are pure OCR with no such prior -- which
-is the condition under which a vote beats a single reader. Measured on 35 boxes:
+is the condition under which a vote beats a single reader. Majority vote, ties broken by the
+preferred engine, on the 33 boxes all three answered:
 
 | engines | name exact | name near | age | house | sex |
 |---|--:|--:|--:|--:|--:|
-| dots.ocr | 46% | 69% | 74% | 57% | 91% |
-| gemini | 20% | 63% | 74% | 49% | 94% |
-| vision | 34% | 63% | 71% | 63% | 91% |
-| dots + gemini | 46% | 69% | 74% | 57% | 91% |
-| dots + vision | 46% | 69% | 74% | 57% | 91% |
-| gemini + vision | 20% | 63% | 74% | 49% | 94% |
-| **all three** | **51%** | **71%** | 74% | **63%** | **94%** |
+| dots.ocr | 70% | 100% | 100% | 85% | 100% |
+| gemini | 30% | 82% | 100% | 61% | 100% |
+| vision | 67% | 97% | 97% | 88% | 97% |
+| dots + gemini | 70% | 100% | 100% | 85% | 100% |
+| dots + vision | 70% | 100% | 100% | 85% | 100% |
+| gemini + vision | 30% | 82% | 100% | 61% | 100% |
+| **all three** | **73%** | 100% | 100% | 88% | 100% |
 
 **Every pair scores exactly like its stronger member.** With two readers a majority cannot
 exist, so a disagreement falls back to the preferred engine and the second one changes nothing.
 Voting needs three, which makes this all-or-nothing rather than a gradient.
 
-The three-way gain over dots.ocr alone is +5 points on exact names -- two boxes in thirty-five,
-which this sample cannot separate from noise. It is best or tied on all six fields, which is
-suggestive, but not worth 3x the compute until the truth set is larger.
+The three-way gain over dots.ocr alone is +3 points on exact names -- **one box in thirty-three**
+-- and every other field is already at ceiling or within a box. Three engines for one box is not
+a result; it is a sample too small to see one. Nothing here justifies 3x the compute.
 
 ### The second pass, and what it revealed about the first
 

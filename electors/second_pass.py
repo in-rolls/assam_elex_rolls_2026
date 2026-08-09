@@ -80,16 +80,35 @@ def _either_ra(pattern: str) -> str:
     return re.sub("[ৰর]", "[ৰর]", pattern)
 
 
+#: A combining vowel sign, optionally hung off the last letter of a printed label.
+#:
+#: Cloud Vision reads the printed ``নাম`` as ``নামু`` on 12 of 34 boxes -- a matra that is not on
+#: the page, attached to the ``ম``. A pattern that knew only the correct spelling did not match
+#: the label at all, so the whole line fell through to the unlabelled-name branch and the elector
+#: was recorded as "নামু : অঙেলা মুছাহাৰী". Ten names Vision had read perfectly were scored wrong,
+#: which is the difference between Vision reading 44% of names exactly and 76%.
+#:
+#: Only on labels, never on values: a label is a known word and a stray matra on it is provably
+#: noise, whereas a matra in a name is the name.
+MATRA = "[া-ৌৗ]?"
+
 AGE_RE = re.compile(r"বয়স\s*[:：]?\s*([0-9০-৯]{1,3})")
 #: ``[ \t]*`` rather than ``\s*`` before the suffix: the terse answers are line-delimited, and a
 #: pattern that crossed the newline captured the ``ব`` of the ``বয়স`` on the next line, turning
 #: house 13 into "13\nব".
 HOUSE_RE = re.compile(_either_ra(r"ঘৰ\s*নং\s*[:：]?\s*([0-9০-৯]{1,6}[ \t]*[ক-হ]?)"))
 SEX_RE = re.compile(r"লিঙ্গ\s*[:：]?\s*(\S+)")
+RELATION_WORDS = _either_ra(r"পিতাৰ|স্বামীৰ|মাতাৰ|মাতৃৰ")
 RELATION_RE = re.compile(
-    _either_ra(r"(পিতাৰ|স্বামীৰ|মাতাৰ|মাতৃৰ)\s*নাম\s*[:：]?\s*([^|<\n]{2,40})")
+    rf"(?P<kind>{RELATION_WORDS})\s*নাম{MATRA}\s*[:：]?\s*(?P<value>[^|<\n]{{2,40}})"
 )
-NAME_RE = re.compile(r"(?<!পিতাৰ )(?<!স্বামীৰ )(?<!মাতাৰ )নাম\s*[:：]\s*([^|<\n]{2,40})")
+
+#: The elector's own name is the ``নাম`` label with no relation word in front of it. Written as
+#: an optional prefix rather than as a negative lookbehind: the lookbehinds it replaces had to be
+#: fixed width, so they could not have tolerated :data:`MATRA` on the relation words too.
+NAME_RE = re.compile(
+    rf"(?P<kind>{RELATION_WORDS})?\s*নাম{MATRA}\s*[:：]\s*(?P<value>[^|<\n]{{2,40}})"
+)
 
 RELATION_KIND = {"পিতাৰ": "father", "স্বামীৰ": "husband", "মাতাৰ": "mother", "মাতৃৰ": "mother"}
 
@@ -168,15 +187,16 @@ class Reading:
 
         relation = RELATION_RE.search(text)
         if relation:
-            value = _clean_value(relation.group(2))
+            value = _clean_value(relation.group("value"))
             if value:
                 found["relation_name"] = value
                 # The label may have arrived with either RA, so normalise before looking it up.
-                found["relation_type"] = RELATION_KIND.get(relation.group(1).replace("র", "ৰ"), "")
+                kind = relation.group("kind").replace("র", "ৰ")
+                found["relation_type"] = RELATION_KIND.get(kind, "")
 
-        name = NAME_RE.search(text)
+        name = next((m for m in NAME_RE.finditer(text) if not m.group("kind")), None)
         if name:
-            value = _clean_value(name.group(1))
+            value = _clean_value(name.group("value"))
             if value:
                 found["name"] = value
         else:
@@ -185,7 +205,7 @@ class Reading:
             for part in (p.strip() for p in re.split(r"\||\n", text)):
                 if not part or part.isdigit():
                     continue
-                if re.search(r"ঘৰ|বয়স|লিঙ্গ|নাম\s*[:：]|<", part):
+                if re.search(_either_ra(rf"ঘৰ|বয়স|লিঙ্গ|নাম{MATRA}\s*[:：]|<"), part):
                     continue
                 if BARE_NAME.match(part):
                     value = _clean_value(part)

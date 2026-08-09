@@ -1670,6 +1670,32 @@ class TestParserScriptAndLines:
         assert second_pass.Reading("পিতার নাম: ৰাসু").fields()["relation_type"] == "father"
         assert second_pass.Reading("পিতাৰ নাম: ৰাসু").fields()["relation_type"] == "father"
 
+    def test_a_stray_matra_on_the_name_label_does_not_join_the_name(self):
+        """Cloud Vision reads the printed নাম as নামু on a third of boxes.
+
+        Unmatched, the label fell through to the unlabelled-name branch and was recorded as part
+        of the elector's name. Ten names Vision had read perfectly scored wrong, which is the
+        whole of the gap between Vision at 44% exact names and Vision at 72%.
+        """
+        assert second_pass.Reading("নামু : অঙেলা মুছাহাৰী").fields()["name"] == "অঙেলা মুছাহাৰী"
+        assert second_pass.Reading("নাম : অঙেলা মুছাহাৰী").fields()["name"] == "অঙেলা মুছাহাৰী"
+
+    def test_a_relative_keeps_the_relation_field_even_with_a_stray_matra(self):
+        """The tolerance must not turn the father's name into the elector's.
+
+        The negative lookbehinds this replaced were fixed width, so they could not have been
+        widened to allow the matra -- which is why the prefix is matched rather than excluded.
+        """
+        found = second_pass.Reading("পিতাৰ নামু : ৰাসু বসুমতাৰী").fields()
+        assert found["relation_name"] == "ৰাসু বসুমতাৰী"
+        assert found["relation_type"] == "father"
+        assert "name" not in found
+
+    def test_the_elector_is_named_when_both_labels_are_present(self):
+        found = second_pass.Reading("নামু : অলনি\nপিতাৰ নাম : ৰাসু").fields()
+        assert found["name"] == "অলনি"
+        assert found["relation_name"] == "ৰাসু"
+
     def test_building_the_variant_class_is_a_single_pass(self):
         """Replacing ৰ then র mangles the class just inserted: "[ৰর]" contains র."""
         assert second_pass._either_ra("ঘৰ") == "ঘ[ৰর]"
