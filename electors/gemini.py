@@ -71,6 +71,16 @@ PAGE_SCHEMA: Dict[str, Any] = {
 #: Deliberately spare. The schema carries the structure, so the prompt only has to say what the
 #: image is and what not to invent -- a model that fills a blank box with a plausible elector is
 #: worse than one that leaves it out.
+#:
+#: **A stricter prompt was tried and made it worse.** Every exact-name miss is the model
+#: normalising toward a commoner spelling -- ``প্ৰাণজিততা`` for the ``প্ৰানজিতা`` the roll
+#: prints, ``সৌমন্ত্ৰী`` for ``সৌমশ্ৰী`` -- which is a language model doing what language models
+#: do, and looks like something a prompt should fix. Telling it in detail not to correct
+#: spellings dropped names from 94% near-right to 75% and cost a perfect age and sex score
+#: besides. The instruction seems to buy hesitancy rather than fidelity.
+#:
+#: (16 boxes cannot resolve two or three boxes of difference. The near-right drop is the part
+#: of that result worth believing.)
 PROMPT = (
     "This is a box (or page) from an Assamese electoral roll. Transcribe every elector you can "
     "see, exactly as printed, keeping Assamese script for names. Do not translate or "
