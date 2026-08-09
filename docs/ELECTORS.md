@@ -64,10 +64,32 @@ optimisation tried twice is worse than one written down:
   load 0.97x, 0.04s saved per page. The 13% was the machine.
 - **The serial zone.** This one worked: see above.
 
-Three of the four failed, and all three failures looked like wins first. On a machine shared
-with other work a single A/B round swings 15-30%, which is larger than any of the effects being
-chased -- so a plausible number from one comparison is worth nothing here. What settled each
-case was isolating the stage that actually differs and checking whether it differs at all.
+#### Establish the resolution before believing any of it
+
+Three of the four failed and all three looked like wins first, which should have prompted the
+obvious question sooner: **what does a null result look like here?** Running the same
+configuration in both arms answers it.
+
+    arm A median 23.3s   arm B median 21.0s   (identical configuration)
+    apparent effect 0.90x, arm B "faster" in 5 of 8 rounds
+    single measurements span 1.87x with nothing changed
+    median-of-8 resolves to about 10%
+
+An A/A pair produced a 10% "improvement" and won five rounds of eight -- the same score
+`OMP_THREAD_LIMIT=1` got. That result was not evidence of anything, and neither was the
+grayscale 13%.
+
+The rule is not that large effects are unreachable; the serial zone's 2.1x sat far outside this
+band and was readable directly. It is that **the resolution has to be measured rather than
+assumed**, because it tracks whatever else the machine is doing -- load swung between 6 and 62
+in one evening here. Below the resolution, more rounds help slowly and isolating the stage that
+differs helps immediately: grayscale was settled in one step by noticing the output file was
+the same size either way.
+
+*Applied honestly to the change that shipped:* the serial zone's timing gain (0.78x on the
+second part) is near this noise floor and should not be leaned on. Its justification is the
+read rate -- 1.15-1.34x more serials recovered on both parts -- which is a count and not
+subject to timing noise at all.
 
 **Cost is dominated by OCR and by whatever else the machine is doing.** A part is roughly 30
 pages, and each page costs about four tesseract invocations, so a constituency is a multi-hour
