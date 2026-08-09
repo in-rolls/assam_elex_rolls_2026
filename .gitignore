@@ -16,3 +16,6 @@ out/
 
 # OCR line captures: regenerable from the PDFs, large, and machine-specific.
 dataset/lines/
+
+# Converted OCR model weights: half a gigabyte, regenerable with one mlx_vlm command.
+models/
