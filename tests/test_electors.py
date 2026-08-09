@@ -1155,3 +1155,22 @@ class TestGatingAgainstARevision:
         module = against.field_module("HEAD")
         assert hasattr(module, "assemble") and hasattr(module, "assign_bands")
         assert module.assemble is not fields.assemble
+
+
+class TestSerialZone:
+    """The serial is a small number in a wide strip -- the shape that defeated the EPIC."""
+
+    def test_the_zone_stays_clear_of_the_cliff(self):
+        """Below 40% of the text column the serial is cut off and nothing reads at all.
+
+        Measured on part 70: 35% of the width read 0 of 120 boxes. The chosen fraction has to
+        keep a margin above that, which is why the per-part optimum was not taken.
+        """
+        assert 0.45 <= fields.SERIAL_FRACTION <= 0.65
+
+    def test_the_zone_is_narrower_than_the_text_column(self):
+        box = grid.build(H_RULES, V_RULES)[0]
+        assert box.text_width == box.text_right - box.left
+        zone = int(box.text_width * fields.SERIAL_FRACTION)
+        assert zone < box.text_width, "a full-width crop is what made this slow"
+        assert zone > box.text_width // 3, "too narrow and the serial falls outside it"

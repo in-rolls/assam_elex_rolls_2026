@@ -80,6 +80,11 @@ class Box:
         return self.right - self.left
 
     @property
+    def text_width(self) -> int:
+        """Width of the text column, excluding the photo placeholder."""
+        return self.text_right - self.left
+
+    @property
     def height(self) -> int:
         return self.bottom - self.top
 

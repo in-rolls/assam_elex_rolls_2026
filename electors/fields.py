@@ -512,7 +512,10 @@ def read_page(
         scale=HEADER_SCALES[0],
     )
     serial_reads = batch.texts(
-        [image.crop((b.left, y0, b.text_right, y1)) for b, y0, y1 in strips],
+        [
+            image.crop((b.left, y0, b.left + int(b.text_width * SERIAL_FRACTION), y1))
+            for b, y0, y1 in strips
+        ],
         lang="eng",
         psm=7,
         scale=HEADER_SCALES[0],
@@ -537,6 +540,20 @@ def read_page(
         out.append((box, assemble(reads.as_input(), reads.epic_raw, reads.serial_raw), reads))
     return out
 
+
+#: How much of the text column the serial zone spans. The serial is a small number at the left
+#: of an 800px strip, which is the shape that defeated the EPIC read -- ``psm 7`` gives up on
+#: mostly-whitespace crops -- and the EPIC was fixed by giving it its own narrow zone.
+#:
+#: Measured on two parts rather than one, which is what stopped a worse value shipping. On part
+#: 70, 40% of the width was 2.1x faster and read 2.9x more serials, and 35% read nothing at
+#: all; on part 102 that same 40% read no better than the full width. What holds on both is
+#: 50-60%: about 0.78x the time and 1.15-1.34x the reads. 0.55 sits between the two measured
+#: optima and well clear of the cliff below 40%.
+#:
+#: This only feeds ``serial_no_ocr``, which is the independent check on the derived row order.
+#: No other field touches this crop, so the guarded metrics cannot move.
+SERIAL_FRACTION = 0.55
 
 #: Stripped before the EPIC is matched. A real read came back ``S 106 -, HHK3535/704``: the
 #: EPIC is plainly there and a stray slash inside the digits was enough to reject it.
