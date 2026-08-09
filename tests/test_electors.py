@@ -941,3 +941,118 @@ class TestGateDirection:
     def test_the_default_is_still_higher_is_better(self):
         assert bench.gate_target("present", 0.80, 0.85).passed
         assert not bench.gate_target("present", 0.85, 0.80).passed
+
+
+class TestAmbiguousAges:
+    """An age of 95 that is really 26 is in range, so no floor detector can see it."""
+
+    def test_a_contaminated_run_is_flagged(self):
+        assert fields.age_is_ambiguous("বয়স ' 9526 !লঙ্গ ' মাহলা")
+
+    def test_a_clean_two_digit_age_is_not(self):
+        assert not fields.age_is_ambiguous("বয়স ' 46 [লঙ্গ ' মাহলা")
+
+    def test_the_flag_reaches_the_router(self):
+        lines = [
+            "নাম : খাদৰাম ৰাভা",
+            "পিতাৰ নাম : গংগাৰাম",
+            "ঘৰ নং : 5",
+            "বয়স ' 9526 !লঙ্গ ' মাহলা",
+        ]
+        elector = fields.assemble((lines, [lines[0]]), "HHK0001471", "106")
+        assert "age_ambiguous" in elector.flags
+        row = {"flags": ",".join(elector.flags), "relation_type": "father", "relation_name": "x"}
+        assert "age_ambiguous" in escalate.doubtful(row)
+
+    def test_the_threshold_follows_the_unambiguous_lines(self):
+        """Two-digit runs put 2.3% of ages in the nineties; long runs put 13-15% there
+        whichever end is read, so neither end is the age."""
+        assert fields.AGE_DIGITS == 2
+
+
+class TestEscalationCost:
+    """Rows flagged overstates the cost: a re-read settles one band, not a whole box."""
+
+    def test_cost_is_counted_in_bands_not_rows(self):
+        rows = [
+            {
+                "name": "খাদৰাম",
+                "relation_name": "গংগাৰাম",
+                "relation_type": "father",
+                "epic_no": "HHK0001471",
+                "age": 35,
+                "sex": "M",
+                "flags": "age_ambiguous" if i % 2 else "",
+            }
+            for i in range(100)
+        ]
+        found = escalate.report(rows)
+        assert found.volume == 0.5, "half the rows are flagged"
+        assert found.by_field == {"age": 50}, "but only one band of each is in question"
+
+    def test_every_reason_the_detectors_can_raise_maps_to_a_band(self):
+        """An unmapped reason silently becomes 'box' and overstates the second pass's cost.
+
+        Enumerated from the detectors rather than from a hand-written list, so a reason added
+        later without a band fails here instead of quietly inflating the cost estimate.
+        """
+        broken = {
+            "name": "Latin",
+            "relation_name": "Latin",
+            "relation_type": "",
+            "epic_no": "nope",
+            "age": 900,
+            "sex": "",
+            "flags": ",".join(escalate.DOUBT_FLAGS),
+        }
+        raised = set(escalate.reasons(broken)) | set(quality.problems_with(broken))
+        unmapped = sorted(reason for reason in raised if reason not in escalate.REASON_FIELD)
+        assert not unmapped, f"reasons with no band: {unmapped}"
+
+
+class TestDetectorSeparation:
+    """A detector can be falsified without ground truth, if not measured."""
+
+    @staticmethod
+    def _old(value):
+        return value >= 90
+
+    def test_a_detector_that_finds_trouble_concentrates_it(self):
+        """Implausible ages sit in the flagged half far more often, but not only there."""
+        rows = [
+            {
+                "age": 95 if (i % 4 == 0 if i % 2 == 0 else i % 20 == 1) else 30,
+                "flags": "age_ambiguous" if i % 2 == 0 else "",
+            }
+            for i in range(200)
+        ]
+        found = escalate.separation(rows, "age_ambiguous", "age", self._old)
+        assert found["concentration"] > 2.0
+        assert found["unflagged"]["implausible"] > 0, "a zero base is a different case"
+
+    def test_a_detector_flagging_at_random_scores_about_one(self):
+        """The check that makes the whole thing falsifiable.
+
+        Implausible ages are spread evenly across both halves, so a detector that splits the
+        corpus in two has found nothing however sensible its reason sounds.
+        """
+        rows = [
+            {"age": 95 if i % 10 < 2 else 30, "flags": "age_ambiguous" if i % 2 else ""}
+            for i in range(200)
+        ]
+        found = escalate.separation(rows, "age_ambiguous", "age", self._old)
+        assert 0.8 < found["concentration"] < 1.25
+
+    def test_perfect_separation_is_not_reported_as_failure(self):
+        """Dividing by a zero base returned 0.0 -- the score a useless detector gets."""
+        rows = [
+            {"age": 95 if i % 2 else 30, "flags": "age_ambiguous" if i % 2 else ""}
+            for i in range(100)
+        ]
+        found = escalate.separation(rows, "age_ambiguous", "age", self._old)
+        assert found["concentration"] == float("inf")
+
+    def test_no_implausible_values_anywhere_is_no_information(self):
+        rows = [{"age": 30, "flags": "age_ambiguous" if i % 2 else ""} for i in range(100)]
+        found = escalate.separation(rows, "age_ambiguous", "age", self._old)
+        assert found["concentration"] == 1.0

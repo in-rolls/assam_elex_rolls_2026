@@ -250,6 +250,29 @@ def age_from(line: str) -> Optional[int]:
     return None
 
 
+#: Digits in the age zone beyond this many mean the run is contaminated and the age taken
+#: from it is a guess.
+#:
+#: Decided against the lines that are not ambiguous. Over 3,463 runs of exactly two digits the
+#: ages fall 29% in the twenties down to 2.3% in the nineties, which is the shape a roll has.
+#: Reading the longer runs from the left puts 15.3% of them in the nineties; reading them from
+#: the right puts 13.6% there. Neither is close to 2.3%, so neither end is the age -- the runs
+#: are contaminated in more than one way, and picking the marginally better rule would be
+#: tuning on a signal that does not support it.
+#:
+#: An age of 95 that is really 26 sits inside the plausible range, so no floor detector sees
+#: it and the soundness metric counts it as good. The distribution is the only thing that can
+#: see it, and the honest response to a value the parser cannot recover is to route it rather
+#: than to invent a rule for it.
+AGE_DIGITS = 2
+
+
+def age_is_ambiguous(line: str) -> bool:
+    """Whether the age zone holds more digits than an age can account for."""
+    runs = re.findall(r"\d+", schema.normalize_digits(line))
+    return bool(runs) and len(runs[0]) > AGE_DIGITS
+
+
 def age_and_sex(line: str) -> Tuple[Optional[int], str]:
     """Age and sex from the ``বয়স ... লিঙ্গ ...`` line."""
     age = age_from(line)
@@ -596,6 +619,8 @@ def assemble(lines: Tuple[List[str], List[str]], epic_read: str, serial_read: st
     )
     for line in (a.get("age", "") for a in assigned if a.get("age")):
         age, sex = age_and_sex(line)
+        if elector.age is None and age is not None and age_is_ambiguous(line):
+            elector.flags.append("age_ambiguous")
         elector.age = elector.age if elector.age is not None else age
         elector.sex = elector.sex or sex
 

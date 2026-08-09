@@ -169,6 +169,29 @@ Its precision is deliberately not reported. The floor detectors are half the rou
 it against them is a check that cannot fail. Volume and per-family contribution are reported
 instead, and precision becomes measurable once a second engine has read the flagged rows.
 
+**Cost is counted in bands, not rows.** A re-read settles one field, not a whole box, so
+flagging 39.8% of rows costs 2,718 band re-reads against 22,656 for a full second pass — 12%
+of one. Counting rows alone made a precise detector look like it had pushed the router past
+being a triage.
+
+**A detector can be falsified even where precision cannot be measured.** If the rows it picks
+are no likelier to be wrong than the rows it passes over, it is flagging at random however
+sensible its reason sounds. `separation` scores that against a *distributional* property, which
+is the only handle on a value that is individually plausible but collectively impossible.
+
+The age detector is the case in point. `age_ambiguous` fires where the age zone holds more
+digits than an age can account for — `বয়স ' 9526`. Flagged rows put 15.2% of ages in the
+nineties; unflagged rows put 2.2% there, and fall away from 28.6% in the twenties exactly as a
+roll should. That is a **6.8× concentration** of demographically impossible ages, established
+without a single labelled row.
+
+Which end of a long run is the age was left undecided on purpose. Read from the left it puts
+15.3% of those rows in the nineties, from the right 13.6%, against the 2.3% the unambiguous
+two-digit runs show — so neither end is the age, and picking the marginally better rule would
+be tuning on a signal that does not support it. An age of 95 that is really 26 sits inside
+every range check, so no floor detector sees it and the soundness metric counts it as good.
+The honest response to a value the parser cannot recover is to route it, not to invent a rule.
+
 Measuring that composition immediately found a dead signal: `name_disagreement` had been raised
 **zero times in 10,245 rows**, because the one-line second-scale read was passed through the
 band assigner, where a single line lands in `house`. A scale-3 pass over every name crop was
