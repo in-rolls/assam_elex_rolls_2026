@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -161,6 +162,62 @@ def lines_in(
         ]
         inside.sort(key=lambda w: w.left)
         out.append(" ".join(w.text for w in inside))
+    return out
+
+
+#: Any letter of the shared Bengali-Assamese script.
+ASSAMESE = re.compile(r"[\u0980-\u09FF]")
+
+#: Two words belong to the same line when their vertical spans overlap by at least this much of
+#: the shorter one. Assamese sets a tall ascender and a low matra, so adjacent lines nearly
+#: touch and a permissive threshold welds them together.
+#:
+#: Swept over 24 boxes with hand-read truth. At 0.4 the name and relation lines merge into one
+#: and exact names collapse to 33%; from 0.5 it climbs, and it is flat from 0.7 on -- 88% of
+#: names near-right, 92% of ages, 88% of house numbers. Chosen at the start of the plateau
+#: rather than the top of it, so a slightly tighter line spacing does not fall off the edge.
+LINE_SHARE = 0.7
+
+
+def lines_by_position(words: Sequence[Word], left: int, right: int) -> List[str]:
+    """Group words into lines from their own coordinates, with no band finder involved.
+
+    This is the point of using an engine that returns geometry. Every line of text in this
+    stage until now came from ``grid.text_bands``, which projects ink and guesses where lines
+    start and stop -- and that guess produced the elector's own name in the relation field, the
+    swapped name and relation, and house numbers that were never found at all. Words that carry
+    their own positions do not need to be guessed at: they cluster into lines because they are
+    on the same line.
+
+    Ordered top to bottom, and left to right within a line, which is the reading order.
+    """
+    inside = [w for w in words if w.left >= left - 2 and w.right <= right + 2]
+    if not inside:
+        return []
+    inside.sort(key=lambda w: w.top)
+
+    rows: List[List[Word]] = [[inside[0]]]
+    for word in inside[1:]:
+        current = rows[-1]
+        top = min(w.top for w in current)
+        bottom = max(w.bottom for w in current)
+        shorter = max(1, min(bottom - top, word.bottom - word.top))
+        shared = min(bottom, word.bottom) - max(top, word.top)
+        if shared / shorter >= LINE_SHARE:
+            current.append(word)
+        else:
+            rows.append([word])
+
+    out = []
+    for row in rows:
+        row.sort(key=lambda w: w.left)
+        out.append(" ".join(w.text for w in row))
+
+    # Drop the header strip. It carries the serial and the EPIC -- Latin and digits -- and the
+    # four lines that matter are Assamese. Left in, it becomes line one and every field after it
+    # is read one line down, which cost the name on half the boxes.
+    while out and not ASSAMESE.search(out[0]):
+        out.pop(0)
     return out
 
 

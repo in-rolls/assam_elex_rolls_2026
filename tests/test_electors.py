@@ -1712,3 +1712,37 @@ class TestFairComparison:
             dict(answered, key="z", vision=""),
         ]
         assert evaluate.common_keys(truth, sample) == ["x"]
+
+
+class TestVisionLinesByPosition:
+    """Lines from the words' own coordinates, with no ink projection involved."""
+
+    def _w(self, text, top, left=10):
+        return vision.Word(text, left, top, left + 40, top + 20)
+
+    def test_words_on_one_line_group_together(self):
+        words = [self._w("খাদৰাম", 10, 10), self._w("ৰাভা", 12, 60)]
+        assert vision.lines_by_position(words, 0, 200) == ["খাদৰাম ৰাভা"]
+
+    def test_separate_lines_stay_separate(self):
+        """At a permissive threshold the name and relation lines welded into one and exact
+        names collapsed from 46% to 33%."""
+        words = [self._w("খাদৰাম", 10), self._w("গংগাৰাম", 40)]
+        assert vision.lines_by_position(words, 0, 200) == ["খাদৰাম", "গংগাৰাম"]
+
+    def test_lines_come_back_top_to_bottom_and_left_to_right(self):
+        words = [self._w("দুই", 40, 60), self._w("এক", 40, 10), self._w("শীৰ্ষ", 5)]
+        assert vision.lines_by_position(words, 0, 200) == ["শীৰ্ষ", "এক দুই"]
+
+    def test_the_header_strip_is_dropped(self):
+        """It carries the serial and the EPIC in Latin; left in, every field reads one line
+        down."""
+        words = [self._w("HHK0001471", 5), self._w("খাদৰাম", 40)]
+        assert vision.lines_by_position(words, 0, 200) == ["খাদৰাম"]
+
+    def test_words_outside_the_column_are_excluded(self):
+        words = [self._w("খাদৰাম", 10, 10), self._w("photo", 10, 500)]
+        assert vision.lines_by_position(words, 0, 200) == ["খাদৰাম"]
+
+    def test_the_threshold_sits_on_the_measured_plateau(self):
+        assert 0.6 <= vision.LINE_SHARE <= 0.8
