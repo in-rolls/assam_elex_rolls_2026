@@ -1272,3 +1272,37 @@ class TestFuzzyRelationLabel:
         """Real variants scored 0.60 and above; ঘৰ, বয়স and a bare name scored 0.33 and below."""
         assert 0.33 < fields.RELATION_MATCH < 0.60
         assert fields.RELATION_TYPE_CONFIDENCE > fields.RELATION_MATCH
+
+
+class TestCircularAssociations:
+    """A feature derived from the failed field explains it by definition, not by evidence."""
+
+    def test_relation_type_does_not_explain_a_missing_relation(self):
+        """relation_type is empty because there is no relation. Reported as an 18.2x lift.
+
+        The same family as the serial-gap check that reported zero forever because the serial
+        was assigned by a counter: ask what would have to be true for the slice not to light
+        up, and if the answer is "nothing", it is not a finding.
+        """
+        rows = [
+            {
+                "relation_name": "" if i % 2 else "গংগাৰাম",
+                "relation_type": "" if i % 2 else "father",
+            }
+            for i in range(200)
+        ]
+        found = diagnose.associations(rows, features=("relation_type",))
+        assert not [a for a in found if a.failure == "no_relation"]
+
+    def test_a_real_association_on_the_same_feature_still_reports(self):
+        """Only the definitional pair is suppressed, not the feature."""
+        rows = [
+            {
+                "relation_name": "গংগাৰাম",
+                "relation_type": "" if i % 2 else "father",
+                "name": "" if i % 2 else "খাদৰাম",
+            }
+            for i in range(200)
+        ]
+        found = diagnose.associations(rows, features=("relation_type",))
+        assert [a for a in found if a.failure == "no_name"]

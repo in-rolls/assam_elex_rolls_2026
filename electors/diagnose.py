@@ -151,6 +151,19 @@ FAILURES: Dict[str, Callable[[Dict[str, Any]], bool]] = {
 }
 
 
+#: Feature/failure pairs where the feature is derived from the field that failed, so the
+#: association is arithmetic rather than evidence. ``relation_type`` is empty *because* there
+#: is no relation, and reporting that as an 18.2x lift is a discovery about the definition.
+#:
+#: This is the same family as the serial-gap check that reported "0 parts with gaps" forever
+#: because the serial was assigned by a counter. Ask of every association: what would have to
+#: be true for this slice *not* to light up? If the answer is "nothing", it is not a finding.
+CIRCULAR: Sequence[Tuple[str, str]] = (
+    ("relation_type", "no_relation"),
+    ("relation_type", "relation_disagreement"),
+)
+
+
 def associations(
     rows: Sequence[Dict[str, Any]],
     features: Sequence[str] = FEATURES,
@@ -172,6 +185,8 @@ def associations(
             buckets: Dict[Any, List[bool]] = defaultdict(list)
             for row, bad in zip(rows, flags):
                 buckets[row.get(feature)].append(bad)
+            if (feature, failure) in CIRCULAR:
+                continue
             for value, marks in buckets.items():
                 if len(marks) < min_support:
                     continue
