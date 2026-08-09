@@ -13,6 +13,7 @@ from electors import (
     bench,
     diagnose,
     escalate,
+    evaluate,
     fields,
     grid,
     pages,
@@ -1396,3 +1397,57 @@ class TestSecondPass:
         assert not second_pass.wanted({"age": 35, "house_no": "14", "sex": "M"})
         assert second_pass.wanted({"age": None, "house_no": "14", "sex": "M"})
         assert second_pass.wanted({"age": 35, "house_no": "", "sex": "M"})
+
+
+class TestEngineEvaluation:
+    """The only real ground truth here is a crop read by eye."""
+
+    TRUTH = {"a": {"name": "সমে নাৰ্জাৰী", "house": "7", "age": 54, "sex": "F"}}
+
+    def test_it_scores_an_engine_against_the_page(self):
+        sample = [
+            {
+                "key": "a",
+                "t_name": "সমে নাজাৰা",
+                "t_age": 25,
+                "t_house": "",
+                "t_sex": "F",
+                "surya": (
+                    "31|নাম : সমে নাৰ্জাৰী|স্বামীৰ নাম: তিৰেন" "|ঘৰ নং : ৭|বয়স : 54 লিঙ্গ : মহিলা|"
+                ),
+            }
+        ]
+        tallies = evaluate.score(self.TRUTH, sample)
+        assert tallies["tesseract"].name_exact == 0 and tallies["savitr"].name_exact == 1
+        assert tallies["tesseract"].age == 0 and tallies["savitr"].age == 1
+        assert tallies["tesseract"].house == 0 and tallies["savitr"].house == 1
+        assert tallies["tesseract"].sex == 1 and tallies["savitr"].sex == 1
+
+    def test_a_name_off_by_a_matra_counts_as_nearly_right(self):
+        """Distinguishes a different spelling from a different person."""
+        sample = [
+            {
+                "key": "a",
+                "t_name": "সমে নাৰ্জাৰি",
+                "t_age": None,
+                "t_house": "",
+                "t_sex": "",
+                "surya": "",
+            }
+        ]
+        tallies = evaluate.score(self.TRUTH, sample)
+        assert tallies["tesseract"].name_exact == 0
+        assert tallies["tesseract"].name_nearly == 1
+
+    def test_fields_are_found_whatever_shape_the_answer_arrives_in(self):
+        bare = evaluate.terse_fields("31|সমে নাৰ্জাৰী|ঘৰ নং : ৭|বয়স : 54 লিঙ্গ : মহিলা|")
+        wrapped = evaluate.terse_fields(
+            "<p>31|নাম : সমে নাৰ্জাৰী|ঘৰ নং : ৭|বয়স : 54 লিঙ্গ : মহিলা</p>"
+        )
+        assert bare["age"] == wrapped["age"] == 54
+        assert bare["house"] == wrapped["house"] == "7"
+        assert bare["sex"] == wrapped["sex"] == "F"
+
+    def test_a_relation_line_is_not_taken_for_the_name(self):
+        found = evaluate.terse_fields("31|নাম : সমে|স্বামীৰ নাম: তিৰেন|বয়স : 54 লিঙ্গ : মহিলা|")
+        assert found["name"] == "সমে"
