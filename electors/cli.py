@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,7 +20,7 @@ from typing import Any, Dict, List
 
 from assam_rolls import cache, ocr, render, schema
 
-from . import extract, output, replay, validate
+from . import extract, output, replay, timing, validate
 
 
 def _one_part(args) -> Dict[str, Any]:
@@ -34,6 +35,10 @@ def _one_part(args) -> Dict[str, Any]:
     zip_path, pdf_name, cache_dir, *rest = args
     zip_path, cache_dir = Path(zip_path), Path(cache_dir)
     capture_lines = bool(rest[0]) if rest else False
+    # Timed here rather than between yields in the parent: a pool returns results in
+    # submission order, so the gap between two yields is whatever the slowest earlier part
+    # was still doing, not the cost of the part that just arrived.
+    started = time.time()
 
     key = Path(pdf_name).stem
     pdf_sha256 = render.sha256_bytes(render.read_pdf_bytes(zip_path, pdf_name))
@@ -53,7 +58,7 @@ def _one_part(args) -> Dict[str, Any]:
         on_disk = replay.path_for(meta.get("part_no", 0), meta.get("ac_no", 0)).exists()
         fresh = fresh and on_disk
     if fresh:
-        return dict(entry["row"], electors=entry["sections"], cached=True)
+        return dict(entry["row"], electors=entry["sections"], cached=True, seconds=None)
 
     engine = ocr.get_engine("tesseract", lang="asm")
     result = extract.read_part(zip_path, pdf_name, engine=engine, capture_lines=capture_lines)
@@ -76,7 +81,7 @@ def _one_part(args) -> Dict[str, Any]:
     }
     if not result.error:
         cache.write_entry(cache_dir, key, summary, result.electors, pdf_sha256)
-    return dict(summary, electors=result.electors)
+    return dict(summary, electors=result.electors, seconds=time.time() - started)
 
 
 def cmd_parse(args: argparse.Namespace) -> int:
@@ -96,10 +101,17 @@ def cmd_parse(args: argparse.Namespace) -> int:
     ac_no = parts[0].ac_no
     cache_dir = Path(args.cache) / f"AC{ac_no:03d}"
     already = len(list(cache_dir.glob("*.json"))) if cache_dir.exists() else 0
-    print(
-        f"{zip_path.name}: {len(parts)} parts, AC {ac_no}, {args.workers} workers"
-        + (f" ({already} already cached)" if already else "")
+    log = timing.setup(f"parse-AC{ac_no:03d}")
+    log.info(
+        "%s: %d parts, AC %d, %d workers%s%s",
+        zip_path.name,
+        len(parts),
+        ac_no,
+        args.workers,
+        f", {already} already cached" if already else "",
+        ", capturing OCR text" if args.capture else "",
     )
+    clock = timing.RunClock(total=len(parts))
 
     rows: List[Dict[str, Any]] = []
     results: List[Dict[str, Any]] = []
@@ -113,15 +125,30 @@ def cmd_parse(args: argparse.Namespace) -> int:
                 failures.append(result)
             rows.extend(result["electors"])
             results.append(result)
-            # Every part, not every tenth. A run that prints only every tenth part gives no
+            # Every part, not every tenth. A run that reports only every tenth part gives no
             # sign of life for its first hour, which is exactly when you need to know
             # whether it is working or wedged.
-            print(
-                f"  {done}/{len(parts)} part {result['part_no']}: "
-                f"{len(result['electors'])} electors | {len(rows):,} total | "
-                f"{len(failures)} with problems" + (" (cached)" if result.get("cached") else ""),
-                flush=True,
+            clock.record(result.get("seconds"), bool(result.get("cached")))
+            log.info(
+                "%s | %s rows, %d with problems",
+                clock.progress(
+                    result["part_no"],
+                    len(result["electors"]),
+                    result.get("seconds"),
+                    bool(result.get("cached")),
+                ),
+                f"{len(rows):,}",
+                len(failures),
             )
+            if result.get("error"):
+                log.warning("part %s failed: %s", result["part_no"], result["error"])
+            elif result.get("unknown_pages"):
+                log.warning(
+                    "part %s: %d pages whose geometry did not resolve: %s",
+                    result["part_no"],
+                    len(result["unknown_pages"]),
+                    result["unknown_pages"][:8],
+                )
 
     if not rows:
         print("no electors extracted", file=sys.stderr)
@@ -151,9 +178,20 @@ def cmd_parse(args: argparse.Namespace) -> int:
             "parts_measured": summary["parts_measured"],
             "male_share": summary["male_share"],
             "written_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            # What the constituency cost, so the remaining 125 can be planned rather than
+            # guessed at. A run abandoned earlier at "36 hours" had that figure from watching
+            # a terminal.
+            "seconds": round(clock.elapsed, 1),
+            "seconds_per_part": (
+                round(sum(clock.worked) / len(clock.worked), 1) if clock.worked else None
+            ),
+            "parts_from_cache": clock.cached,
+            "workers": args.workers,
         },
     )
 
+    for line in clock.summary():
+        log.info("%s", line)
     print(f"\nwrote {path} ({entry['bytes'] / 1e6:.1f} MB)")
     print(f"rows: {summary['rows']:,} ({summary['supplement_rows']:,} from supplements)")
     print(

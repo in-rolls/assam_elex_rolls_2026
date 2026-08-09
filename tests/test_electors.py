@@ -8,7 +8,18 @@ from __future__ import annotations
 
 import random
 
-from electors import bench, diagnose, escalate, fields, grid, pages, quality, replay, validate
+from electors import (
+    bench,
+    diagnose,
+    escalate,
+    fields,
+    grid,
+    pages,
+    quality,
+    replay,
+    timing,
+    validate,
+)
 
 #: One real elector page from part 1, at 400 dpi. Vertical rules come in clusters because
 #: adjacent boxes share a border; the extras at 749, 1189 ... are the internal rule some
@@ -1056,3 +1067,49 @@ class TestDetectorSeparation:
         rows = [{"age": 30, "flags": "age_ambiguous" if i % 2 else ""} for i in range(100)]
         found = escalate.separation(rows, "age_ambiguous", "age", self._old)
         assert found["concentration"] == 1.0
+
+
+class TestRunTiming:
+    """A multi-hour job has to be able to say what it cost."""
+
+    def test_durations_read_the_way_a_long_run_is_discussed(self):
+        assert timing.human(5) == "5s"
+        assert timing.human(95) == "1m 35s"
+        assert timing.human(3600 * 2 + 840) == "2h 14m"
+        assert timing.human(-1) == "0s"
+
+    def test_cached_parts_are_kept_out_of_the_per_part_cost(self):
+        """Mixing them in makes a resumed run look faster than the pipeline is."""
+        clock = timing.RunClock(total=10)
+        clock.record(60.0, was_cached=False)
+        clock.record(None, was_cached=True)
+        assert clock.done == 2 and clock.cached == 1
+        assert clock.worked == [60.0]
+        assert "1 served from cache" in clock.summary()[0]
+
+    def test_the_estimate_comes_from_throughput_not_per_part_cost(self):
+        """Per-part cost ignores how many workers are running and what else the machine does."""
+        clock = timing.RunClock(total=100)
+        clock.started -= 600
+        for _ in range(10):
+            clock.record(300.0, was_cached=False)
+        # Ten parts in ten minutes means ninety more take ninety minutes, whatever each cost.
+        assert clock.eta is not None
+        assert 5300 < clock.eta < 5700
+
+    def test_no_estimate_before_anything_finishes_or_after_everything_has(self):
+        assert timing.RunClock(total=10).eta is None
+        done = timing.RunClock(total=1)
+        done.record(1.0, was_cached=False)
+        assert done.eta is None
+
+    def test_progress_names_the_part_and_its_duration(self):
+        clock = timing.RunClock(total=154)
+        clock.record(61.0, was_cached=False)
+        line = clock.progress(7, 873, 61.0, False)
+        assert "part 7" in line and "873 electors" in line and "1m 01s" in line
+
+    def test_a_cached_part_says_so_instead_of_reporting_a_duration(self):
+        clock = timing.RunClock(total=154)
+        clock.record(None, was_cached=True)
+        assert "(cached)" in clock.progress(8, 850, None, True)
