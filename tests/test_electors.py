@@ -1237,3 +1237,38 @@ class TestForeignDebris:
         elector = fields.assemble((lines, []), "HHK0001471", "106")
         assert elector.house_no == "42"
         assert elector.epic_no == "HHK0001471"
+
+
+class TestFuzzyRelationLabel:
+    """Enumerating damaged labels does not converge; the shape of the label is stable."""
+
+    def test_the_variants_the_enumeration_missed_now_match(self):
+        """1,227 boxes in 21,669 carried a ...নাম label matching none of the eight listed."""
+        for line, kind in (
+            ('মাতৰ নাম" গিলাশ্বৰা ৰাভা', "mother"),
+            ("স্বামূৰ নাম : হুলশা", "husband"),
+            ("স্সামাৰ নাম : হুলশা", "husband"),
+            ("পৈতাৰ নাম : গংগাৰাম", "father"),
+        ):
+            found = fields.relation_label(line)
+            assert found, line
+            assert found[1] == kind, line
+
+    def test_the_name_line_is_never_a_relation(self):
+        """The one thing that must never match: it would swap the elector with a relative."""
+        for line in ("নাম : খাদৰাম ৰাভা", "ঘৰ নং : 42", "বয়স : 35 লিঙ্গ : পুৰুষ", ""):
+            assert fields.relation_label(line) is None, line
+
+    def test_an_ambiguous_relative_yields_a_value_but_no_type(self):
+        """1লতাৰ resembles মাতাৰ at 0.60 and is almost certainly a damaged পিতাৰ.
+
+        Publishing a father as a mother is worse than publishing the relationship as unknown,
+        and unknown routes the row for a second opinion.
+        """
+        found = fields.relation_label("1লতাৰ নাম : ৰাম")
+        assert found and found[1] == ""
+
+    def test_the_thresholds_keep_their_measured_margins(self):
+        """Real variants scored 0.60 and above; ঘৰ, বয়স and a bare name scored 0.33 and below."""
+        assert 0.33 < fields.RELATION_MATCH < 0.60
+        assert fields.RELATION_TYPE_CONFIDENCE > fields.RELATION_MATCH

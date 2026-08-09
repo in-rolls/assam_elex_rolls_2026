@@ -53,7 +53,9 @@ DPI = 400
 #: serial_no_ocr from either crop and nothing else differs.
 #: 1.7.0 -- Latin letters and digits are stripped from names and relations, where they are
 #:          scanner debris by definition: the roll prints those fields in Assamese only.
-PIPELINE_VERSION = "1.7.0"
+#: 1.8.0 -- relation labels are matched by shape and scored against the three relatives, rather
+#:          than enumerated. The enumeration was not converging.
+PIPELINE_VERSION = "1.8.0"
 
 
 @dataclass

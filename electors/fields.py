@@ -66,17 +66,54 @@ NAME_SCALES: Tuple[int, ...] = (2, 3)
 #: the two scales agreed on almost every box, so the second bought nothing per page.
 HEADER_SCALES: Tuple[int, ...] = (2,)
 
-#: Label -> field. Longest first, because ``পিতাৰ নাম`` contains ``নাম``.
-LABELS: Sequence[Tuple[str, str]] = (
-    ("পিতাৰ নাম", "father"),
-    ("পিতৰ নাম", "father"),
-    ("পতাৰ নাম", "father"),
-    ("স্বামীৰ নাম", "husband"),
-    ("স্বামৰ নাম", "husband"),
-    ("স্বামাৰ নাম", "husband"),
-    ("মাতাৰ নাম", "mother"),
-    ("মাতৃৰ নাম", "mother"),
+#: The three relatives a roll names, against which a damaged label is scored.
+RELATIVES: Sequence[Tuple[str, str]] = (
+    ("পিতাৰ", "father"),
+    ("স্বামীৰ", "husband"),
+    ("মাতাৰ", "mother"),
+    ("মাতৃৰ", "mother"),
 )
+
+#: A short prefix followed by ``নাম`` -- the shape every relation label has, whatever the scan
+#: did to the word itself.
+RELATION_SHAPE = re.compile(r"(\S{2,12}?)\s*নাম")
+
+#: How closely the prefix must resemble a relative before the line counts as a relation at all.
+#:
+#: Enumerating variants does not converge: 1,227 boxes in 21,669 carried a ``...নাম`` label
+#: matching none of the eight then listed, across a tail of স্বামূৰ, স্সামাৰ, স্থামাৰ, স্বসামাৰ,
+#: স্নসামাৰ and thirty more. The *shape* is stable even where the word is not.
+#:
+#: Measured against the real variants and the lines that must never match: damaged labels score
+#: 0.60 and above, while ``ঘৰ``, ``বয়স`` and a bare name score 0.33 and below. 0.50 sits between
+#: with margin on both sides.
+RELATION_MATCH = 0.50
+
+#: A higher bar for naming *which* relative it is. ``1লতাৰ`` resembles মাতাৰ at 0.60 but is
+#: almost certainly a damaged পিতাৰ, so below this the value is recovered and the type is left
+#: unknown rather than guessed -- which routes the row for a second opinion instead of
+#: publishing a father as a mother.
+RELATION_TYPE_CONFIDENCE = 0.70
+
+
+def relation_label(line: str) -> Optional[Tuple[int, str]]:
+    """Where a relation label ends and which relative it names, or None.
+
+    The single place this decision is made. Two code paths asking it differently is what put
+    the elector's own name in the relation field, so ``relation_of`` and ``assign_bands`` both
+    call this.
+    """
+    for found in RELATION_SHAPE.finditer(line[:48]):
+        prefix = found.group(1).lstrip("৷| ")
+        if not prefix:
+            continue
+        score, kind = max(
+            (difflib.SequenceMatcher(None, prefix, word).ratio(), kind) for word, kind in RELATIVES
+        )
+        if score >= RELATION_MATCH:
+            return found.end(), (kind if score >= RELATION_TYPE_CONFIDENCE else "")
+    return None
+
 
 HOUSE_LABELS = ("ঘৰ নং", "ঘৰনং", "ঘর নং", "ঘৰ ন")
 AGE_LABEL = "বয়স"
@@ -224,34 +261,11 @@ def house_number(line: str) -> str:
     return digits[0] if digits else ""
 
 
-def _flexible(label: str) -> "re.Pattern[str]":
-    """A label pattern that tolerates the spacing OCR loses.
-
-    ``স্বামীৰ নাম`` comes back as ``স্বামৰনাম`` -- same letters, no space -- and a literal
-    substring test misses it. That single character of whitespace cost the relation on
-    1,588 rows (24% of the corpus) while the value itself sat legibly on the line.
-    """
-    return re.compile(r"\s*".join(re.escape(part) for part in label.split()))
-
-
-#: Compiled once, longest first, so ``পিতাৰ নাম`` is tried before the bare ``নাম`` it contains.
-LABEL_PATTERNS: Sequence[Tuple["re.Pattern[str]", str]] = tuple(
-    (_flexible(label), kind) for label, kind in LABELS
-)
-
-
 def relation_of(line: str) -> Tuple[str, str]:
-    """``(relation_name, relation_type)`` from a relation line.
-
-    Falls back to taking the value positionally when no label matches at all. The relation
-    *name* is usually legible even when its label is not, and dropping the whole field
-    because the word in front of it scanned badly loses information the page still holds --
-    the type is left empty to say so.
-    """
-    for pattern, kind in LABEL_PATTERNS:
-        found = pattern.search(line)
-        if found:
-            return _clean(line[found.end() :].lstrip(" :;'\u2018\u2019")), kind
+    found = relation_label(line)
+    if found:
+        end, kind = found
+        return _clean(line[end:].lstrip(" :;'‘’")), kind
     return relation_fallback(line), ""
 
 
@@ -417,11 +431,7 @@ def assign_bands(lines: Sequence[str]) -> Dict[str, str]:
     # Searched from the end for the same reason as the age line: the name line above it also
     # ends in ``নাম``, and a widened pattern can reach it.
     relation_index = next(
-        (
-            i
-            for i in range(len(above) - 1, -1, -1)
-            if any(pattern.search(above[i]) for pattern, _ in LABEL_PATTERNS)
-        ),
+        (i for i in range(len(above) - 1, -1, -1) if relation_label(above[i])),
         None,
     )
 
@@ -437,12 +447,7 @@ def assign_bands(lines: Sequence[str]) -> Dict[str, str]:
         # real lines -- and then the band immediately above the relation is debris while the
         # name sits higher up, still labelled. Positional-only cost 37 names in 3,567 rows.
         named = next(
-            (
-                line
-                for line in above
-                if NAME_LABEL in line
-                and not any(pattern.search(line) for pattern, _ in LABEL_PATTERNS)
-            ),
+            (line for line in above if NAME_LABEL in line and not relation_label(line)),
             None,
         )
         if named is not None:
@@ -639,7 +644,7 @@ def second_name(first: Sequence[str], second: Sequence[str], assigned: Dict[str,
         # The name came from some other band, so the top band is a different line and the two
         # are not comparable.
         return ""
-    if any(pattern.search(line) for line in (first[0], second[0]) for pattern, _ in LABEL_PATTERNS):
+    if relation_label(first[0]) or relation_label(second[0]):
         # The top band is the *relation* line -- the name line was lost. Reading it as the
         # name is the swap this module exists to avoid, and every relation label ends in নাম,
         # so ``value_after`` would happily return the father's name for the elector's.
