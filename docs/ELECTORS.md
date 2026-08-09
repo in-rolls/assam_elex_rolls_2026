@@ -237,6 +237,34 @@ not fitted. Nothing degraded: age, EPIC and sex were flat, completeness stayed a
 measured part exact, and the sex ratio did not move. Parsing cost rose 1.05× — under 0.1% of
 pipeline time, which is OCR.
 
+### The second pass, and what it revealed about the first
+
+Tesseract cannot read the house number on a third of boxes or the age on a fifth, and the line
+cache showed the crop yields no digits at all -- so no parser change recovers them. savitr's
+distilled Surya reads the same crops. Over a whole part (636 electors, 334 boxes re-read):
+
+| | before | after |
+|---|--:|--:|
+| house no | 59.6% | **82.1%** |
+| age | 80.3% | **92.3%** |
+| sex | 95.8% | **98.6%** |
+
+**And it exposed an error the floor could not see.** The engines both produced an age on 20
+boxes of one page and disagreed on 7. The crops were read by eye: the second pass was right on
+every one of the six checked -- 24 against 25, 59 against 92, 52 against 92, 25 against 85, 54
+against 25, 45 against 55.
+
+That means roughly **a third of the ages the first pass reports are wrong**, against an error
+floor of 0.5% which never saw them, because an age of 92 is perfectly plausible on its own. It
+is also the mechanism behind an anomaly detected independently weeks of measurement earlier:
+the excess of nonagenarians in the age distribution. Age is now taken from the second pass
+where the two disagree, and the first reading is kept beside it.
+
+**The cost is the constraint, and batching does not relieve it.** One call per box is not an
+oversight -- stacking crops makes the model ignore all but one box, and layout-preserving crops
+(a grid column, a page) run away until the token cap stops them. At 2-6 seconds a box a full
+second pass is tens of hours per constituency, so which rows to send is the only lever.
+
 ### `escalate` — know which rows are wrong rather than perfecting the pass
 
 A cheap pass will always leave errors; what makes that acceptable is knowing which rows they

@@ -11,8 +11,21 @@ nonagenarians the age distribution had already flagged as an artefact -- 220 row
 nineties against 126 in the seventies -- so the disagreement is not a coin toss between two
 opinions, it is one engine reproducing a known defect and the other not.
 
-It costs about 6 seconds a box against tesseract's 1.7, which is why this runs on flagged rows
-rather than on everything.
+It costs 2-6 seconds a box against tesseract's 1.7, depending on what else the machine is
+doing, which is why this runs on flagged rows rather than on everything.
+
+**One call per box is not an oversight; it is the only thing that works.** The obvious saving
+is to answer for several electors per call, and it was measured two ways and failed both:
+
+- *Stacking crops into one tile.* The model returns exactly one record however many boxes are
+  in the image -- 6 ages from 12 boxes at two per call, 3 from 12 at four per call, 2 from 12
+  at six. The extra boxes are simply ignored, so the saving is imaginary.
+- *Keeping the roll's own layout* -- a whole grid column, or three columns of four rows. These
+  run away instead: 13 ages from 10 boxes, then 0, then 12, then 0, every one of them stopped
+  by the token cap. A whole page behaves the same way, producing one voter in 106 seconds.
+
+So the cost per elector is fixed at one model call, and the only lever left is sending fewer
+boxes.
 
 Two things the model does that have to be handled rather than hoped away:
 
