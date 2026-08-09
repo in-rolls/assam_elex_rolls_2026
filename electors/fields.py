@@ -325,6 +325,28 @@ def age_from(line: str) -> Optional[int]:
 AGE_DIGITS = 2
 
 
+def age_is_unreadable(line: str) -> bool:
+    """The age band was found and holds digits, but none of them make a voter's age.
+
+    64% of missing ages look like this -- ``বয়স ' 3/``, ``বয়স ' 4€`` -- a two-digit age with one
+    digit come back as a symbol, leaving a single digit below the minimum. The lost digit is
+    not recoverable: scored against the 25,586 ages that read cleanly, no substitution for
+    ``/`` reproduces the age distribution (the best, ``1``, is further off than a rule already
+    rejected for the same reason), and reading the band again at a finer scale recovered a net
+    two ages in a hundred and twenty boxes.
+
+    So it is routed rather than repaired. This is a *precise* signal -- the page plainly holds
+    an age and the cheap pass could not read it -- which is exactly the row a better engine
+    should see.
+    """
+    if not line:
+        return False
+    digits = re.findall(r"\d+", schema.normalize_digits(line))
+    if not digits:
+        return False
+    return age_from(line) is None
+
+
 def age_is_ambiguous(line: str) -> bool:
     """Whether the age zone holds more digits than an age can account for."""
     runs = re.findall(r"\d+", schema.normalize_digits(line))
@@ -694,6 +716,8 @@ def assemble(lines: Tuple[List[str], List[str]], epic_read: str, serial_read: st
         age, sex = age_and_sex(line)
         if elector.age is None and age is not None and age_is_ambiguous(line):
             elector.flags.append("age_ambiguous")
+        if elector.age is None and age is None and age_is_unreadable(line):
+            elector.flags.append("age_unreadable")
         elector.age = elector.age if elector.age is not None else age
         elector.sex = elector.sex or sex
 

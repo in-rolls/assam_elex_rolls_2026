@@ -36,6 +36,7 @@ DOUBT_FLAGS = (
     "relation_disagreement",
     "unreadable",
     "age_ambiguous",
+    "age_unreadable",
     "name_repaired",
     "relation_repaired",
 )
@@ -110,6 +111,7 @@ REASON_FIELD: Dict[str, str] = {
     "no_relation_name": "relation",
     "age_out_of_range": "age",
     "age_ambiguous": "age",
+    "age_unreadable": "age",
     "no_age": "age",
     "no_sex": "age",
     "epic_malformed": "epic",

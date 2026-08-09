@@ -1306,3 +1306,30 @@ class TestCircularAssociations:
         ]
         found = diagnose.associations(rows, features=("relation_type",))
         assert [a for a in found if a.failure == "no_name"]
+
+
+class TestUnreadableAges:
+    """The page plainly holds an age and the cheap pass could not read it."""
+
+    def test_a_two_digit_age_with_one_digit_lost_is_flagged(self):
+        """64% of missing ages look like this: বয়স ' 3/ -- one digit came back a symbol."""
+        assert fields.age_is_unreadable("বয়স ' 3/ [লঙ্গ ' মাহলা")
+        assert fields.age_is_unreadable("বয়স ' 4€ !লঙ্গ ' পৰষ")
+
+    def test_a_readable_age_is_not_flagged(self):
+        assert not fields.age_is_unreadable("বয়স ' 46 [লঙ্গ ' মাহলা")
+
+    def test_a_band_with_no_digits_is_a_different_failure(self):
+        """No digits means the OCR found nothing to read, not that a value was lost.
+
+        The distinction is what makes escalation worth paying for: one says a better engine
+        might recover the value, the other says there is nothing on the crop to recover.
+        """
+        assert not fields.age_is_unreadable("৷ ক্ল ভকঁনু কুঁমক্র ৷")
+        assert not fields.age_is_unreadable("")
+
+    def test_the_flag_routes_the_age_band_and_not_the_box(self):
+        lines = ["নাম : খাদৰাম ৰাভা", "পিতাৰ নাম : গংগাৰাম", "ঘৰ নং : 5", "বয়স ' 3/ [লঙ্গ ' মাহলা"]
+        elector = fields.assemble((lines, []), "HHK0001471", "1")
+        assert "age_unreadable" in elector.flags
+        assert escalate.REASON_FIELD["age_unreadable"] == "age"
