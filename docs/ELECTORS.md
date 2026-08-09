@@ -12,6 +12,33 @@ Output is one Parquet shard per constituency, zstd-compressed and gitignored; th
 manifest carries each shard's row count and SHA-256. Rows join to the info-page tables on
 `(ac_no, part_no)`, which is parsed from the source filename — the same key on both sides.
 
+## Running one, and what it costs
+
+```
+python -m electors parse data/ac_rolls/AC1_ASM.zip --workers 5 --capture
+```
+
+Progress is logged with timestamps to the console and to a dated file under `out/logs/`, one
+line per part as it **finishes** rather than in submission order — a pool that yields in order
+lets one slow part at the front hold back everything behind it, and a run that looks silent for
+twenty minutes cannot be told from a wedged one.
+
+Each part is timed inside its own worker, because the wall-clock gap between two results is
+whatever the slowest earlier part was still doing. The run's wall clock, mean and median per
+part, and worker count are written into the manifest beside the row counts, so what a
+constituency cost is recorded rather than remembered.
+
+Two things the accounting deliberately refuses to do. Cached parts are kept out of the per-part
+mean, since mixing them in makes a resumed run look faster than the pipeline is. And no
+estimate is offered until each worker has actually read a part — a resumed run serves cached
+parts in about a second each, and counting those as throughput put the first estimate for a
+two-hour job at 57 seconds.
+
+**Cost is dominated by OCR and by whatever else the machine is doing.** A part is roughly 30
+pages, and each page costs about four tesseract invocations, so a constituency is a multi-hour
+job. Any per-constituency figure quoted from a loaded machine describes the load. The manifest
+records the worker count alongside the timing for that reason.
+
 ## What a page looks like
 
 An elector page is a ruled grid, three columns by ten boxes. Each box holds six fields in two
