@@ -23,6 +23,7 @@ from electors import (
     second_pass,
     timing,
     validate,
+    vision,
 )
 
 #: One real elector page from part 1, at 400 dpi. Vertical rules come in clusters because
@@ -1545,3 +1546,131 @@ class TestScriptFolding:
             tally,
         )
         assert tally.name_exact == 0
+
+
+class TestVisionStacking:
+    """Vision bills per image, so pages are stacked -- and then coordinates have to come back."""
+
+    def _pages(self, count=3, width=100, height=200):
+        from PIL import Image
+
+        return [Image.new("L", (width, height), "white") for _ in range(count)]
+
+    def test_pages_stack_and_record_where_each_one_starts(self):
+        stack = vision.stack_pages(self._pages(3))
+        assert stack.image.size == (100, 600)
+        assert stack.offsets == [0, 200, 400]
+
+    def test_a_word_on_the_second_page_comes_back_to_the_second_page(self):
+        """The one off-by-one that would misfile every field on every page but the first.
+
+        Vision answers in the stacked image's coordinates; page two's first line sits at y=210
+        there and at y=10 on its own page.
+        """
+        stack = vision.stack_pages(self._pages(3))
+        word = vision.Word("খাদৰাম", left=5, top=210, right=60, bottom=230)
+        moved = word.shifted(stack.offsets[1])
+        assert (moved.top, moved.bottom) == (10, 30)
+        assert moved.text == word.text
+
+    def test_a_stack_over_the_pixel_ceiling_is_refused_before_it_is_sent(self):
+        from PIL import Image
+
+        huge = [Image.new("L", (9000, 9000), "white")]
+        assert vision.stack_pages(huge).check() is not None
+        assert vision.stack_pages(self._pages(2)).check() is None
+
+    def test_too_many_images_in_one_request_is_an_error_not_a_silent_truncation(self):
+        import pytest
+
+        with pytest.raises(ValueError):
+            vision.annotate(self._pages(vision.IMAGES_PER_REQUEST + 1), "key")
+
+    def test_cost_is_counted_in_images_because_that_is_what_is_billed(self):
+        """4,500 pages stacked eight deep is 563 images, not 4,500."""
+        assert vision.cost(1000) == 1.50
+        pages, per = 4500, vision.PAGES_PER_IMAGE
+        images = -(-pages // per)
+        assert vision.cost(images) < 1.0
+
+
+class TestVisionWordMapping:
+    """Words are matched into the geometry this stage already derives, not cropped and re-read."""
+
+    @staticmethod
+    def _word(text, left, top, right, bottom):
+        return {
+            "symbols": [{"text": text}],
+            "boundingBox": {
+                "vertices": [
+                    {"x": left, "y": top},
+                    {"x": right, "y": top},
+                    {"x": right, "y": bottom},
+                    {"x": left, "y": bottom},
+                ]
+            },
+        }
+
+    @property
+    def RESPONSE(self):
+        """A response in Vision's page/block/paragraph/word shape, built rather than nested."""
+        words = [
+            self._word("নাম", 10, 10, 40, 30),
+            self._word("খাদৰাম", 50, 10, 110, 30),
+            self._word("গংগাৰাম", 10, 60, 90, 80),
+        ]
+        return {"fullTextAnnotation": {"pages": [{"blocks": [{"paragraphs": [{"words": words}]}]}]}}
+
+    def test_words_are_read_out_of_the_response_with_their_boxes(self):
+        words = vision.words_from(self.RESPONSE)
+        assert [w.text for w in words] == ["নাম", "খাদৰাম", "গংগাৰাম"]
+        assert (words[0].left, words[0].top) == (10, 10)
+
+    def test_words_land_in_the_band_they_sit_in(self):
+        words = vision.words_from(self.RESPONSE)
+        lines = vision.lines_in(words, [(5, 35), (55, 85)], left=0, right=200)
+        assert lines == ["নাম খাদৰাম", "গংগাৰাম"]
+
+    def test_a_word_grazing_the_band_above_stays_where_it_belongs(self):
+        """Bands are padded and adjacent, so a tall glyph can touch its neighbour."""
+        grazing = [vision.Word("ৰাভা", left=10, top=50, right=60, bottom=80)]
+        assert vision.lines_in(grazing, [(5, 55)], 0, 200) == [""]
+        assert vision.lines_in(grazing, [(55, 85)], 0, 200) == ["ৰাভা"]
+
+    def test_words_outside_the_column_are_not_pulled_in(self):
+        """The photo strip and the neighbouring box sit at the same heights."""
+        words = vision.words_from(self.RESPONSE)
+        assert vision.lines_in(words, [(5, 35)], left=0, right=45) == ["নাম"]
+
+
+class TestParserScriptAndLines:
+    """Two parser bugs the dots.ocr run exposed, both silent."""
+
+    def test_a_house_number_does_not_swallow_the_next_line(self):
+        """`\\s*` before the optional suffix crossed the newline and took the ব of বয়স.
+
+        House 13 came out as "13\\nব" on every terse answer, and read as a wrong value rather
+        than a missing one.
+        """
+        found = second_pass.Reading("ঘৰ নং : 13\nবয়স : 22 লিঙ্গ : পুৰুষ").fields()
+        assert found["house_no"] == "13"
+
+    def test_a_real_suffix_on_the_same_line_survives(self):
+        assert second_pass.Reading("ঘৰ নং : ২০ ক").fields()["house_no"] == "20 ক"
+
+    def test_labels_are_matched_with_either_form_of_ra(self):
+        """dots.ocr writes ঘর নং where the page prints ঘৰ নং -- one letter, two codepoints.
+
+        A pattern knowing only the Assamese form found no house number at all on those rows.
+        """
+        assert second_pass.Reading("ঘর নং : ৮").fields()["house_no"] == "8"
+        assert second_pass.Reading("ঘৰ নং : ৮").fields()["house_no"] == "8"
+
+    def test_a_relation_label_with_either_ra_still_names_the_relative(self):
+        assert second_pass.Reading("পিতার নাম: ৰাসু").fields()["relation_type"] == "father"
+        assert second_pass.Reading("পিতাৰ নাম: ৰাসু").fields()["relation_type"] == "father"
+
+    def test_building_the_variant_class_is_a_single_pass(self):
+        """Replacing ৰ then র mangles the class just inserted: "[ৰর]" contains র."""
+        assert second_pass._either_ra("ঘৰ") == "ঘ[ৰর]"
+        assert second_pass._either_ra("ঘর") == "ঘ[ৰর]"

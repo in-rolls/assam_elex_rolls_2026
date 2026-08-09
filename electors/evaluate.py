@@ -112,6 +112,7 @@ def score(
         "savitr-terse": Score("savitr-terse"),
         "surya-full": Score("surya-full"),
         "gemini": Score("gemini"),
+        "dots.ocr": Score("dots.ocr"),
     }
     for key, want in truth.items():
         row = by_key.get(key)
@@ -134,6 +135,8 @@ def score(
             from . import gemini as gemini_engine
 
             score_one(gemini_engine.fields_of(row["gemini"]), want, tallies["gemini"])
+        if row.get("dots"):
+            score_one(terse_fields(row["dots"]), want, tallies["dots.ocr"])
     return {name: t for name, t in tallies.items() if t.total}
 
 

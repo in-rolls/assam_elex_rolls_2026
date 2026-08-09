@@ -65,12 +65,30 @@ RECOVERABLE = ("age", "house_no", "sex")
 #: ever filled gaps in them, never contradicted a value.
 OVERRULED = ("age",)
 
+
 #: Label-anchored, because the layout of the response is what varies. Bengali and Latin digits
 #: both appear, sometimes in the same line.
+def _either_ra(pattern: str) -> str:
+    """Accept the Bengali and Assamese forms of RA anywhere in a label.
+
+    They are one letter written two ways, and the engines pick either: dots.ocr writes ``ঘর নং``
+    where the page prints ``ঘৰ নং``, and a pattern that knew only one of them found no house
+    number at all on those rows.
+    """
+    # One pass. Replacing ৰ first and র second mangles the class it just inserted, because
+    # "[ৰর]" contains র -- it becomes "[ৰ[ৰর]]" and matches nothing.
+    return re.sub("[ৰর]", "[ৰর]", pattern)
+
+
 AGE_RE = re.compile(r"বয়স\s*[:：]?\s*([0-9০-৯]{1,3})")
-HOUSE_RE = re.compile(r"ঘৰ\s*নং\s*[:：]?\s*([0-9০-৯]{1,6}\s*[ক-হ]?)")
+#: ``[ \t]*`` rather than ``\s*`` before the suffix: the terse answers are line-delimited, and a
+#: pattern that crossed the newline captured the ``ব`` of the ``বয়স`` on the next line, turning
+#: house 13 into "13\nব".
+HOUSE_RE = re.compile(_either_ra(r"ঘৰ\s*নং\s*[:：]?\s*([0-9০-৯]{1,6}[ \t]*[ক-হ]?)"))
 SEX_RE = re.compile(r"লিঙ্গ\s*[:：]?\s*(\S+)")
-RELATION_RE = re.compile(r"(পিতাৰ|স্বামীৰ|মাতাৰ|মাতৃৰ)\s*নাম\s*[:：]?\s*([^|<\n]{2,40})")
+RELATION_RE = re.compile(
+    _either_ra(r"(পিতাৰ|স্বামীৰ|মাতাৰ|মাতৃৰ)\s*নাম\s*[:：]?\s*([^|<\n]{2,40})")
+)
 NAME_RE = re.compile(r"(?<!পিতাৰ )(?<!স্বামীৰ )(?<!মাতাৰ )নাম\s*[:：]\s*([^|<\n]{2,40})")
 
 RELATION_KIND = {"পিতাৰ": "father", "স্বামীৰ": "husband", "মাতাৰ": "mother", "মাতৃৰ": "mother"}
@@ -148,7 +166,8 @@ class Reading:
             value = _clean_value(relation.group(2))
             if value:
                 found["relation_name"] = value
-                found["relation_type"] = RELATION_KIND[relation.group(1)]
+                # The label may have arrived with either RA, so normalise before looking it up.
+                found["relation_type"] = RELATION_KIND.get(relation.group(1).replace("র", "ৰ"), "")
 
         name = NAME_RE.search(text)
         if name:
