@@ -237,6 +237,51 @@ not fitted. Nothing degraded: age, EPIC and sex were flat, completeness stayed a
 measured part exact, and the sex ratio did not move. Parsing cost rose 1.05× — under 0.1% of
 pipeline time, which is OCR.
 
+### Which engine, measured against the page
+
+Four engines on 16 boxes sampled at random and read by eye -- the only real ground truth here:
+
+| field | tesseract | savitr terse | surya-full | gemini flash-lite |
+|---|--:|--:|--:|--:|
+| name exactly right | 0% | 19% | **62%** | 38% |
+| name nearly right | 38% | 38% | 81% | **94%** |
+| age right | 50% | 44% | 94% | **100%** |
+| house no right | 0% | 44% | 75% | **88%** |
+| sex right | 94% | 44% | 94% | **100%** |
+
+Tesseract reads no name exactly right in sixteen. Its Assamese is not broken -- it returns
+recognisable text with wrong details -- and it is the engine rather than the cropping: the
+pipeline's band finder, a re-derived band and a fixed slice of the box all give the same 6/16.
+
+**Bengali traineddata was tried and is worse.** Assamese and Bengali share one script and
+Bengali has far more data behind it, so `ben` should plausibly beat `asm`. Measured: names 12%
+near-right against 38%, sex 69% against 94%, age 56% against 50%. Shared script, more data,
+worse reading.
+
+**Send a column, not a page.** Gemini's image tokens are relative -- a single box and a whole
+page both cost about 324 input tokens -- so a page is thirty times the area at the same budget.
+Names are 80% near-right per box and per column, 20% per page; house numbers 100%, 80%, 0%. At
+page scale it still returns all thirty electors with correct serials, ages and sexes, and gives
+every one of them the same invented surname. Confidently wrong at the granularity that looks
+cheapest.
+
+**Cost, measured.** 324 input and ~2,100 output tokens per page of thirty electors. One
+constituency at column granularity is about **$2** on Flash-Lite through the Batch API, $11 on
+2.5 Flash; all 126 about $230. Against roughly 150 hours of local GPU time for one.
+
+#### Two scoring bugs, both understating the models
+
+- **Bengali RA (U+09B0) and Assamese RA (U+09F0) are the same letter.** The models emit the
+  Bengali codepoint; scoring them apart marked correct readings wrong and cost surya-full four
+  exact names. Only RA is folded -- `ব` and `ৱ` look like a pair but are distinct letters, and
+  folding them changed no score.
+- **House numbers came back in Bengali digits**, because the prompt asks for the page exactly as
+  printed. Scored against Latin digits, that marked Gemini wrong on 14 of 16 it had read right.
+
+And one remaining miss was the ground truth itself: `ঘৰ নং : 20 ক` was recorded as `20`.
+Eyeball truth has its own error rate, and 16 boxes is enough to separate 0% from 90%, not to
+rank two engines ten points apart.
+
 ### The second pass, and what it revealed about the first
 
 Tesseract cannot read the house number on a third of boxes or the age on a fifth, and the line
