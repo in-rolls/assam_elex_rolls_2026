@@ -46,7 +46,14 @@ IMAGES_PER_REQUEST = 16
 
 #: Most pages that may be stacked into one image, whatever their size allows. A ceiling, not a
 #: target: :func:`pages_that_fit` decides the real number from the pages in hand.
-PAGES_PER_IMAGE = 8
+#:
+#: This was 8, which is not a limit of the API -- there is none besides pixels and bytes -- and
+#: at native resolution 33 pages fit under the pixel ceiling. Held at 8, the cap was the binding
+#: constraint on the cheapest arm and cost more than the pixel limit did.
+#:
+#: It is not removed altogether because a stack is the unit of failure: one rejected request
+#: loses every page in it, and a stack of hundreds makes a transient error expensive to retry.
+PAGES_PER_IMAGE = 32
 
 #: Fraction of the pixel ceiling a stack is allowed to use.
 #:
@@ -56,16 +63,39 @@ PAGES_PER_IMAGE = 8
 PIXEL_MARGIN = 0.9
 
 
-def pages_that_fit(width: int, height: int, limit: int = MAX_PIXELS) -> int:
-    """How many pages of this size stack into one image without breaching the OCR ceiling.
+def pages_that_fit(
+    width: int,
+    height: int,
+    limit: int = MAX_PIXELS,
+    bytes_per_page: Optional[int] = None,
+    ceiling: int = PAGES_PER_IMAGE,
+) -> int:
+    """How many pages of this size stack into one image without breaching either ceiling.
 
     Derived rather than assumed. This was the constant ``8``, which is right for 300 dpi -- and
     the pipeline renders at 400, where eight pages is 124 MP against a 75 MP limit. Every part
     would have been refused. The guard caught it before a request was spent, but the number had
     no business being a guess when the pages are right there to measure.
+
+    ``bytes_per_page`` is the encoded size of one page, and it is a *measurement* the caller
+    takes rather than a rate assumed here: how well a scan compresses depends on the scan. On
+    these pages the pixel ceiling binds first at every resolution tried -- native stacks 33 deep
+    by pixels and 81 by bytes -- but a noisier scan would reverse that, and silently posting a
+    21 MB image is a failed request rather than a wrong answer only because ``annotate`` checks.
     """
-    per_page = max(1, width * height)
-    return max(1, min(PAGES_PER_IMAGE, int(limit * PIXEL_MARGIN) // per_page))
+    fits = int(limit * PIXEL_MARGIN) // max(1, width * height)
+    if bytes_per_page:
+        fits = min(fits, int(MAX_BYTES * PIXEL_MARGIN) // max(1, bytes_per_page))
+    return max(1, min(ceiling, fits))
+
+
+def encoded_size(image: Any) -> int:
+    """Bytes one page costs as PNG, the way :func:`annotate` will encode it."""
+    import io
+
+    buffer = io.BytesIO()
+    image.convert("L").save(buffer, format="PNG", optimize=True)
+    return buffer.getbuffer().nbytes
 
 
 #: Assamese first, Bengali second. They are one script, and naming both lets the recogniser use

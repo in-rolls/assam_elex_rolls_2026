@@ -18,7 +18,7 @@ from __future__ import annotations
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from PIL import Image
 
@@ -59,7 +59,9 @@ def words_per_page(
     if pages_per_image is None:
         widest = max(image.width for image in images)
         tallest = max(image.height for image in images)
-        pages_per_image = vision.pages_that_fit(widest, tallest)
+        pages_per_image = vision.pages_that_fit(
+            widest, tallest, bytes_per_page=vision.encoded_size(images[0])
+        )
     stacks = [vision.stack_pages(group) for group in _chunks(images, pages_per_image)]
     for stack in stacks:
         problem = stack.check()
@@ -103,13 +105,30 @@ def _page_text(words: Sequence[vision.Word], image: Image.Image) -> str:
     return "\n".join(vision.grouped_lines(words, 0, image.width))
 
 
+def rasterize(dpi: int) -> Callable[[bytes, Path], List[Image.Image]]:
+    """A renderer that rasterizes every page at ``dpi``."""
+
+    def renderer(pdf_bytes: bytes, workdir: Path) -> List[Image.Image]:
+        paths = extract._render_pages(pdf_bytes, workdir, dpi=dpi)
+        return [Image.open(path).convert("L") for path in paths]
+
+    return renderer
+
+
 def read_part(
     zip_path: Path,
     pdf_name: str,
     api_key: str,
     pages_per_image: Optional[int] = None,
+    renderer: Optional[Callable[[bytes, Path], List[Image.Image]]] = None,
 ) -> extract.PartResult:
-    """Extract every elector from one part PDF, using Cloud Vision for all of it."""
+    """Extract every elector from one part PDF, using Cloud Vision for all of it.
+
+    ``renderer`` decides what pixels Vision is shown. It is pluggable because the source PDFs
+    are 144 dpi scans -- rendering at 400 upsamples them -- and what resolution to submit is a
+    measured question rather than a settled one. Everything after the renderer is identical
+    across resolutions, which is what makes the arms comparable.
+    """
     meta = schema.parse_source_filename(pdf_name) or {}
     pdf_bytes = render.read_pdf_bytes(zip_path, pdf_name)
     result = extract.PartResult(
@@ -124,9 +143,8 @@ def read_part(
     try:
         with tempfile.TemporaryDirectory() as tmp:
             workdir = Path(tmp)
-            page_paths = extract._render_pages(pdf_bytes, workdir)
-            result.page_count = len(page_paths)
-            images = [Image.open(path).convert("L") for path in page_paths]
+            images = (renderer or rasterize(extract.DPI))(pdf_bytes, workdir)
+            result.page_count = len(images)
             per_page, result.images_billed = words_per_page(
                 images, api_key=api_key, pages_per_image=pages_per_image
             )

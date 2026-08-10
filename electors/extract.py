@@ -95,12 +95,12 @@ class PartResult:
         return len(self.electors)
 
 
-def _render_pages(pdf_bytes: bytes, workdir: Path) -> List[Path]:
+def _render_pages(pdf_bytes: bytes, workdir: Path, dpi: int = DPI) -> List[Path]:
     """Rasterize the whole PDF once. Returns page images in page order."""
     pdf = workdir / "part.pdf"
     pdf.write_bytes(pdf_bytes)
     subprocess.run(
-        ["pdftoppm", "-r", str(DPI), "-png", str(pdf), str(workdir / "page")],
+        ["pdftoppm", "-r", str(dpi), "-png", str(pdf), str(workdir / "page")],
         check=True,
         capture_output=True,
     )

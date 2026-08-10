@@ -22,6 +22,7 @@ from electors import (
     pages,
     quality,
     replay,
+    resolution,
     second_pass,
     timing,
     validate,
@@ -1751,10 +1752,21 @@ class TestVisionStackingFactor:
         """3,400 x 4,400 is a 400-dpi A4 page. Eight would be 120 MP."""
         assert vision.pages_that_fit(3400, 4400) == 4
 
-    def test_a_300_dpi_page_stacks_to_the_ceiling(self):
-        """2,550 x 3,300 leaves room for more than eight, and eight is the API's own limit on
-        how much stacking is worth doing."""
-        assert vision.pages_that_fit(2550, 3300) == vision.PAGES_PER_IMAGE
+    def test_a_300_dpi_page_stacks_seven_deep(self):
+        """2,480 x 3,509 is what these pages actually render to at 300 dpi -- 8.7 MP, so seven
+        fit under the ceiling with the margin."""
+        assert vision.pages_that_fit(2480, 3509) == 7
+
+    def test_the_native_scan_stacks_a_whole_part_into_one_image(self):
+        """1187x1679 is the source's own resolution, and the reason native costs $55 against
+        $387: a 25-page part is one submitted image."""
+        assert vision.pages_that_fit(1187, 1679) >= 25
+
+    def test_the_ceiling_binds_only_when_the_limits_do_not(self):
+        """It was 8, which is no limit of the API, and at native it -- not the pixel ceiling --
+        was what capped the cheapest arm."""
+        assert vision.pages_that_fit(10, 10) == vision.PAGES_PER_IMAGE
+        assert vision.PAGES_PER_IMAGE >= 32
 
     def test_a_page_too_large_to_stack_still_goes_one_at_a_time(self):
         """Refusing outright would lose the part; one page an image merely costs more."""
@@ -1765,6 +1777,101 @@ class TestVisionStackingFactor:
         Filling the ceiling exactly would have a later page tip a stack over it."""
         fit = vision.pages_that_fit(3400, 4400)
         assert fit * 3400 * 4400 <= vision.MAX_PIXELS * vision.PIXEL_MARGIN
+
+
+class TestResolutionComparison:
+    """Three renderings of one 144 dpi scan, compared without lying about it."""
+
+    @staticmethod
+    def _arm(name, boxes, pages=8, images=2):
+        return resolution.ArmResult(
+            arm=name, part=13, boxes=boxes, pages=pages, images_billed=images
+        )
+
+    def test_only_boxes_every_arm_returned_are_compared(self):
+        """A resolution that resolves fewer boxes has failed at geometry, and scoring it on the
+        ones it did resolve would flatter it."""
+        arms = [
+            self._arm("400 dpi", {(4, 0, 0): {}, (4, 1, 0): {}}),
+            self._arm("native", {(4, 0, 0): {}}),
+        ]
+        assert resolution.common_boxes(arms) == [(4, 0, 0)]
+
+    def test_agreement_needs_every_arm_to_say_the_same_thing(self):
+        """Two of three agreeing is a disagreement: the question is whether resolution changes
+        the answer at all, not which answer wins a vote."""
+        box = (4, 0, 0)
+        arms = [
+            self._arm("400 dpi", {box: {"name": "ৰাম", "age": 40, "house": "1", "sex": "M"}}),
+            self._arm("300 dpi", {box: {"name": "ৰাম", "age": 40, "house": "1", "sex": "M"}}),
+            self._arm("native", {box: {"name": "ৰাম", "age": 41, "house": "1", "sex": "M"}}),
+        ]
+        found = resolution.agreement(arms)
+        assert found.boxes == 1
+        assert found.rate("name") == 1.0
+        assert found.rate("age") == 0.0
+        assert found.examples["age"], "a disagreement must be shown, not just counted"
+
+    def test_agreement_folds_the_script_variants_the_scorer_folds(self):
+        """Bengali RA and Assamese RA are one letter. Counting them apart would report a
+        disagreement the scorer would call a match."""
+        box = (4, 0, 0)
+        arms = [
+            self._arm("400 dpi", {box: {"name": "পবিত্র", "house": "20 ক"}}),
+            self._arm("native", {box: {"name": "পবিত্ৰ", "house": "20ক"}}),
+        ]
+        found = resolution.agreement(arms)
+        assert found.rate("name") == 1.0
+        assert found.rate("house") == 1.0
+
+    def test_cost_comes_from_the_arm_s_own_measured_pages_per_image(self):
+        """Not from a constant. The constant is what got the stacking factor wrong."""
+        arms = [
+            self._arm("400 dpi", {}, pages=34, images=9),
+            self._arm("native", {}, pages=34, images=2),
+        ]
+        costs = resolution.cost_for_state(arms, pages_in_state=1000)
+        assert costs["400 dpi"] > costs["native"]
+        assert costs["native"] == pytest.approx(vision.cost(round(1000 / 17)))
+
+    def test_truth_is_matched_by_box_position_not_by_order(self):
+        key = "p13_pg4_r4c0"
+        truth = {key: {"name": "ৰাম", "age": 40, "house": "1", "sex": "M"}}
+        arms = [
+            self._arm("native", {(4, 4, 0): {"name": "ৰাম", "age": 40, "house": "1", "sex": "M"}})
+        ]
+        tallies = resolution.score_against_truth(arms, truth)
+        assert tallies["native"].total == 1
+        assert tallies["native"].name_exact == 1
+
+    def test_the_truth_pages_are_found_from_the_keys(self):
+        """Running whole parts for six pages would cost thirty times what the truth arm needs."""
+        truth = {"p13_pg4_r4c0": {}, "p13_pg4_r1c0": {}, "p25_pg5_r2c0": {}}
+        assert resolution.truth_parts(truth) == {13: [4], 25: [5]}
+
+    def test_the_report_never_calls_agreement_accuracy(self):
+        """Three arms of one engine can be wrong together, and are likelier to be than three
+        different engines would be."""
+        text = resolution.report([self._arm("400 dpi", {(4, 0, 0): {"name": "ৰাম"}})])
+        assert "AGREEMENT BETWEEN ARMS" in text
+        assert "agreement, not accuracy" in text
+
+
+class TestStackByteCeiling:
+    """Two ceilings, and the one that binds depends on the scan."""
+
+    def test_the_byte_limit_can_bind_before_the_pixel_limit(self):
+        """On these pages pixels bind at every resolution tried. A noisier scan reverses it, and
+        a 21 MB image is a failed request rather than a wrong answer."""
+        loose = vision.pages_that_fit(1187, 1679)
+        tight = vision.pages_that_fit(1187, 1679, bytes_per_page=4 * 1024 * 1024)
+        assert tight < loose
+        assert tight == int(vision.MAX_BYTES * vision.PIXEL_MARGIN) // (4 * 1024 * 1024)
+
+    def test_a_measured_page_size_is_what_it_costs_as_png(self):
+        from PIL import Image
+
+        assert vision.encoded_size(Image.new("L", (50, 50), "white")) > 0
 
 
 class TestVisionPipelineMatchesWhatWasScored:

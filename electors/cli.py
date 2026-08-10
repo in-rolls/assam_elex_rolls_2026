@@ -666,6 +666,80 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_resolution(args: argparse.Namespace) -> int:
+    """Run the same parts through Vision at several resolutions and compare."""
+    import os
+
+    from . import evaluate, resolution, vision
+
+    api_key = args.api_key or os.environ.get("VISION_API_KEY", "")
+    if not api_key:
+        print("need a Cloud Vision key: --api-key or VISION_API_KEY", file=sys.stderr)
+        return 1
+
+    zip_path = Path(args.zip)
+    if not zip_path.exists():
+        print(f"no such zip: {zip_path}", file=sys.stderr)
+        return 1
+    render.require_poppler()
+
+    loaded = evaluate.load(Path(args.truth)) if args.truth else None
+    truth = loaded["truth"] if loaded else None
+
+    parts = [p for p in render.iter_zip_parts(zip_path)]
+    wanted = resolution.truth_parts(truth) if (truth and args.truth_parts) else {}
+    if wanted:
+        parts = [p for p in parts if p.part_no in wanted]
+    else:
+        parts = parts[: args.limit]
+    if not parts:
+        print("no parts selected", file=sys.stderr)
+        return 1
+
+    arms = [a.strip() for a in args.arms.split(",")] if args.arms else list(resolution.ARMS)
+    unknown = [a for a in arms if a not in resolution.ARMS]
+    if unknown:
+        print(f"unknown arm(s): {unknown}; known: {list(resolution.ARMS)}", file=sys.stderr)
+        return 1
+
+    log = timing.setup("resolution")
+    log.info(
+        "%d parts x %d arms (%s)%s",
+        len(parts),
+        len(arms),
+        ", ".join(arms),
+        f", stacking fixed at {args.stack}" if args.stack else "",
+    )
+
+    results: List[Any] = []
+    for part in parts:
+        for arm in arms:
+            found = resolution.read_arm(
+                zip_path,
+                part.pdf_name,
+                part_no=part.part_no,
+                arm=arm,
+                api_key=api_key,
+                pages_per_image=args.stack or None,
+            )
+            results.append(found)
+            log.info(
+                "part %-4d %-8s %3d pages, %2d images, %4d boxes%s",
+                part.part_no,
+                arm,
+                found.pages,
+                found.images_billed,
+                len(found.boxes),
+                f"  ERROR {found.error}" if found.error else "",
+            )
+
+    billed = sum(r.images_billed for r in results)
+    log.info("spent %d images = $%.4f", billed, vision.cost(billed))
+    print()
+    print(resolution.report(results, truth))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="electors", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -750,6 +824,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_second.add_argument("zip")
     p_second.add_argument("--parts", type=int, nargs="+", required=True)
     p_second.set_defaults(func=cmd_second_pass)
+
+    p_res = sub.add_parser(
+        "resolution",
+        help="what resolution to feed Vision: same parts at 400 dpi, 300 dpi and native",
+    )
+    p_res.add_argument("zip")
+    p_res.add_argument("--api-key", default="", help="or set VISION_API_KEY")
+    p_res.add_argument("--limit", type=int, default=10, help="first N parts (agreement arm)")
+    p_res.add_argument("--truth", default="dataset/eval", help="directory holding truth.json")
+    p_res.add_argument(
+        "--truth-parts",
+        action="store_true",
+        help="run only the parts the hand-read boxes come from, which is six pages not ten parts",
+    )
+    p_res.add_argument("--arms", default="", help="comma-separated subset of the arms")
+    p_res.add_argument(
+        "--stack",
+        type=int,
+        default=0,
+        help="force pages-per-image for every arm, separating resolution from stack depth",
+    )
+    p_res.set_defaults(func=cmd_resolution)
 
     p_report = sub.add_parser("report", help="reconcile a shard against the info pages")
     p_report.add_argument("shard")
