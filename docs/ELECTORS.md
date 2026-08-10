@@ -301,13 +301,48 @@ Scored on the 25 boxes every engine answered -- the only basis on which they can
 
 | | whole state | wall clock |
 |---|--:|---|
-| Cloud Vision, 400 dpi | **$368** | hours |
+| Cloud Vision, 400 dpi, repacked | **$105** | hours |
 | Gemini Flash-Lite, batch | ~$1,500 | a day per batch |
 | dots.ocr, per box | **$1,860** measured, ~$370 if vLLM gives 5x | 16,909 T4-hours at $0.11/hr |
 
-Cloud Vision reads as well, costs $368, needs no hardware, and is the only engine here whose
+Cloud Vision reads as well, costs $105, needs no hardware, and is the only engine here whose
 throughput at scale is a measured quantity rather than a guess spanning thirty-fold. **It runs
 the state.**
+
+#### Sending only the text: 3.3x cheaper, and it reads the same
+
+Vision bills per **image submitted**, and a rendered page is 15.5 MP of which **30% is text**.
+The rest is photo placeholders, ruled borders, page margins and the white space under the last
+line of every box. So the page is repacked before submission: each box's four labelled lines are
+cut to their band extent and tiled three to a row, and words are assigned back to a box by their
+rectangle on both axes.
+
+Measured on parts 1-3, 2,091 boxes: **23 images as rendered against 7 repacked**, 3.3x fewer.
+Across the state that is **$105 against $345**.
+
+It costs nothing. Scored against the 34 hand-read boxes both passes answered:
+
+| field | as rendered | repacked |
+|---|--:|--:|
+| name exactly right | 68% | **68%** |
+| name nearly right | 97% | 94% |
+| first name right | 91% | **91%** |
+| age right | 97% | **97%** |
+| house no right | 88% | **88%** |
+| sex right | 97% | **97%** |
+
+Identical on five of six, and the sixth is one box.
+
+**The two passes disagree more than the scores suggest, and it does not matter.** Over 2,091
+boxes they agree on 85% of names, 96% of ages, 97% of house numbers and 99% of sexes -- but the
+name disagreements are single matras of the same person (`বসুমাতাৰী` against `বসুমতাৰী`), and
+against truth neither pass is better. It is recognition jitter, not misfiled rows: a mapping
+error would have collapsed all four fields together, and the other three sit at 96-99%.
+
+Three things stay on the CPU because none is worth a paid pixel -- the **EPIC**, which sits
+outside the text column and would cost most of the saving to include; the **section header**,
+which decides whether serials restart; and the **closing summary**, which completeness is
+measured against. Tesseract reads all three, and its English model gets the EPIC at 96.6%.
 
 #### What resolution to feed it
 
