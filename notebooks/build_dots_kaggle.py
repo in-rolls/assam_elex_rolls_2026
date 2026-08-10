@@ -34,8 +34,7 @@ What it is for:
 2. **A second opinion.** Once Vision has read the state nothing checks it. Two independent
    engines disagreeing is the only automatic error signal available without labels.
 
-**Setup**: upload the crop zip from `python -m electors crops ...` as a Kaggle Dataset, attach
-it, and set the accelerator to GPU (T4 x2 or P100).""",
+Nothing to upload: the crops come from the public repo. Needs **GPU** and **internet** on.""",
     ),
     (
         CODE,
@@ -86,10 +85,16 @@ print(f"using dtype={DTYPE} attn={ATTN}")""",
     ),
     (
         CODE,
-        """CROPS = sorted(glob.glob("/kaggle/input/**/*.png", recursive=True))
-print(f"{len(CROPS):,} crops attached")
+        """# The crops live in the public repo, so there is nothing to upload or attach. A shallow clone
+# rather than a tarball with --wildcards, which is GNU tar only and silently extracts nothing
+# on a BSD tar -- a difference that would only show up here, on someone else's machine.
+!rm -rf /kaggle/working/repo
+!git clone --depth 1 -q https://github.com/in-rolls/assam_elex_rolls_2026 /kaggle/working/repo
+
+CROPS = sorted(glob.glob("/kaggle/working/repo/dataset/dots_bench/*.png"))
+print(f"{len(CROPS):,} crops")
 if not CROPS:
-    raise SystemExit("Attach the crop dataset: Add Input -> your uploaded zip.")
+    raise SystemExit("No crops -- is internet enabled for this notebook?")
 print("first few:", [os.path.basename(p) for p in CROPS[:3]])""",
     ),
     (
