@@ -2,11 +2,12 @@
 
 Vision charges for each **image submitted**, not for each page of source, so stacking pages
 into one tall PNG divides the bill by the stacking factor. ``in-rolls/google_vision_ocr`` uses
-exactly this and reports 12,694 pages for about $1.50. At eight pages an image a constituency
-is roughly **$0.85** against $6.75 sent one page at a time.
+exactly this and reports 12,694 pages for about $1.50. At 400 dpi four pages fit in one image
+under the 75 MP ceiling, which makes a constituency about **$1.80** against $6.75 sent one page
+at a time, and the whole state $366.
 
 **And it needs no asynchronous API.** ``images:annotate`` takes 16 images per request at 1,800
-requests a minute, so a whole constituency is 563 stacked images in about 36 calls. The
+requests a minute, so a whole constituency is about 1,150 stacked images in 72 calls. The
 ``asyncBatchAnnotate`` methods read and write Cloud Storage URIs and want a service account;
 they would buy nothing at this size.
 
