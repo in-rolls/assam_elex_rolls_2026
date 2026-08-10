@@ -98,7 +98,15 @@ if ARCH not in SUPPORTED:
     ),
     (
         CODE,
-        """!pip -q install -U "transformers>=4.51" accelerate qwen-vl-utils 2>&1 | tail -2""",
+        """# Pinned, not ">=". dots.ocr's own requirements.txt says transformers==4.56.1, and its
+# remote modeling code is written against that generation's generate() internals: on a newer
+# transformers, prepare_inputs_for_generation is called without cache_position and the model's
+# `if cache_position[0] == 0:` dies with "'NoneType' object is not subscriptable". An unpinned
+# install cost a whole run to find that.
+!pip -q install "transformers==4.56.1" accelerate qwen-vl-utils 2>&1 | tail -3
+import transformers
+print("transformers", transformers.__version__)
+assert transformers.__version__.startswith("4.56"), "restart the kernel; an older import is live\"""",
     ),
     (
         CODE,
@@ -116,18 +124,118 @@ print("first few:", [os.path.basename(p) for p in CROPS[:3]])""",
     ),
     (
         CODE,
-        """from transformers import AutoModelForCausalLM, AutoProcessor
+        """from huggingface_hub import snapshot_download
+from transformers import AutoModelForCausalLM, AutoProcessor
+
+# Downloaded to a directory with **no period in its name**, then loaded from that path rather
+# than from the hub id. With trust_remote_code, transformers imports the model's own code as
+# `transformers_modules.<org>.<name>`, and "dots.ocr" makes that a package path -- it looks for
+# a module `dots` and fails with:
+#
+#     ModuleNotFoundError: No module named 'transformers_modules.dots-studio.dots'
+#
+# The model's own README says to use a directory without periods, and its download tool writes
+# to ./weights/DotsOCR for exactly this reason.
+MODEL_DIR = "/kaggle/working/DotsOCR"
+snapshot_download(repo_id=MODEL_ID, local_dir=MODEL_DIR)
 
 t0 = time.time()
 model = AutoModelForCausalLM.from_pretrained(
-    MODEL_ID,
+    MODEL_DIR,
     attn_implementation=ATTN,
     torch_dtype=DTYPE,
     device_map="auto",
     trust_remote_code=True,
 )
 model.eval()
-processor = AutoProcessor.from_pretrained(MODEL_ID, trust_remote_code=True)
+
+
+def build_processor(model_dir):
+    \"\"\"The model's own processor, or the base class it forgot to finish wiring up.
+
+    dots.ocr ships DotsVLProcessor, whose __init__ does:
+
+        super().__init__(image_processor, tokenizer, chat_template=chat_template)
+
+    but Qwen2_5_VLProcessor takes **video_processor** as its third positional argument, so it
+    arrives as None and transformers rejects it:
+
+        TypeError: Received a NoneType for argument video_processor,
+                   but a BaseVideoProcessor was expected.
+
+    That is upstream and true at the very version dots.ocr pins. DotsVLProcessor adds nothing
+    but two token attributes, so the base processor with those set is the same thing.
+    \"\"\"
+    try:
+        return AutoProcessor.from_pretrained(model_dir, trust_remote_code=True)
+    except TypeError as exc:
+        if "video_processor" not in str(exc):
+            raise
+        print(f"DotsVLProcessor is out of step with transformers: {exc}")
+        print("building Qwen2_5_VLProcessor directly")
+
+    import json as _json
+
+    from transformers import AutoImageProcessor, AutoTokenizer, Qwen2_5_VLProcessor
+
+    # Qwen2**VL**VideoProcessor, from models/qwen2_vl -- there is no video processor under
+    # qwen2_5_vl at 4.56.1, and Qwen2_5_VLProcessor declares video_processor_class =
+    # "AutoVideoProcessor" rather than naming a concrete one. Guessed wrong once; checked the
+    # tagged source the second time.
+    video, tried = None, []
+    for path, name in (
+        ("transformers.models.qwen2_vl.video_processing_qwen2_vl", "Qwen2VLVideoProcessor"),
+        ("transformers", "Qwen2VLVideoProcessor"),
+        ("transformers", "AutoVideoProcessor"),
+    ):
+        try:
+            module = __import__(path, fromlist=[name])
+            found = getattr(module, name)
+            video = found.from_pretrained(model_dir) if name == "AutoVideoProcessor" else found()
+            print(f"video processor: {path}.{name}")
+            break
+        except Exception as exc:
+            tried.append(f"{path}.{name}: {type(exc).__name__}")
+    if video is None:
+        raise SystemExit("no usable video processor. tried:\\n  " + "\\n  ".join(tried))
+
+    tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
+    images = AutoImageProcessor.from_pretrained(model_dir, trust_remote_code=True)
+    with open(f"{model_dir}/chat_template.json", encoding="utf-8") as handle:
+        template = _json.load(handle)["chat_template"]
+    built = Qwen2_5_VLProcessor(
+        image_processor=images, tokenizer=tokenizer, video_processor=video, chat_template=template
+    )
+    # The only things DotsVLProcessor adds on top of its base.
+    built.image_token = getattr(tokenizer, "image_token", "<|imgpad|>")
+    built.image_token_id = getattr(tokenizer, "image_token_id", 151665)
+    return built
+
+
+processor = build_processor(MODEL_DIR)
+
+# The vision tower casts its input to bfloat16 unconditionally:
+#
+#     def forward(self, hidden_states, grid_thw, bf16=True):
+#         if bf16:
+#             hidden_states = hidden_states.bfloat16()
+#
+# and it is called internally as `self.vision_tower(pixel_values, grid_thw)`, so the default
+# always wins. With float16 weights that is
+#
+#     RuntimeError: Input type (c10::BFloat16) and bias type (c10::Half) should be the same
+#
+# Loading the whole model in bfloat16 would also fix it, and would be the wrong fix here: a T4
+# has no bf16 tensor cores, so the rate measured would describe an emulated path rather than
+# what this card can do. Pinning bf16=False keeps everything in float16, which T4s run natively.
+if not AMPERE:
+    _tower = model.vision_tower
+
+    def _no_bf16_cast(hidden_states, grid_thw, bf16=False, _forward=_tower.forward):
+        return _forward(hidden_states, grid_thw, bf16=False)
+
+    _tower.forward = _no_bf16_cast
+    print("vision tower pinned to float16 (its default casts to bfloat16)")
 # Decoder-only batched generation must pad on the left, or short prompts emit from padding.
 processor.tokenizer.padding_side = "left"
 print(f"loaded in {time.time() - t0:.0f}s")
@@ -168,6 +276,17 @@ def read_batch(paths, max_new_tokens=MAX_NEW_TOKENS):
         text=texts, images=images, videos=videos or None, padding=True, return_tensors="pt"
     ).to(model.device)
     inputs = {k: v for k, v in inputs.items() if k not in DROP}
+    # The processor emits float32 pixel values while the weights are float16, and with the
+    # vision tower's own bfloat16 cast disabled nothing in between reconciles them:
+    #
+    #     RuntimeError: Input type (float) and bias type (c10::Half) should be the same
+    #
+    # Only the floating tensors. input_ids, attention_mask and grid_thw are integer, and casting
+    # those would corrupt them quietly rather than fail loudly.
+    inputs = {
+        k: (v.to(model.dtype) if torch.is_tensor(v) and v.is_floating_point() else v)
+        for k, v in inputs.items()
+    }
 
     with torch.inference_mode():
         try:
