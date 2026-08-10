@@ -77,7 +77,18 @@ print("gpu", torch.cuda.get_device_name(0), "| compute capability", CAPABILITY)
 AMPERE = CAPABILITY[0] >= 8
 DTYPE = torch.bfloat16 if AMPERE else torch.float16
 ATTN = "flash_attention_2" if AMPERE else "sdpa"
-print(f"using dtype={DTYPE} attn={ATTN}")""",
+print(f"using dtype={DTYPE} attn={ATTN}")
+
+# Kaggle hands out a P100 (sm_60) or a T4 x2 (sm_75) and the API cannot ask for one. Kaggle's
+# own preinstalled torch dropped sm_60 -- "supports sm_70 ... sm_120" -- so a P100 draw is a
+# lost run rather than a slow one, and it should say so here rather than fail cryptically deep
+# inside generate().
+SUPPORTED = torch.cuda.get_arch_list()
+ARCH = f"sm_{CAPABILITY[0]}{CAPABILITY[1]}"
+print("torch was built for:", " ".join(SUPPORTED))
+if ARCH not in SUPPORTED:
+    print(f"\\n*** {ARCH} is NOT in that list. This GPU cannot run the installed torch. ***")
+    print("*** Re-run the notebook until Kaggle assigns a T4; the API cannot request one. ***")""",
     ),
     (
         CODE,
@@ -118,8 +129,14 @@ RUNTIME = f"transformers {__import__('transformers').__version__}, {ATTN}, {str(
     ),
     (
         CODE,
-        """from PIL import Image
+        """import re
+
+from PIL import Image
 from qwen_vl_utils import process_vision_info
+
+# Keys the processor produces that this model's generate() will not accept. Seeded with the one
+# already seen and grown at runtime from whatever generate() complains about.
+DROP = {"mm_token_type_ids"}
 
 
 def read_batch(paths, max_new_tokens=MAX_NEW_TOKENS):
@@ -144,10 +161,25 @@ def read_batch(paths, max_new_tokens=MAX_NEW_TOKENS):
     inputs = processor(
         text=texts, images=images, videos=videos or None, padding=True, return_tensors="pt"
     ).to(model.device)
+    inputs = {k: v for k, v in inputs.items() if k not in DROP}
 
     with torch.inference_mode():
-        out = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
-    trimmed = [o[len(i):] for i, o in zip(inputs.input_ids, out)]
+        try:
+            out = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+        except ValueError as exc:
+            # The processor and the model's remote code come from different versions, so the
+            # processor emits keys generate() will not take -- 'mm_token_type_ids' on the
+            # transformers of the day. Rather than pin a version that will drift again, take
+            # the names out of the complaint, remember them, and retry once.
+            unused = re.findall(r"'([A-Za-z_]+)'", str(exc)) if "not used by the model" in str(exc) else []
+            if not unused:
+                raise
+            print(f"dropping keys the model does not accept: {unused}")
+            DROP.update(unused)
+            inputs = {k: v for k, v in inputs.items() if k not in DROP}
+            out = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+
+    trimmed = [o[len(i):] for i, o in zip(inputs["input_ids"], out)]
     return processor.batch_decode(trimmed, skip_special_tokens=True)""",
     ),
     (
