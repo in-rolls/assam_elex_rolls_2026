@@ -351,8 +351,14 @@ class TestResume:
     resumable" before any of it existed.
     """
 
-    def payload(self, tmp_path, zip_path="z.zip", pdf="p.pdf"):
-        return (str(zip_path), pdf, str(tmp_path))
+    def payload(self, tmp_path, zip_path="z.zip", pdf="p.pdf", engine="tesseract", key=""):
+        """The worker's argument tuple, built the way cmd_parse builds it.
+
+        Spelled out rather than defaulted: the tuple gained an engine and a key, and a worker
+        that quietly filled in "tesseract" for a short tuple would have run the wrong engine
+        rather than failing.
+        """
+        return (str(zip_path), pdf, str(tmp_path), False, engine, key)
 
     def test_a_read_part_is_cached_and_not_read_twice(self, tmp_path, monkeypatch):
         from assam_rolls import cache
@@ -371,13 +377,45 @@ class TestResume:
         monkeypatch.setattr(cli.render, "sha256_bytes", lambda *a: "sha")
         monkeypatch.setattr(cli.ocr, "get_engine", lambda *a, **k: None)
 
-        first = cli._one_part((str(tmp_path / "z.zip"), "part7.pdf", str(tmp_path)))
-        second = cli._one_part((str(tmp_path / "z.zip"), "part7.pdf", str(tmp_path)))
+        first = cli._one_part(self.payload(tmp_path, tmp_path / "z.zip", "part7.pdf"))
+        second = cli._one_part(self.payload(tmp_path, tmp_path / "z.zip", "part7.pdf"))
 
         assert calls == [("part7.pdf", False)], "the second call must come from cache"
         assert not first["cached"] and second["cached"]
         assert second["electors"] == first["electors"]
         assert cache.read_entry(tmp_path, "part7") is not None
+
+    def test_the_engines_do_not_share_a_cache_directory(self):
+        """Keyed on the AC alone, a Vision run is served rows tesseract produced -- same part
+        number, same source bytes, same stage version, completely different text.
+
+        The engine is in the directory name rather than checked inside the entry so that both
+        engines' results can exist at once; a run of one does not discard the other's.
+        """
+        from electors import cli
+
+        parser = cli.build_parser()
+        base = parser.parse_args(["parse", "z.zip"])
+        vision_run = parser.parse_args(["parse", "z.zip", "--engine", "vision"])
+        assert base.engine == "tesseract"
+        assert vision_run.engine == "vision"
+        assert base.cache == vision_run.cache, "the difference is applied to the AC directory"
+
+    def test_vision_refuses_to_start_without_a_key(self, tmp_path, monkeypatch, capsys):
+        """Better than 154 parts each failing on their own request."""
+        from electors import cli
+
+        monkeypatch.delenv("VISION_API_KEY", raising=False)
+        monkeypatch.setattr(cli.render, "require_poppler", lambda: None)
+        monkeypatch.setattr(
+            cli.render, "iter_zip_parts", lambda p: [type("P", (), {"ac_no": 1, "pdf_name": "a"})()]
+        )
+        args = cli.build_parser().parse_args(
+            ["parse", str(tmp_path / "z.zip"), "--engine", "vision"]
+        )
+        (tmp_path / "z.zip").write_bytes(b"")
+        assert cli.cmd_parse(args) == 1
+        assert "key" in capsys.readouterr().err
 
     def test_reissued_source_bytes_invalidate_the_entry(self, tmp_path, monkeypatch):
         """Resumption must never serve data derived from a file that no longer exists."""

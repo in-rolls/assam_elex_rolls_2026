@@ -33,9 +33,9 @@ def _one_part(args) -> Dict[str, Any]:
     hours. ``assam_rolls.cache`` already solved this for the info pages, atomically and keyed
     to the source bytes; this simply uses it.
     """
-    zip_path, pdf_name, cache_dir, *rest = args
+    zip_path, pdf_name, cache_dir, capture_lines, engine_name, api_key = args
     zip_path, cache_dir = Path(zip_path), Path(cache_dir)
-    capture_lines = bool(rest[0]) if rest else False
+    capture_lines = bool(capture_lines)
     # Timed here rather than between yields in the parent: a pool returns results in
     # submission order, so the gap between two yields is whatever the slowest earlier part
     # was still doing, not the cost of the part that just arrived.
@@ -61,8 +61,18 @@ def _one_part(args) -> Dict[str, Any]:
     if fresh:
         return dict(entry["row"], electors=entry["sections"], cached=True, seconds=None)
 
-    engine = ocr.get_engine("tesseract", lang="asm")
-    result = extract.read_part(zip_path, pdf_name, engine=engine, capture_lines=capture_lines)
+    if engine_name == "vision":
+        from . import vision_part
+
+        result = vision_part.read_part(
+            zip_path,
+            pdf_name,
+            api_key=api_key,
+            renderer=vision_part.rasterize(extract.DPI),
+        )
+    else:
+        engine = ocr.get_engine("tesseract", lang="asm")
+        result = extract.read_part(zip_path, pdf_name, engine=engine, capture_lines=capture_lines)
     summary = {
         "ac_no": result.ac_no,
         "part_no": result.part_no,
@@ -78,6 +88,9 @@ def _one_part(args) -> Dict[str, Any]:
         "supplement_pages": result.supplement_pages,
         "error": result.error,
         "stage_version": extract.PIPELINE_VERSION,
+        # What the part cost, in the unit the invoice is in. Zero for tesseract.
+        "images_billed": result.images_billed,
+        "engine": engine_name,
         "cached": False,
     }
     if not result.error:
@@ -99,8 +112,22 @@ def cmd_parse(args: argparse.Namespace) -> int:
         print(f"no recognisable part PDFs in {zip_path}", file=sys.stderr)
         return 1
 
+    api_key = ""
+    if args.engine == "vision":
+        import os
+
+        api_key = args.api_key or os.environ.get("VISION_API_KEY", "")
+        if not api_key:
+            print("vision needs a key: --api-key or VISION_API_KEY", file=sys.stderr)
+            return 1
+
     ac_no = parts[0].ac_no
+    # One cache per engine. Keyed on the AC alone, a Vision run would have been served rows
+    # tesseract produced -- the same part number, the same source bytes, the same stage
+    # version, and completely different text.
     cache_dir = Path(args.cache) / f"AC{ac_no:03d}"
+    if args.engine != "tesseract":
+        cache_dir = cache_dir.with_name(f"{cache_dir.name}-{args.engine}")
     already = len(list(cache_dir.glob("*.json"))) if cache_dir.exists() else 0
     log = timing.setup(f"parse-AC{ac_no:03d}")
     log.info(
@@ -119,7 +146,10 @@ def cmd_parse(args: argparse.Namespace) -> int:
     failures: List[Dict[str, Any]] = []
     done = 0
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
-        payload = [(str(zip_path), p.pdf_name, str(cache_dir), args.capture) for p in parts]
+        payload = [
+            (str(zip_path), p.pdf_name, str(cache_dir), args.capture, args.engine, api_key)
+            for p in parts
+        ]
         # Reported as each part *finishes*, not in submission order. `pool.map` yields in
         # order, so one slow part at the front holds back every result behind it: parts 3 and
         # 5 were on disk twenty minutes before the log mentioned either, because part 1 was
@@ -175,6 +205,11 @@ def cmd_parse(args: argparse.Namespace) -> int:
     checks = validate.reconcile(rows, totals, roll_totals)
     summary = validate.summarize(checks, rows)
 
+    from . import vision as vision_engine
+
+    billed = sum(r.get("images_billed") or 0 for r in results)
+    dollars = vision_engine.cost(billed)
+
     path = output.write_shard(rows, ac_no, Path(args.out))
     entry = output.update_manifest(
         ac_no,
@@ -195,11 +230,18 @@ def cmd_parse(args: argparse.Namespace) -> int:
             ),
             "parts_from_cache": clock.cached,
             "workers": args.workers,
+            "engine": args.engine,
+            # The bill, in the unit it arrives in. Recorded per constituency so the remaining
+            # 125 are a multiplication rather than an estimate.
+            "images_billed": billed,
+            "dollars": round(dollars, 4),
         },
     )
 
     for line in clock.summary():
         log.info("%s", line)
+    if billed:
+        log.info("%d images billed = $%.4f for AC %d", billed, dollars, ac_no)
     print(f"\nwrote {path} ({entry['bytes'] / 1e6:.1f} MB)")
     print(f"rows: {summary['rows']:,} ({summary['supplement_rows']:,} from supplements)")
     print(
@@ -278,7 +320,9 @@ def cmd_quality(args: argparse.Namespace) -> int:
     rows: List[Dict[str, Any]] = []
     results: List[Dict[str, Any]] = []
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
-        payload = [(str(zip_path), p.pdf_name, str(cache_dir)) for p in chosen]
+        payload = [
+            (str(zip_path), p.pdf_name, str(cache_dir), False, "tesseract", "") for p in chosen
+        ]
         for done, result in enumerate(pool.map(_one_part, payload, chunksize=1), start=1):
             rows.extend(result["electors"])
             results.append(result)
@@ -450,7 +494,9 @@ def cmd_capture(args: argparse.Namespace) -> int:
     print(f"{zip_path.name}: capturing lines for {len(chosen)} parts, {args.workers} workers")
 
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
-        payload = [(str(zip_path), p.pdf_name, str(cache_dir), True) for p in chosen]
+        payload = [
+            (str(zip_path), p.pdf_name, str(cache_dir), True, "tesseract", "") for p in chosen
+        ]
         for done, result in enumerate(pool.map(_one_part, payload, chunksize=1), start=1):
             print(
                 f"  {done}/{len(chosen)} part {result['part_no']}: "
@@ -760,6 +806,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_parse.add_argument("--workers", type=int, default=8)
     p_parse.add_argument("--limit", type=int, default=0, help="first N parts only")
     p_parse.add_argument("--cache", default="out/electors/cache")
+    p_parse.add_argument(
+        "--engine",
+        default="tesseract",
+        choices=("tesseract", "vision"),
+        help="vision reads 30x better and costs about $1.70 an AC; tesseract is free and cannot"
+        " read a name",
+    )
+    p_parse.add_argument("--api-key", default="", help="Cloud Vision key, or set VISION_API_KEY")
     p_parse.add_argument(
         "--capture",
         action="store_true",
