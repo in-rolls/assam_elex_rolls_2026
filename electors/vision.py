@@ -6,9 +6,12 @@ exactly this and reports 12,694 pages for about $1.50.
 
 **Which makes render resolution the cost lever.** The source PDFs are 144 dpi scans -- no fonts,
 one 1187x1679 raster a page -- so anything above that is upsampling, and how much of it is done
-sets how many pages fit under the ceilings. Measured: 4.2 pages an image at 400 dpi and $327 for
-the state, 6.4 and $215 at 300 dpi, 31 and $45 at the scan's own size. 300 dpi scores within one
-box of 400 on every field and native does not, so 300 dpi is what runs.
+sets how many pages fit under the ceilings. Measured: 3.8 pages an image at 400 dpi and $368 for
+the state, 6.4 and $217 at 300 dpi, 31 and $45 at the scan's own size.
+
+**And the cheaper ones read worse.** Over 7,431 boxes, 300 dpi leaves the name empty on 5.77%
+against 400 dpi's 0.44% -- 1.3 million missing names across the state against 110,000, for $151.
+Native halves house numbers outright. The upsampling earns its money.
 
 **And it needs no asynchronous API.** ``images:annotate`` takes 16 images per request, subject
 to the 40 MB payload ceiling, at 1,800 requests a minute. The ``asyncBatchAnnotate`` methods

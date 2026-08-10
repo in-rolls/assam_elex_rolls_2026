@@ -301,11 +301,11 @@ Scored on the 25 boxes every engine answered -- the only basis on which they can
 
 | | whole state | wall clock |
 |---|--:|---|
-| Cloud Vision, 300 dpi | **$215** | hours |
+| Cloud Vision, 400 dpi | **$368** | hours |
 | Gemini Flash-Lite, batch | ~$1,500 | a day per batch |
 | dots.ocr, per box | $350–$10,400 in GPU rental | unmeasured; 7.9 years on this Mac |
 
-Cloud Vision reads as well, costs $215, needs no hardware, and is the only engine here whose
+Cloud Vision reads as well, costs $368, needs no hardware, and is the only engine here whose
 throughput at scale is a measured quantity rather than a guess spanning thirty-fold. **It runs
 the state.**
 
@@ -326,16 +326,33 @@ Three arms, same parts, same parser, scored on the 25 hand-read boxes all of the
 | house no right | **88%** | **88%** | 52% |
 | sex right | **100%** | **100%** | **100%** |
 | pages per image | 4.2 | 6.4 | 31.0 |
-| **whole state** | $327 | **$215** | $45 |
-
-**300 dpi is within one box of 400 dpi on every field and saves $112.** 68% against 72% is a
-single box of twenty-five, and house numbers are identical.
+| **whole state** | $368 | $217 | $45 |
 
 **Native is worse, and not by noise.** House numbers halve and names fall 16 points -- four of
 five fields degrade together, which is what separates a real effect from sampling error. A box
 is ~1000px wide at 400 dpi and ~395px at native, and the note in `extract.py` about conjuncts
 ceasing to be legible turns out not to have been only about tesseract. The $45 is real and so
 is what it costs.
+
+**300 dpi looked free on this table and is not.** Twenty-five boxes cannot separate 68% from
+72%, and reading that as "within noise" was the wrong conclusion -- it was an absence of
+evidence. Two measurements over 7,431 boxes, neither needing ground truth, found the difference:
+
+| | 400 dpi | 300 dpi |
+|---|--:|--:|
+| names the two arms agree on | \-- | 76.6% |
+| **name left empty** | **0.44%** | **5.77%** |
+| age left empty | 2.69% | 2.22% |
+| house left empty | 2.17% | 3.15% |
+| sex left empty | 0.73% | 1.00% |
+
+The arms differ on **23% of names**, so they are not interchangeable, and they differ
+*asymmetrically*: 300 dpi returns no name at all thirteen times as often. Of the 1,742 names
+that differ, 300 dpi is empty on 420 and 400 dpi on 24.
+
+A missing value is a failure whichever spelling would have been right, which is why this ranks
+the arms without any hand-reading. Over 25 million electors it is **1.3 million missing names
+against 110,000**, and the difference costs $151. **The pipeline stays at 400 dpi.**
 
 Set against that, `render.py` records that interpolating these scans invents ink badly enough to
 turn a "1" into a "4" for tesseract. Vision evidently does not mind: the upsampled arms win.

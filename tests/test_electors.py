@@ -1964,6 +1964,33 @@ class TestResolutionComparison:
         assert back[0].arm == "native" and back[0].part == 13
         assert back[0].images_billed == 1
 
+    def test_an_empty_field_is_counted_against_the_arm_that_left_it_empty(self):
+        """The measurement that settled the resolution question, and it needs no truth: a
+        missing value is a failure whichever spelling would have been right.
+
+        Agreement said only that the arms differ on 23% of names; 25 hand-read boxes could not
+        say which was right at that margin. The blank rates could -- 300 dpi leaves the name
+        empty thirteen times as often.
+        """
+        box = (4, 0, 0)
+        arms = [
+            self._arm("400 dpi", {box: {"name": "ৰাম", "age": 40, "house": "1", "sex": "M"}}),
+            self._arm("300 dpi", {box: {"name": "", "age": 40, "house": "1", "sex": "M"}}),
+        ]
+        rates = resolution.blank_rates(arms)
+        assert rates["400 dpi"]["name"] == 0.0
+        assert rates["300 dpi"]["name"] == 1.0
+
+    def test_a_disagreement_names_its_part_as_well_as_its_page(self):
+        """Box positions repeat in every part, so a page number alone points at ten boxes."""
+        box = (4, 1, 2)
+        arms = [
+            self._arm("400 dpi", {box: {"name": "ৰাম"}}),
+            self._arm("300 dpi", {box: {"name": "শ্যাম"}}),
+        ]
+        text = resolution.report(arms)
+        assert "part 13 page 4 r1c2" in text
+
     def test_the_report_never_calls_agreement_accuracy(self):
         """Three arms of one engine can be wrong together, and are likelier to be than three
         different engines would be."""
