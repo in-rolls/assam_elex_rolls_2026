@@ -56,7 +56,7 @@ PROMPT = "Extract the text content from this image."
 # seconds, which would distort the very rate this notebook exists to measure.
 MAX_NEW_TOKENS = 256
 
-THROUGHPUT_BATCHES = [4, 8, 16]   # swept, because the best batch size is not knowable in advance
+THROUGHPUT_BATCHES = [1, 2, 4, 8]  # swept; a T4 ran out of memory above 4 at this crop size
 THROUGHPUT_CROPS = 96             # per batch size, after a warm-up that is not timed
 OUT = "/kaggle/working/dots_readings.json\"""",
     ),
@@ -136,7 +136,10 @@ from transformers import AutoModelForCausalLM, AutoProcessor
 #
 # The model's own README says to use a directory without periods, and its download tool writes
 # to ./weights/DotsOCR for exactly this reason.
-MODEL_DIR = "/kaggle/working/DotsOCR"
+# Outside /kaggle/working, which *is* the kernel's output: with the weights in there,
+# `kaggle kernels output` downloads 4 GB of safetensors before it reaches the log, and the log
+# is the only thing worth having.
+MODEL_DIR = "/tmp/DotsOCR"
 snapshot_download(repo_id=MODEL_ID, local_dir=MODEL_DIR)
 
 t0 = time.time()
@@ -337,13 +340,24 @@ for size in THROUGHPUT_BATCHES:
     chosen = CROPS[:n]
     started = time.time()
     done = 0
-    for i in range(0, n, size):
-        read_batch(chosen[i:i + size])
-        done += len(chosen[i:i + size])
+    try:
+        for i in range(0, n, size):
+            read_batch(chosen[i:i + size])
+            done += len(chosen[i:i + size])
+    except torch.cuda.OutOfMemoryError:
+        # A T4 has 16 GB and these crops are ~1000x450, so the batch that fits is small. An OOM
+        # is a result about this card, not a failure of the run -- record it and keep the sizes
+        # that did fit, rather than losing the sweep and the readings after it.
+        torch.cuda.empty_cache()
+        print(f"batch {size:>3}: out of memory, skipped")
+        continue
     torch.cuda.synchronize()
     seconds = time.time() - started
     results[size] = done / seconds
     print(f"batch {size:>3}: {done} crops in {seconds:6.1f}s = {results[size]:5.2f} boxes/sec")
+
+if not results:
+    raise SystemExit("no batch size fitted in memory")
 
 BEST = max(results, key=results.get)
 RATE = results[BEST]
