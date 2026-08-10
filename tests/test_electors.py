@@ -2044,6 +2044,24 @@ class TestVisionLinesByPosition:
         assert header == ["HHK0001471"]
         assert body == ["খাদৰাম"]
 
+    def test_a_box_gets_only_the_words_inside_it(self):
+        """Constrained on left and right alone, every box in a column got the whole column and
+        reported the *first* elector in it -- thirty identical rows per column, each one
+        individually plausible. A stubbed run could not see it; the real values could.
+        """
+        words = [self._w("ৰাম", 10), self._w("শ্যাম", 500)]
+        top_box = vision.words_within(words, left=0, top=0, right=200, bottom=100)
+        low_box = vision.words_within(words, left=0, top=400, right=200, bottom=600)
+        assert [w.text for w in top_box] == ["ৰাম"]
+        assert [w.text for w in low_box] == ["শ্যাম"]
+
+    def test_a_glyph_crossing_a_shared_border_still_belongs_to_one_box(self):
+        """Box borders are shared, so requiring full containment would drop a tall glyph from
+        both neighbours."""
+        crossing = [vision.Word("ৰাম", left=10, top=90, right=60, bottom=130)]
+        assert vision.words_within(crossing, 0, 0, 200, 100) == []
+        assert len(vision.words_within(crossing, 0, 100, 200, 200)) == 1
+
     def test_a_two_line_header_is_split_by_script_not_by_count(self):
         words = [self._w("101", 5), self._w("HHK0001471", 25), self._w("খাদৰাম", 60)]
         header, body = vision.header_and_body(words, 0, 200)

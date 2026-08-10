@@ -209,7 +209,8 @@ def _fill(
             current_section, serial = section, 0
 
         for box in boxes:
-            header, body = vision.header_and_body(words, box.left, box.text_right)
+            inside = vision.words_within(words, box.left, box.top, box.text_right, box.bottom)
+            header, body = vision.header_and_body(inside, box.left, box.text_right)
             if not header and not body:
                 # Vision found no words in the box at all. A blank box at the end of a part is
                 # the publisher's doing, and there is nothing in it to read.

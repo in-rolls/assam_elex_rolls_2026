@@ -271,6 +271,25 @@ def grouped_lines(words: Sequence[Word], left: int, right: int) -> List[str]:
     return out
 
 
+def words_within(words: Sequence[Word], left: int, top: int, right: int, bottom: int) -> List[Word]:
+    """The words whose middle falls inside a rectangle.
+
+    Both axes. :func:`grouped_lines` constrains only left and right, because it was written for
+    a caller that had already cut the box out; handed a whole page's words it returns the whole
+    column, and every box in that column then reports the *first* elector in it. On real data
+    that produced thirty identical rows per column -- each one individually plausible, which is
+    why it survived a stubbed end-to-end run and was caught only by looking at the values.
+
+    The middle rather than the whole word: box borders are shared, so a tall glyph crosses into
+    the neighbour and requiring containment would drop it from both.
+    """
+    return [
+        w
+        for w in words
+        if left - 2 <= w.left and w.right <= right + 2 and top <= w.middle_y < bottom
+    ]
+
+
 def header_and_body(words: Sequence[Word], left: int, right: int) -> Tuple[List[str], List[str]]:
     """A box split into its header strip and the Assamese lines under it.
 
