@@ -1857,6 +1857,48 @@ class TestResolutionComparison:
         assert "agreement, not accuracy" in text
 
 
+class TestRequestPayloadCeiling:
+    """The limit that bit: 40 MB per request, separate from 20 MB per image.
+
+    Sixteen 6 MB images are legal one at a time and 96 MB together. Batching by count alone
+    rejected every 400 dpi and 300 dpi part while letting native through, which reads as "the
+    expensive arms do not work" rather than "the batcher does not".
+    """
+
+    def test_a_batch_is_split_before_it_exceeds_the_request_limit(self):
+        six_mb = [b"x" * (6 * 1024 * 1024)] * 8
+        groups = vision.batch_images(six_mb)
+        budget = vision.MAX_REQUEST_BYTES / vision.BASE64_GROWTH
+        assert len(groups) > 1
+        for group in groups:
+            assert sum(len(six_mb[i]) for i in group) <= budget
+
+    def test_the_budget_allows_for_base64_growth(self):
+        """The ceiling is on what goes on the wire, and base64 costs four bytes for three."""
+        just_under_raw = [b"x" * (30 * 1024 * 1024)] * 2
+        assert len(vision.batch_images(just_under_raw)) == 2
+
+    def test_small_images_still_batch_up_to_the_count_limit(self):
+        tiny = [b"x" * 1024] * (vision.IMAGES_PER_REQUEST + 3)
+        groups = vision.batch_images(tiny)
+        assert [len(g) for g in groups] == [vision.IMAGES_PER_REQUEST, 3]
+
+    def test_every_image_lands_in_exactly_one_batch(self):
+        sizes = [b"x" * (i * 1024 * 1024) for i in (1, 9, 2, 15, 7, 3)]
+        flat = [i for group in vision.batch_images(sizes) for i in group]
+        assert flat == list(range(len(sizes)))
+
+    def test_an_image_too_big_to_share_goes_alone(self):
+        """Legal as long as it is under the per-image limit, which encode already checked.
+
+        30 MiB is the whole budget once base64 growth is taken off the 40 MB request ceiling,
+        so it can carry nothing else.
+        """
+        alone = int(vision.MAX_REQUEST_BYTES / vision.BASE64_GROWTH)
+        sizes = [b"x" * 1024, b"x" * alone, b"x" * 1024]
+        assert vision.batch_images(sizes) == [[0], [1], [2]]
+
+
 class TestStackByteCeiling:
     """Two ceilings, and the one that binds depends on the scan."""
 

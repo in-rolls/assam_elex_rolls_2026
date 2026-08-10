@@ -68,9 +68,17 @@ def words_per_page(
         if problem:
             raise ValueError(f"stack rejected before spending a request: {problem}")
 
+    # Batched by payload, not by count. Sixteen images are legal individually and 96 MB
+    # together, and the request ceiling is 40 MB -- which rejected every 400 dpi and 300 dpi
+    # part while letting native through, and would have read as "the expensive arms do not
+    # work" rather than "the batcher does not".
+    encoded = [vision.encode(stack.image) for stack in stacks]
+    groups = vision.batch_images(encoded)
+
     out: List[List[vision.Word]] = []
     billed = 0
-    for batch in _chunks(stacks, images_per_request):
+    for group in groups:
+        batch = [stacks[i] for i in group[:images_per_request]]
         responses = vision.annotate([stack.image for stack in batch], api_key=api_key)
         billed += len(batch)
         if len(responses) != len(batch):

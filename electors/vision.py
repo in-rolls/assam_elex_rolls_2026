@@ -23,8 +23,10 @@ inverts the problem: nothing has to be cropped, and nothing has to be guessed.
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import re
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -41,7 +43,19 @@ ENDPOINT = "https://vision.googleapis.com/v1/images:annotate"
 MAX_BYTES = 20 * 1024 * 1024
 MAX_PIXELS = 75_000_000
 
-#: Images per ``images:annotate`` request.
+#: Ceiling on the **whole request**, which is a separate limit from the per-image one and the
+#: one that actually bit: ``Request payload size exceeds the limit: 41943040 bytes``. Sixteen
+#: images of 6 MB each are legal individually and 96 MB together, so batching by count alone
+#: rejected every 400 dpi and 300 dpi part while letting native through -- which would have read
+#: as "the expensive arms do not work" rather than "the batcher does not".
+MAX_REQUEST_BYTES = 40 * 1024 * 1024
+
+#: base64 costs four bytes for every three, and the limit is on what is sent, not on what was
+#: encoded. Budgeting in raw bytes overshoots the real payload by a third.
+BASE64_GROWTH = 4 / 3
+
+#: Images per ``images:annotate`` request. An upper bound only -- :func:`batch_images` splits on
+#: the payload ceiling first, and at 400 dpi that lands well before sixteen.
 IMAGES_PER_REQUEST = 16
 
 #: Most pages that may be stacked into one image, whatever their size allows. A ceiling, not a
@@ -313,45 +327,99 @@ def lines_by_position(words: Sequence[Word], left: int, right: int) -> List[str]
     return header_and_body(words, left, right)[1]
 
 
+def encode(image: Any) -> bytes:
+    """One image as the PNG bytes that will be sent."""
+    import io
+
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG", optimize=True)
+    data = buffer.getvalue()
+    if len(data) > MAX_BYTES:
+        raise ValueError(f"{len(data):,} bytes exceeds the {MAX_BYTES:,} limit; stack fewer")
+    return data
+
+
+def batch_images(encoded: Sequence[bytes]) -> List[List[int]]:
+    """Indices grouped into requests that fit under both the count and the payload ceiling.
+
+    Two limits, and the payload one is the one that bites. It is measured from the encoded
+    bytes rather than assumed from the count, and inflated by :data:`BASE64_GROWTH` because the
+    ceiling applies to what goes on the wire.
+
+    An image too large to share a request with anything goes alone; that is legal as long as it
+    is under the per-image limit, which :func:`encode` has already checked.
+    """
+    budget = int(MAX_REQUEST_BYTES / BASE64_GROWTH)
+    groups: List[List[int]] = []
+    current: List[int] = []
+    size = 0
+    for index, data in enumerate(encoded):
+        if current and (len(current) >= IMAGES_PER_REQUEST or size + len(data) > budget):
+            groups.append(current)
+            current, size = [], 0
+        current.append(index)
+        size += len(data)
+    if current:
+        groups.append(current)
+    return groups
+
+
+#: Transient failures worth one more attempt. A stack is expensive to rebuild and the remote end
+#: closing a connection mid-upload is not a statement about the request.
+RETRYABLE = (500, 502, 503, 504)
+
+
 def annotate(
     images: Sequence[Any],
     api_key: str,
     language_hints: Sequence[str] = LANGUAGE_HINTS,
     timeout: int = 180,
+    attempts: int = 3,
 ) -> List[Dict[str, Any]]:
     """Up to :data:`IMAGES_PER_REQUEST` images in one call, returned in submission order."""
-    import io
-
     if len(images) > IMAGES_PER_REQUEST:
         raise ValueError(f"{len(images)} images exceeds the {IMAGES_PER_REQUEST} per request")
 
     requests = []
     for image in images:
-        buffer = io.BytesIO()
-        image.save(buffer, format="PNG", optimize=True)
-        data = buffer.getvalue()
-        if len(data) > MAX_BYTES:
-            raise ValueError(f"{len(data):,} bytes exceeds the {MAX_BYTES:,} limit; stack fewer")
         requests.append(
             {
-                "image": {"content": base64.b64encode(data).decode("ascii")},
+                "image": {"content": base64.b64encode(encode(image)).decode("ascii")},
                 "features": [{"type": "DOCUMENT_TEXT_DETECTION"}],
                 "imageContext": {"languageHints": list(language_hints)},
             }
         )
 
     payload = json.dumps({"requests": requests}).encode("utf-8")
-    request = urllib.request.Request(
-        f"{ENDPOINT}?key={api_key}",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as handle:
-            return json.loads(handle.read()).get("responses", [])
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")[:400]
-        raise RuntimeError(f"vision {exc.code}: {detail}") from exc
+    if len(payload) > MAX_REQUEST_BYTES:
+        raise ValueError(
+            f"{len(payload):,} byte request exceeds the {MAX_REQUEST_BYTES:,} limit; "
+            f"batch fewer images"
+        )
+
+    last = ""
+    for attempt in range(1, attempts + 1):
+        request = urllib.request.Request(
+            f"{ENDPOINT}?key={api_key}",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as handle:
+                return json.loads(handle.read()).get("responses", [])
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:400]
+            # A 400 is a statement about the request and will say the same thing next time.
+            if exc.code not in RETRYABLE:
+                raise RuntimeError(f"vision {exc.code}: {detail}") from exc
+            last = f"vision {exc.code}: {detail}"
+        except (urllib.error.URLError, http.client.HTTPException, OSError) as exc:
+            # The remote end closing a connection mid-upload is not a verdict on the request,
+            # and a stack is expensive enough to rebuild that one more attempt is worth it.
+            last = f"{type(exc).__name__}: {exc}"
+        if attempt < attempts:
+            time.sleep(2**attempt)
+    raise RuntimeError(f"vision failed after {attempts} attempts: {last}")
 
 
 def elector_from(header: Sequence[str], body: Sequence[str]) -> "Elector":
