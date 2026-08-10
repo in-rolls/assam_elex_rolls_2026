@@ -172,7 +172,11 @@ def comparable_parts(arms: Sequence[ArmResult]) -> List[Tuple[int, List[ArmResul
     ]
 
 
-def agreement(arms: Sequence[ArmResult], keep_examples: int = 4) -> Agreement:
+def agreement(
+    arms: Sequence[ArmResult],
+    keep_examples: int = 4,
+    fields: Sequence[str] = FIELDS,
+) -> Agreement:
     """Whether the arms return the same answer, box by box and field by field.
 
     Needs no ground truth, which is the point: it runs over every box in the sample rather than
@@ -183,7 +187,10 @@ def agreement(arms: Sequence[ArmResult], keep_examples: int = 4) -> Agreement:
     for part, group in comparable_parts(arms):
         for key in common_boxes(group):
             found.boxes += 1
-            for name in FIELDS:
+            # ``fields`` narrows the comparison to what the crops actually carry. A name-band
+            # crop holds one line, so its age, house and sex are empty *by construction* --
+            # counting those as disagreements would measure the crop, not the reader.
+            for name in fields:
                 values = [_normalise(name, arm.boxes[key].get(name)) for arm in group]
                 if len(set(values)) == 1:
                     found.same[name] += 1
@@ -194,7 +201,9 @@ def agreement(arms: Sequence[ArmResult], keep_examples: int = 4) -> Agreement:
     return found
 
 
-def blank_rates(arms: Sequence[ArmResult]) -> Dict[str, Dict[str, float]]:
+def blank_rates(
+    arms: Sequence[ArmResult], fields: Sequence[str] = FIELDS
+) -> Dict[str, Dict[str, float]]:
     """How often each arm returned nothing at all for a field.
 
     **This is the measurement that settled the resolution question**, and it needs no ground
@@ -212,13 +221,13 @@ def blank_rates(arms: Sequence[ArmResult]) -> Dict[str, Dict[str, float]]:
         for key in common_boxes(group):
             total += 1
             for arm in group:
-                for name in FIELDS:
+                for name in fields:
                     if arm.boxes[key].get(name) in (None, ""):
                         empty[(arm.arm, name)] += 1
     if not total:
         return {}
     names = list(dict.fromkeys(a.arm for a in arms))
-    return {arm: {name: empty[(arm, name)] / total for name in FIELDS} for arm in names}
+    return {arm: {name: empty[(arm, name)] / total for name in fields} for arm in names}
 
 
 def _normalise(name: str, value: Any) -> Any:

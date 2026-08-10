@@ -1982,6 +1982,20 @@ class TestResolutionComparison:
         assert rates["400 dpi"]["name"] == 0.0
         assert rates["300 dpi"]["name"] == 1.0
 
+    def test_a_narrowed_comparison_ignores_fields_the_crop_cannot_hold(self):
+        """A name-band crop is one line, so its age, house and sex are empty by construction.
+        Counting those as disagreements measures the crop, not the reader."""
+        box = (4, 0, 0)
+        arms = [
+            self._arm("cloud-vision", {box: {"name": "ৰাম", "age": 40, "house": "1", "sex": "M"}}),
+            self._arm("dots.ocr band", {box: {"name": "ৰাম", "age": None, "house": "", "sex": ""}}),
+        ]
+        assert resolution.agreement(arms).rate("age") == 0.0
+        narrowed = resolution.agreement(arms, fields=("name",))
+        assert narrowed.rate("name") == 1.0
+        rates = resolution.blank_rates(arms, fields=("name",))
+        assert rates["dots.ocr band"] == {"name": 0.0}
+
     def test_a_disagreement_names_its_part_as_well_as_its_page(self):
         """Box positions repeat in every part, so a page number alone points at ten boxes."""
         box = (4, 1, 2)
