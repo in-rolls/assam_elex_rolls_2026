@@ -1890,6 +1890,42 @@ class TestResolutionComparison:
         truth = {"p13_pg4_r4c0": {}, "p13_pg4_r1c0": {}, "p25_pg5_r2c0": {}}
         assert resolution.truth_parts(truth) == {13: [4], 25: [5]}
 
+    def test_box_keys_are_only_unique_within_a_part(self):
+        """(page, row, column) repeats in every part. Pooling six parts and intersecting
+        compares part 7's page 4 with part 64's, and the first real run reported 0 boxes."""
+        arms = [
+            self._arm("400 dpi", {(4, 0, 0): {"name": "ৰাম"}}),
+            resolution.ArmResult("400 dpi", 64, {(4, 0, 0): {"name": "শ্যাম"}}),
+            self._arm("native", {(4, 0, 0): {"name": "ৰাম"}}),
+            resolution.ArmResult("native", 64, {(4, 0, 0): {"name": "শ্যাম"}}),
+        ]
+        found = resolution.agreement(arms)
+        assert found.boxes == 2
+        assert found.rate("name") == 1.0
+
+    def test_a_part_whose_arm_failed_does_not_void_the_others(self):
+        """Part 25's native request died on DNS and part 33's 400 dpi on a broken pipe.
+        Intersecting across the whole run then yields nothing, which reads as "the arms never
+        agree" rather than "two requests failed".
+        """
+        arms = [
+            self._arm("400 dpi", {(4, 0, 0): {"name": "ৰাম"}}),
+            self._arm("native", {(4, 0, 0): {"name": "ৰাম"}}),
+            resolution.ArmResult("400 dpi", 25, {(4, 0, 0): {"name": "শ্যাম"}}),
+            resolution.ArmResult("native", 25, {}, error="DNS"),
+        ]
+        assert [p for p, _ in resolution.comparable_parts(arms)] == [13]
+        assert resolution.agreement(arms).boxes == 1
+
+    def test_readings_survive_a_round_trip_to_disk(self, tmp_path):
+        """The first run of this comparison spent three hours and every request, then reported
+        nothing because of an arithmetic bug over readings that were fine."""
+        arms = [self._arm("native", {(4, 2, 1): {"name": "ৰাম", "age": 40}}, pages=8, images=1)]
+        back = resolution.load(resolution.save(arms, tmp_path / "arms.json"))
+        assert back[0].boxes == arms[0].boxes
+        assert back[0].arm == "native" and back[0].part == 13
+        assert back[0].images_billed == 1
+
     def test_the_report_never_calls_agreement_accuracy(self):
         """Three arms of one engine can be wrong together, and are likelier to be than three
         different engines would be."""

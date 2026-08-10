@@ -672,6 +672,13 @@ def cmd_resolution(args: argparse.Namespace) -> int:
 
     from . import evaluate, resolution, vision
 
+    if args.load:
+        loaded = evaluate.load(Path(args.truth)) if args.truth else None
+        print(
+            resolution.report(resolution.load(Path(args.load)), loaded["truth"] if loaded else None)
+        )
+        return 0
+
     api_key = args.api_key or os.environ.get("VISION_API_KEY", "")
     if not api_key:
         print("need a Cloud Vision key: --api-key or VISION_API_KEY", file=sys.stderr)
@@ -735,6 +742,9 @@ def cmd_resolution(args: argparse.Namespace) -> int:
 
     billed = sum(r.images_billed for r in results)
     log.info("spent %d images = $%.4f", billed, vision.cost(billed))
+    if args.save:
+        # Written before the report, so an analysis bug never costs the requests again.
+        log.info("readings saved to %s", resolution.save(results, Path(args.save)))
     print()
     print(resolution.report(results, truth))
     return 0
@@ -839,6 +849,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="run only the parts the hand-read boxes come from, which is six pages not ten parts",
     )
     p_res.add_argument("--arms", default="", help="comma-separated subset of the arms")
+    p_res.add_argument("--save", default="", help="write the readings so analysis can be redone")
+    p_res.add_argument("--load", default="", help="re-report saved readings, spending nothing")
     p_res.add_argument(
         "--stack",
         type=int,

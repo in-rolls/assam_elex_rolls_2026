@@ -148,22 +148,49 @@ class Agreement:
         return self.same[name] / self.boxes if self.boxes else 0.0
 
 
+def comparable_parts(arms: Sequence[ArmResult]) -> List[Tuple[int, List[ArmResult]]]:
+    """Parts where every arm returned something, grouped so their boxes can be lined up.
+
+    Two things this exists to prevent, both of which produced an empty comparison the first
+    time it ran over real data:
+
+    - **Box keys are only unique within a part.** ``(page, row, column)`` repeats in every part,
+      so pooling six parts and intersecting compares part 7's page 4 with part 64's.
+    - **One failed arm silently voids everything.** Part 25's native arm lost its request to a
+      DNS failure and part 33's 400 dpi arm to a broken pipe. Intersecting across the whole run
+      then yields nothing, and an empty intersection reads as "the arms never agree" rather than
+      "two requests failed".
+    """
+    by_part: Dict[int, List[ArmResult]] = collections.defaultdict(list)
+    for arm in arms:
+        by_part[arm.part].append(arm)
+    names = {arm.arm for arm in arms}
+    return [
+        (part, group)
+        for part, group in sorted(by_part.items())
+        if {a.arm for a in group} == names and all(a.boxes for a in group)
+    ]
+
+
 def agreement(arms: Sequence[ArmResult], keep_examples: int = 4) -> Agreement:
     """Whether the arms return the same answer, box by box and field by field.
 
     Needs no ground truth, which is the point: it runs over every box in the sample rather than
-    the 34 that have been read by eye. Unanimity is required -- two of three agreeing is a
+    the handful that have been read by eye. Unanimity is required -- two of three agreeing is a
     disagreement, because the question is whether resolution changes the answer at all.
     """
     found = Agreement()
-    for key in common_boxes(arms):
-        found.boxes += 1
-        for name in FIELDS:
-            values = [_normalise(name, arm.boxes[key].get(name)) for arm in arms]
-            if len(set(values)) == 1:
-                found.same[name] += 1
-            elif len(found.examples[name]) < keep_examples:
-                found.examples[name].append((key, dict(zip([a.arm for a in arms], values))))
+    for part, group in comparable_parts(arms):
+        for key in common_boxes(group):
+            found.boxes += 1
+            for name in FIELDS:
+                values = [_normalise(name, arm.boxes[key].get(name)) for arm in group]
+                if len(set(values)) == 1:
+                    found.same[name] += 1
+                elif len(found.examples[name]) < keep_examples:
+                    found.examples[name].append(
+                        ((part,) + key, dict(zip([a.arm for a in group], values)))
+                    )
     return found
 
 
@@ -255,6 +282,55 @@ def report(
         if tallies:
             lines += ["", evaluate.render(tallies)]
     return "\n".join(lines)
+
+
+def save(arms: Sequence[ArmResult], path: Path) -> Path:
+    """Write what each arm read, so the analysis can be redone without paying again.
+
+    The first run of this comparison spent three hours and every request, and then reported
+    nothing because the agreement function pooled parts whose box keys collide. The readings
+    were fine; only the arithmetic over them was wrong, and there was no way to redo it.
+    """
+    import json
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = [
+        {
+            "arm": a.arm,
+            "part": a.part,
+            "pages": a.pages,
+            "images_billed": a.images_billed,
+            "error": a.error,
+            # JSON has no tuple keys, so the box position is written as a string and split back.
+            "boxes": {f"{p},{r},{c}": v for (p, r, c), v in a.boxes.items()},
+        }
+        for a in arms
+    ]
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def load(path: Path) -> List[ArmResult]:
+    """Arm results written by :func:`save`."""
+    import json
+
+    out = []
+    for row in json.loads(path.read_text(encoding="utf-8")):
+        boxes = {
+            tuple(int(n) for n in key.split(",")): value  # type: ignore[misc]
+            for key, value in row["boxes"].items()
+        }
+        out.append(
+            ArmResult(
+                arm=row["arm"],
+                part=row["part"],
+                boxes=boxes,
+                pages=row["pages"],
+                images_billed=row["images_billed"],
+                error=row["error"],
+            )
+        )
+    return out
 
 
 def parts_of(zip_path: Path, limit: int) -> List[Any]:
