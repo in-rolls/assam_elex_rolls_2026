@@ -2080,6 +2080,66 @@ class TestCropExport:
         assert crops.key_of("random.png") is None
         assert crops.key_of("IMG_1234.png") is None
 
+    def test_a_band_crop_keeps_the_key_and_adds_the_line(self):
+        """Several bands belong to one elector, so the band must not be part of the key --
+        that is what joins them back to a single row."""
+        name = crops.name_for(13, 4, 2, 0, band=0)
+        assert name == "p13_pg4_r2c0_b0"
+        assert crops.key_of(name) == (13, 4, 2, 0)
+        assert crops.band_of(name) == 0
+        assert crops.band_of("p13_pg4_r2c0") is None
+
+    def test_a_band_is_padded_past_its_ink(self):
+        """grid.text_bands pads 5px, which is enough for tesseract and not for handing a line
+        to a model alone: at 400 dpi it clips the head of a matra and the tail of a descender.
+        বিনয় lost its ি and অৰ্জুন lost its hanger, read as different names."""
+        box = grid.Box(row=0, column=0, left=0, top=0, right=800, bottom=400, text_right=776)
+        bands = [(100, 148), (200, 248), (300, 348)]
+        top, bottom = crops.band_window(bands, 1, box)
+        assert top < 200 and bottom > 248, "must reach past the ink on both sides"
+
+    def test_padding_never_crosses_into_the_neighbouring_line(self):
+        """Padded far enough to catch a matra, the relation line arrives under the name and a
+        model handed two lines may answer with either."""
+        box = grid.Box(row=0, column=0, left=0, top=0, right=800, bottom=400, text_right=776)
+        bands = [(100, 148), (200, 248), (300, 348)]
+        top, bottom = crops.band_window(bands, 1, box)
+        assert top >= (148 + 200) // 2, "must not reach into the band above"
+        assert bottom <= (248 + 300) // 2, "must not reach into the band below"
+
+    def test_the_outer_bands_are_clamped_to_the_box(self):
+        box = grid.Box(row=0, column=0, left=0, top=90, right=800, bottom=360, text_right=776)
+        bands = [(100, 148), (300, 348)]
+        assert crops.band_window(bands, 0, box)[0] >= box.top
+        assert crops.band_window(bands, 1, box)[1] <= box.bottom
+
+    def test_the_manifest_round_trips_and_carries_what_the_filename_cannot(self, tmp_path):
+        """A reading cannot be put in the right row from the filename alone: serials restart at
+        1 in every supplement, so the section has to travel with the crop."""
+        crop = crops.Crop(
+            part=13,
+            page=4,
+            row=2,
+            column=0,
+            path=tmp_path / "p13_pg4_r2c0_b0.png",
+            band=0,
+            left=78,
+            top=228,
+            right=854,
+            bottom=299,
+            ac_no=1,
+            section="supplement",
+            source_pdf="x.pdf",
+            pdf_sha256="abc123",
+        )
+        crops.write_manifest([crop], tmp_path, append=False)
+        back = crops.read_manifest(tmp_path)
+        assert set(back) == {"p13_pg4_r2c0_b0"}
+        row = back["p13_pg4_r2c0_b0"]
+        assert row["roll_section"] == "supplement"
+        assert (row["left"], row["top"], row["right"], row["bottom"]) == (78, 228, 854, 299)
+        assert row["pdf_sha256"] == "abc123" and row["ac_no"] == 1
+
     def test_readings_become_arms_through_the_same_parser_vision_uses(self):
         """Comparing two engines through two parsers measures the parsers. This is the bug
         that put the elector's own name in the relation field, and it recurred three times."""

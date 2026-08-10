@@ -303,7 +303,7 @@ Scored on the 25 boxes every engine answered -- the only basis on which they can
 |---|--:|---|
 | Cloud Vision, 400 dpi | **$368** | hours |
 | Gemini Flash-Lite, batch | ~$1,500 | a day per batch |
-| dots.ocr, per box | $350–$10,400 in GPU rental | unmeasured; 7.9 years on this Mac |
+| dots.ocr, per box | **$1,860** measured, ~$370 if vLLM gives 5x | 16,909 T4-hours at $0.11/hr |
 
 Cloud Vision reads as well, costs $368, needs no hardware, and is the only engine here whose
 throughput at scale is a measured quantity rather than a guess spanning thirty-fold. **It runs
@@ -387,6 +387,56 @@ unequal token budgets, a truth set attached to the wrong boxes, a loop guard tha
 padding instead of the answer, and now a label the parser could not see. Three of the four were
 found by refusing to accept a number that looked too bad, which is the only method that has
 worked here.
+
+#### What dots.ocr actually costs, measured
+
+Every earlier figure here came from single-stream MLX on a Mac, which describes the laptop. On a
+Kaggle Tesla T4 -- transformers 4.56.1, float16, sdpa -- the batched rate is:
+
+| batch | boxes/sec |
+|--:|--:|
+| 1 | 0.19 |
+| 2 | 0.32 |
+| **4** | **0.41** |
+| 8 | out of memory |
+
+24,958,139 electors at 0.41 boxes/sec is **16,909 GPU-hours**. At a spot T4 price of $0.11/hr
+that is **$1,860**, against Cloud Vision's measured $368.
+
+**But this is a floor, not a verdict.** The sweep was stopped by *memory*, not compute -- batch 8
+would not fit in 16 GB. vLLM's paged attention would hold a far larger batch on the same card,
+and 25 million short uniform prompts is precisely what continuous batching is for. Break-even
+against Vision is **2.07 boxes/sec, 5x the measured rate**, which is inside the range vLLM
+plausibly delivers:
+
+| | boxes/sec | GPU-hours | at $0.11/hr | vs Vision |
+|---|--:|--:|--:|--:|
+| transformers, measured | 0.41 | 16,909 | $1,860 | 5.1x |
+| vLLM, 3x | 1.23 | 5,636 | $620 | 1.7x |
+| vLLM, 5x | 2.05 | 3,382 | $372 | 1.0x |
+| vLLM, 10x | 4.10 | 1,691 | $186 | 0.5x |
+
+So **whether dots.ocr can run the state is open**, and turns on a vLLM measurement that has not
+been made. Two things price does not settle either way: 25 million inferences need checkpointing,
+retries and preemption handling, where Vision is about 36 calls per constituency; and on the
+240-box sample dots.ocr left **no field empty at all** where Vision left 3.33% of ages blank --
+an edge, unless it is guessing rather than admitting ignorance, which a tie on exact names does
+not rule out.
+
+#### dots.ocr agreed with Vision on 240 boxes
+
+| field | agreement | Vision left empty | dots.ocr left empty |
+|---|--:|--:|--:|
+| name | 52.1% | 0.42% | **0.00%** |
+| age | 95.4% | 3.33% | **0.00%** |
+| house | 92.5% | 1.67% | 0.42% |
+| sex | 99.6% | 0.42% | **0.00%** |
+
+Agreement, never accuracy: both can be wrong together. The name disagreements are single matras
+of the same name -- `অৰ্জন`/`অৰ্জুন`, `সীতাশ্বৰী`/`সীতাশুৰী` -- and one stray hyphen Vision
+appended, not different people. Where the two agree the value is very likely right, and the rows
+where they differ are the ones worth review. That is the error signal there would otherwise be
+none of.
 
 **dots.ocr still cannot read a page**, which is why it was never the cheap option:
 
