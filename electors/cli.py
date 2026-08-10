@@ -796,6 +796,39 @@ def cmd_resolution(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_crops(args: argparse.Namespace) -> int:
+    """Cut box images out so a second reader can run them on a GPU somewhere else."""
+    from . import crops
+
+    zip_path = Path(args.zip)
+    if not zip_path.exists():
+        print(f"no such zip: {zip_path}", file=sys.stderr)
+        return 1
+    render.require_poppler()
+
+    parts = [p for p in render.iter_zip_parts(zip_path)][: args.parts]
+    out_dir = Path(args.out)
+    log = timing.setup("crops")
+    log.info("%d parts -> %s, at most %d crops", len(parts), out_dir, args.limit)
+
+    total = 0
+    for part_no, written in crops.export(zip_path, parts, out_dir, dpi=args.dpi, limit=args.limit):
+        total += len(written)
+        log.info("part %-4d %4d crops (%d total)", part_no, len(written), total)
+
+    if not total:
+        print("no crops written", file=sys.stderr)
+        return 1
+
+    size = sum(p.stat().st_size for p in out_dir.glob("*.png"))
+    print(f"\n{total:,} crops in {out_dir} ({size / 1e6:.0f} MB)")
+    if args.zip_to:
+        target = crops.zip_dir(out_dir, Path(args.zip_to).resolve())
+        print(f"zipped to {target} ({target.stat().st_size / 1e6:.0f} MB) -- upload as a dataset")
+    print("the filename is the key: p<part>_pg<page>_r<row>c<col>.png")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="electors", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -912,6 +945,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="force pages-per-image for every arm, separating resolution from stack depth",
     )
     p_res.set_defaults(func=cmd_resolution)
+
+    p_crops = sub.add_parser(
+        "crops", help="cut box images out for a second reader running on another machine"
+    )
+    p_crops.add_argument("zip")
+    p_crops.add_argument("--out", default="out/crops", help="directory to write the PNGs into")
+    p_crops.add_argument("--parts", type=int, default=8, help="first N parts of the zip")
+    p_crops.add_argument("--limit", type=int, default=10_000, help="stop after this many crops")
+    p_crops.add_argument("--dpi", type=int, default=extract.DPI)
+    p_crops.add_argument("--zip-to", default="", help="also zip the folder to this path")
+    p_crops.set_defaults(func=cmd_crops)
 
     p_report = sub.add_parser("report", help="reconcile a shard against the info pages")
     p_report.add_argument("shard")

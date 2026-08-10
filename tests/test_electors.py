@@ -13,6 +13,7 @@ import pytest
 from electors import (
     against,
     bench,
+    crops,
     diagnose,
     escalate,
     evaluate,
@@ -2056,6 +2057,56 @@ class TestStackByteCeiling:
         from PIL import Image
 
         assert vision.encoded_size(Image.new("L", (50, 50), "white")) > 0
+
+
+class TestCropExport:
+    """Box images cut for a reader that runs on someone else's GPU."""
+
+    def test_the_filename_is_the_key(self):
+        """A crop folder and a JSON of readings line up with nothing else between them. A
+        separate manifest is one more thing that can fall out of step with the images."""
+        assert crops.name_for(13, 4, 2, 0) == "p13_pg4_r2c0"
+        assert crops.key_of("p13_pg4_r2c0.png") == (13, 4, 2, 0)
+        assert crops.key_of("p13_pg4_r2c0") == (13, 4, 2, 0)
+
+    def test_the_key_spelling_matches_the_eval_set_and_the_comparison(self):
+        """Three places parse this shape. If they ever disagree the comparison silently
+        compares nothing, which is exactly what an empty intersection looks like."""
+        name = crops.name_for(7, 5, 9, 2)
+        assert resolution.KEY.match(name), "resolution must parse what crops writes"
+        assert crops.key_of(name) == (7, 5, 9, 2)
+
+    def test_a_name_that_is_not_a_key_is_refused_rather_than_guessed(self):
+        assert crops.key_of("random.png") is None
+        assert crops.key_of("IMG_1234.png") is None
+
+    def test_readings_become_arms_through_the_same_parser_vision_uses(self):
+        """Comparing two engines through two parsers measures the parsers. This is the bug
+        that put the elector's own name in the relation field, and it recurred three times."""
+        readings = {
+            "p13_pg4_r0c0.png": "নাম : খাদৰাম ৰাভা\nঘৰ নং : 20\nবয়স : 45 লিঙ্গ : পুৰুষ",
+            "p13_pg4_r1c0.png": "নাম : গংগাৰাম\nবয়স : 30 লিঙ্গ : মহিলা",
+        }
+        arms = crops.readings_to_arm(readings)
+        assert len(arms) == 1 and arms[0].part == 13
+        assert arms[0].boxes[(4, 0, 0)] == {
+            "name": "খাদৰাম ৰাভা",
+            "age": 45,
+            "house": "20",
+            "sex": "M",
+        }
+        assert arms[0].boxes[(4, 1, 0)]["sex"] == "F"
+
+    def test_readings_from_different_parts_become_different_arms(self):
+        """Box positions repeat in every part, so one arm per part is what keeps them apart."""
+        readings = {"p7_pg1_r0c0.png": "নাম : ক", "p64_pg1_r0c0.png": "নাম : খ"}
+        assert sorted(a.part for a in crops.readings_to_arm(readings)) == [7, 64]
+
+    def test_an_unreadable_reading_still_produces_a_box(self):
+        """A box the second reader could not read is evidence about the second reader. Dropping
+        it would quietly shrink the denominator instead."""
+        arms = crops.readings_to_arm({"p1_pg1_r0c0.png": ""})
+        assert arms[0].boxes[(1, 0, 0)] == {"name": "", "age": None, "house": "", "sex": ""}
 
 
 class TestVisionPipelineMatchesWhatWasScored:
