@@ -22,6 +22,7 @@ from electors import (
     grid,
     pages,
     quality,
+    repack,
     replay,
     resolution,
     second_pass,
@@ -2071,6 +2072,76 @@ class TestStackByteCeiling:
         from PIL import Image
 
         assert vision.encoded_size(Image.new("L", (50, 50), "white")) > 0
+
+
+class TestRepack:
+    """Tiles packed to cut the bill, and words found again afterwards.
+
+    Vision bills per image and 70% of a page is white space, borders and empty photo boxes. The
+    danger is not that a tighter image reads worse -- it is that a word comes back attributed to
+    the wrong box, which is a plausible row with nothing raised.
+    """
+
+    @staticmethod
+    def _tiles(n, w=776, h=200):
+        from PIL import Image
+
+        page = Image.new("L", (w, h * n), "white")
+        return [(page, (0, i * h, w, (i + 1) * h), (3, i, 0)) for i in range(n)]
+
+    def test_every_tile_gets_a_rectangle_in_the_composite(self):
+        image, placed = repack.compose(self._tiles(7), columns=3)
+        assert len(placed) == 7
+        assert image.width == 3 * 776 + 2 * repack.GUTTER
+        for tile in placed:
+            assert tile.width == 776 and tile.height == 200
+
+    def test_a_word_comes_back_to_the_tile_it_was_placed_in(self):
+        """The page-offset bug one level down: unshifted, a word lands in whichever tile sits at
+        that height and the row is wrong with nothing to show for it."""
+        image, placed = repack.compose(self._tiles(9), columns=3)
+        for tile in placed:
+            middle = vision.Word("x", tile.left + 5, tile.top + 5, tile.left + 40, tile.top + 40)
+            found = repack.words_for(placed, [middle])
+            assert [k for k, v in found.items() if v] == [tile.key], f"{tile.key} misfiled"
+
+    def test_words_are_matched_horizontally_as_well_as_vertically(self):
+        """Tiles sit side by side. Filtering on height alone hands a word to all three tiles in
+        its row, and each answers with somebody else's name."""
+        image, placed = repack.compose(self._tiles(3), columns=3)
+        first, second, third = placed
+        word = vision.Word(
+            "x", second.left + 10, second.top + 10, second.left + 60, second.top + 50
+        )
+        found = repack.words_for(placed, [word])
+        assert len(found[second.key]) == 1
+        assert not found[first.key] and not found[third.key]
+
+    def test_a_word_returns_in_its_own_tile_coordinates(self):
+        """The parser downstream expects a box starting at zero, not at wherever it was pasted."""
+        image, placed = repack.compose(self._tiles(6), columns=3)
+        tile = placed[4]
+        word = vision.Word("x", tile.left + 12, tile.top + 30, tile.left + 90, tile.top + 70)
+        back = repack.words_for(placed, [word])[tile.key][0]
+        assert (back.left, back.top, back.right, back.bottom) == (12, 30, 90, 70)
+
+    def test_a_word_in_a_gutter_belongs_to_nobody(self):
+        image, placed = repack.compose(self._tiles(6), columns=3)
+        first = placed[0]
+        stray = vision.Word("x", first.right + 4, first.top + 10, first.right + 18, first.top + 40)
+        assert not any(repack.words_for(placed, [stray]).values())
+
+    def test_the_last_row_may_be_short(self):
+        image, placed = repack.compose(self._tiles(4), columns=3)
+        assert len(placed) == 4
+        assert placed[3].top > placed[0].top, "the fourth tile starts a second row"
+
+    def test_the_saving_can_be_costed_before_the_image_is_built(self):
+        """A composite over the pixel ceiling is a lost request, so the size is known first."""
+        entries = self._tiles(30)
+        assert repack.pixels(entries) > 0
+        image, _ = repack.compose(entries)
+        assert repack.pixels(entries) == image.width * image.height
 
 
 class TestCropExport:
