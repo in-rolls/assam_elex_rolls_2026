@@ -113,15 +113,18 @@ assert transformers.__version__.startswith("4.56"), "restart the kernel; an olde
         """# The crops live in the public repo, so there is nothing to upload or attach. A shallow clone
 # rather than a tarball with --wildcards, which is GNU tar only and silently extracts nothing
 # on a BSD tar -- a difference that would only show up here, on someone else's machine.
-!rm -rf /kaggle/working/repo
-!git clone --depth 1 -q https://github.com/in-rolls/assam_elex_rolls_2026 /kaggle/working/repo
+# Cloned to /tmp, not /kaggle/working. /kaggle/working *is* the kernel's output, and a repo
+# with several thousand files in it makes `kaggle kernels output` fetch every one of them --
+# ten minutes to reach a log and two JSON files.
+!rm -rf /tmp/repo
+!git clone --depth 1 -q https://github.com/in-rolls/assam_elex_rolls_2026 /tmp/repo
 
 # Two views of the *same* 240 boxes, so speed and quality can be compared directly:
-#   box  -- the whole text column, ~420 vision tokens
-#   band -- the name line alone,   ~84 tokens, which is 5x less prefill
+#   box  -- the whole text column, 378 vision tokens, 4.08 TFLOPs
+#   band -- the name line alone,    54 vision tokens, 0.66 TFLOPs (the vision tower is 70% of it)
 CROP_SETS = {
-    "box": sorted(glob.glob("/kaggle/working/repo/dataset/dots_bench/*.png")),
-    "band": sorted(glob.glob("/kaggle/working/repo/dataset/dots_bench_bands/*.png")),
+    "box": sorted(glob.glob("/tmp/repo/dataset/dots_bench/*.png")),
+    "band": sorted(glob.glob("/tmp/repo/dataset/dots_bench_bands/*.png")),
 }
 for _name, _paths in CROP_SETS.items():
     print(f"{_name:>5}: {len(_paths):,} crops")

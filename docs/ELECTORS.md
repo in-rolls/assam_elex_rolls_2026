@@ -423,6 +423,45 @@ retries and preemption handling, where Vision is about 36 calls per constituency
 an edge, unless it is guessing rather than admitting ignorance, which a tie on exact names does
 not rule out.
 
+#### Cropping to one line is 6.2x cheaper and does not work
+
+Prefill is where dots.ocr's cost is, and the vision tower is where prefill is: 42 layers and
+0.94B parameters against a 1.27B language model, so **the ViT is 70% of the work**.
+
+| | box crop | name band |
+|---|--:|--:|
+| vision tokens | 378 | 54 |
+| ViT forward | 2.85 TFLOPs (70%) | 0.41 (62%) |
+| LLM prefill | 1.01 (25%) | 0.19 (29%) |
+| LLM decode | 0.23 (6%) | 0.06 (10%) |
+| **total** | **4.08** | **0.66** |
+
+So showing the model one 776x70 line instead of the whole 776x415 box is **6.2x less work**, and
+`grid.text_bands` already finds the lines on the CPU for nothing. Measured on the same 240 boxes:
+
+| | Bengali script | Devanagari | runaway | name agreement with Vision |
+|---|--:|--:|--:|--:|
+| box | 100% | 0% | 0.8% | **52.1%** |
+| band | 83% | **32%** | **76%** | **26.7%** |
+
+**It comes apart two ways at once.** On 76% of band crops the model repeats the line to the token
+cap, and on a third it switches script entirely -- `নাম : মহিমা গয়াবী` returned as
+`नाम : रमिमा गयाबी`, Assamese transliterated into Devanagari. 17% yield no parseable name.
+
+The likely cause is the aspect ratio: 11:1 is not a shape a document model sees in training, and
+one line with no page around it gives nothing to anchor the script on and nothing to signal an
+end. The saving is real and unusable.
+
+Two things this cost nothing to learn, because the crops were checked before the speed was:
+
+- The band as `grid.text_bands` returns it **clips glyphs**. Its 5px pad suits tesseract; at 400
+  dpi it takes the head off a tall matra and the tail off a descender, so `বিনয়` loses its `ি`
+  and `অৰ্জুন` its hanger -- read as different names with nothing to show for it. Padding by 0.45
+  of band height fixes that and then bleeds the *relation* line in underneath, so each side is
+  clamped to the midpoint of the gap.
+- Quality was measured first, not last. The prefill arithmetic was right and the conclusion drawn
+  from it was wrong, and only the order of the measurements caught that.
+
 #### dots.ocr agreed with Vision on 240 boxes
 
 | field | agreement | Vision left empty | dots.ocr left empty |
