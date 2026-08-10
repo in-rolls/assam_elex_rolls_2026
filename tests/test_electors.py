@@ -1714,6 +1714,25 @@ class TestVisionPageMapping:
         assert billed == 2
         assert len(found) == 9
 
+    def test_a_smaller_per_request_limit_splits_rather_than_drops(self, monkeypatch):
+        """Truncating a batch loses pages with nothing raised. Every page must come back."""
+        from PIL import Image
+
+        seen = {"images": 0}
+
+        def fake_annotate(images, api_key, **kw):
+            seen["images"] += len(images)
+            return [self._response([("এক", 10)]) for _ in images]
+
+        monkeypatch.setattr(vision, "annotate", fake_annotate)
+        pages = [Image.new("L", (200, 100), "white") for _ in range(6)]
+        found, billed = vision_part.words_per_page(
+            pages, api_key="x", pages_per_image=1, images_per_request=2
+        )
+        assert seen["images"] == 6
+        assert billed == 6
+        assert len(found) == 6
+
     def test_an_oversized_stack_is_refused_before_a_request_is_spent(self, monkeypatch):
         from PIL import Image
 

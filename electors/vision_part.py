@@ -75,10 +75,17 @@ def words_per_page(
     encoded = [vision.encode(stack.image) for stack in stacks]
     groups = vision.batch_images(encoded)
 
+    # Re-chunked rather than truncated. ``batch_images`` already caps at the module's own
+    # per-request count, but a caller passing a smaller one would otherwise have the surplus
+    # stacks silently dropped -- pages missing from the output with nothing raised.
+    groups = [
+        g[i : i + images_per_request] for g in groups for i in range(0, len(g), images_per_request)
+    ]
+
     out: List[List[vision.Word]] = []
     billed = 0
     for group in groups:
-        batch = [stacks[i] for i in group[:images_per_request]]
+        batch = [stacks[i] for i in group]
         responses = vision.annotate([stack.image for stack in batch], api_key=api_key)
         billed += len(batch)
         if len(responses) != len(batch):
