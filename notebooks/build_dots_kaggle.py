@@ -47,9 +47,15 @@ MODEL_ID = "dots-studio/dots.ocr"   # rednote-hilab/dots.ocr redirects here
 # "Picture" and returns nothing from it.
 PROMPT = "Extract the text content from this image."
 
-# A box holds four short lines. The default of 24,000 in the model card is for whole pages, and
-# an over-generous cap is what let earlier runs pad with "||" until they timed out.
-MAX_NEW_TOKENS = 128
+# Measured, not guessed. Over 56 readings dots.ocr has already given for single boxes, the text
+# is a median of 81 characters and 201 at the 90th percentile; the 255-character maximum is a
+# runaway ("1936" repeated to the cap), not content. So 128 tokens would truncate a real answer
+# on roughly one box in ten -- and a truncated answer looks like a bad model, which is exactly
+# the mistake that scored savitr at 31% when it was 61%.
+#
+# The model card's 24,000 is for whole pages. A cap that large lets a runaway generate for
+# seconds, which would distort the very rate this notebook exists to measure.
+MAX_NEW_TOKENS = 256
 
 THROUGHPUT_BATCHES = [4, 8, 16]   # swept, because the best batch size is not knowable in advance
 THROUGHPUT_CROPS = 96             # per batch size, after a warm-up that is not timed
