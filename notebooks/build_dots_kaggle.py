@@ -116,10 +116,18 @@ assert transformers.__version__.startswith("4.56"), "restart the kernel; an olde
 !rm -rf /kaggle/working/repo
 !git clone --depth 1 -q https://github.com/in-rolls/assam_elex_rolls_2026 /kaggle/working/repo
 
-CROPS = sorted(glob.glob("/kaggle/working/repo/dataset/dots_bench/*.png"))
-print(f"{len(CROPS):,} crops")
-if not CROPS:
-    raise SystemExit("No crops -- is internet enabled for this notebook?")
+# Two views of the *same* 240 boxes, so speed and quality can be compared directly:
+#   box  -- the whole text column, ~420 vision tokens
+#   band -- the name line alone,   ~84 tokens, which is 5x less prefill
+CROP_SETS = {
+    "box": sorted(glob.glob("/kaggle/working/repo/dataset/dots_bench/*.png")),
+    "band": sorted(glob.glob("/kaggle/working/repo/dataset/dots_bench_bands/*.png")),
+}
+for _name, _paths in CROP_SETS.items():
+    print(f"{_name:>5}: {len(_paths):,} crops")
+if not all(CROP_SETS.values()):
+    raise SystemExit("Missing crops -- is internet enabled for this notebook?")
+CROPS = CROP_SETS["box"]
 print("first few:", [os.path.basename(p) for p in CROPS[:3]])""",
     ),
     (
@@ -324,106 +332,80 @@ print(repr(sample[0]))""",
     ),
     (
         MD,
-        """## Throughput
+        """## Both crop sets: speed, and the readings to check quality with
 
-Swept over batch sizes, with a warm-up excluded from the timing — the first call pays for
-CUDA graph capture and weight paging, and counting it understates the rate.""",
-    ),
-    (
-        CODE,
-        """read_batch(CROPS[:2])          # warm-up, deliberately not timed
-torch.cuda.synchronize()
+The name band is 5x less prefill than the whole box. That is only worth anything if it reads the
+same name, so this measures the rate **and** keeps every reading — the boxes come from parts 1-2,
+and `dataset/eval/vision_arms.json` already holds what Cloud Vision read for them, so agreement
+can be scored locally for free.
 
-results = {}
-for size in THROUGHPUT_BATCHES:
-    n = min(THROUGHPUT_CROPS, len(CROPS))
-    chosen = CROPS[:n]
-    started = time.time()
-    done = 0
-    try:
-        for i in range(0, n, size):
-            read_batch(chosen[i:i + size])
-            done += len(chosen[i:i + size])
-    except torch.cuda.OutOfMemoryError:
-        # A T4 has 16 GB and these crops are ~1000x450, so the batch that fits is small. An OOM
-        # is a result about this card, not a failure of the run -- record it and keep the sizes
-        # that did fit, rather than losing the sweep and the readings after it.
-        torch.cuda.empty_cache()
-        print(f"batch {size:>3}: out of memory, skipped")
-        continue
-    torch.cuda.synchronize()
-    seconds = time.time() - started
-    results[size] = done / seconds
-    print(f"batch {size:>3}: {done} crops in {seconds:6.1f}s = {results[size]:5.2f} boxes/sec")
-
-if not results:
-    raise SystemExit("no batch size fitted in memory")
-
-BEST = max(results, key=results.get)
-RATE = results[BEST]
-print(f"\\nbest {RATE:.2f} boxes/sec at batch {BEST}")
-print(f"runtime: {RUNTIME}")
-print(f"gpu: {torch.cuda.get_device_name(0)}")""",
-    ),
-    (
-        CODE,
-        """ELECTORS = 24_958_139
-hours = ELECTORS / RATE / 3600
-print(f"MEASURED at {RATE:.2f} boxes/sec on {torch.cuda.get_device_name(0)} ({RUNTIME})")
-print(f"  whole state : {hours:,.0f} GPU-hours")
-print(f"  Kaggle free : {hours / 30:,.0f} weeks at 30 GPU-hours/week")
-for rent in (1.0, 2.0):
-    print(f"  rented at ${rent:.2f}/hr : ${hours * rent:,.0f}")
-print()
-print("Cloud Vision reads the same 25M electors for $368 in about a day of wall clock,")
-print("and scores the same. This number decides whether dots.ocr is worth it as an")
-print("escalation engine on flagged rows -- not whether it should read everything.")
-print()
-print("Quote this rate WITH the runtime and GPU above. transformers is a lower bound:")
-print("vLLM with continuous batching is typically 2-5x faster for this shape of job.")""",
-    ),
-    (
-        MD,
-        """## Read the sample
-
-Writes `dots_readings.json` as `{crop filename: text}` to `/kaggle/working/`. Download it and
-run locally:
-
-```python
-import json
-from pathlib import Path
-from electors import crops, resolution
-readings = json.loads(Path("dots_readings.json").read_text())
-arms = crops.readings_to_arm(readings) + resolution.load(Path("vision_arms.json"))
-print(resolution.report(arms))
-```
-
-`resolution.agreement()` and `resolution.blank_rates()` then compare it against Vision — as
-**agreement**, never as accuracy. Two engines can be wrong together.""",
+A warm-up runs first and is not timed: the first call pays for CUDA graph capture and weight
+paging, and counting it understates the rate.""",
     ),
     (
         CODE,
         """import json
 
-readings, started = {}, time.time()
-for i in range(0, len(CROPS), BEST):
-    batch = CROPS[i:i + BEST]
-    try:
-        for path, text in zip(batch, read_batch(batch)):
-            readings[os.path.basename(path)] = text
-    except Exception as exc:                      # one bad batch must not lose the run
-        print(f"batch at {i} failed: {type(exc).__name__}: {exc}")
-    if (i // BEST) % 20 == 0:
-        rate = len(readings) / max(1e-9, time.time() - started)
-        left = (len(CROPS) - len(readings)) / max(rate, 1e-9) / 60
-        print(f"{len(readings):>6,}/{len(CROPS):,}  {rate:5.2f}/s  ~{left:.0f} min left")
-        # Written as it goes: a 12-hour session limit should never cost the whole run.
-        with open(OUT, "w", encoding="utf-8") as handle:
-            json.dump(readings, handle, ensure_ascii=False)
+read_batch(CROP_SETS["box"][:2])          # warm-up, deliberately not timed
+torch.cuda.synchronize()
 
-with open(OUT, "w", encoding="utf-8") as handle:
-    json.dump(readings, handle, ensure_ascii=False)
-print(f"\\nwrote {len(readings):,} readings to {OUT}")""",
+RATES, READINGS = {}, {}
+for set_name, paths in CROP_SETS.items():
+    print(f"\\n=== {set_name} ({len(paths)} crops) ===")
+    print("  sample:", repr(read_batch(paths[:1])[0])[:140])
+
+    results = {}
+    for size in THROUGHPUT_BATCHES:
+        n = min(THROUGHPUT_CROPS, len(paths))
+        started, done = time.time(), 0
+        try:
+            for i in range(0, n, size):
+                read_batch(paths[i:i + size])
+                done += len(paths[i:i + size])
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            print(f"  batch {size:>3}: out of memory, skipped")
+            continue
+        torch.cuda.synchronize()
+        seconds = time.time() - started
+        results[size] = done / seconds
+        print(f"  batch {size:>3}: {done} crops in {seconds:6.1f}s = {results[size]:5.2f} boxes/sec")
+    if not results:
+        continue
+    best = max(results, key=results.get)
+    RATES[set_name] = (results[best], best)
+    print(f"  best {results[best]:.2f} boxes/sec at batch {best}")
+
+    # Every crop read, so quality can be scored against Vision rather than assumed.
+    out, started = {}, time.time()
+    for i in range(0, len(paths), best):
+        chunk = paths[i:i + best]
+        try:
+            for path, text in zip(chunk, read_batch(chunk)):
+                out[os.path.basename(path)] = text
+        except Exception as exc:
+            print(f"  batch at {i} failed: {type(exc).__name__}: {exc}")
+    READINGS[set_name] = out
+    with open(f"/kaggle/working/readings_{set_name}.json", "w", encoding="utf-8") as handle:
+        json.dump(out, handle, ensure_ascii=False)
+    print(f"  read {len(out)} crops in {time.time()-started:.0f}s")""",
+    ),
+    (
+        CODE,
+        """ELECTORS = 24_958_139
+print(f"gpu: {torch.cuda.get_device_name(0)}   runtime: {RUNTIME}\\n")
+print(f"   {'crops'::<8}{'boxes/s':>9}{'batch':>7}{'GPU-hours':>12}{'at $0.11/hr':>13}")
+for set_name, (rate, batch) in RATES.items():
+    hours = ELECTORS / rate / 3600
+    print(f"   {set_name:<8}{rate:>9.2f}{batch:>7}{hours:>12,.0f}"
+          f"{'$' + format(hours * 0.11, ',.0f'):>13}")
+if len(RATES) == 2:
+    speedup = RATES["band"][0] / RATES["box"][0]
+    print(f"\\n   the name band is {speedup:.2f}x the whole box "
+          f"(prefill arithmetic said 5.0x)")
+print(f"\\n   Cloud Vision reads the same 25M electors for $368.")
+print("   A rate is worth nothing until readings_band.json is scored against Vision:")
+print("   a band that clips a matra is fast and wrong.")""",
     ),
 ]
 
