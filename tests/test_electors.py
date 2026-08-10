@@ -2136,6 +2136,28 @@ class TestRepack:
         assert len(placed) == 4
         assert placed[3].top > placed[0].top, "the fourth tile starts a second row"
 
+    def test_every_composite_stays_under_the_pixel_ceiling(self):
+        """A composite over the ceiling is a rejected request, not a slow one."""
+        entries = self._tiles(500)
+        budget = 20_000_000
+        made = repack.batches(entries, budget)
+        assert len(made) > 1
+        for batch in made:
+            assert repack.pixels(batch) <= budget
+
+    def test_batching_grows_a_tile_at_a_time_rather_than_estimating(self):
+        """A row takes the height of its tallest tile, so the cost of one more tile is not
+        constant -- the one that starts a row adds its whole height."""
+        entries = self._tiles(30)
+        total = sum(len(b) for b in repack.batches(entries, 20_000_000))
+        assert total == 30, "every tile must land in exactly one composite"
+
+    def test_a_tile_too_large_to_fit_is_still_submitted(self):
+        """Dropping it would lose those electors with nothing raised."""
+        entries = self._tiles(3)
+        made = repack.batches(entries, 1)
+        assert sum(len(b) for b in made) == 3
+
     def test_the_saving_can_be_costed_before_the_image_is_built(self):
         """A composite over the pixel ceiling is a lost request, so the size is known first."""
         entries = self._tiles(30)

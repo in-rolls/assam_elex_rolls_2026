@@ -127,6 +127,33 @@ def words_for(placed: Sequence[Placed], words: Sequence[Any]) -> Dict[Tuple[int,
     return out
 
 
+def batches(
+    entries: Sequence[Tuple[Any, Tuple[int, int, int, int], Any]], budget: int
+) -> List[List[Tuple[Any, Tuple[int, int, int, int], Any]]]:
+    """Split tiles into composites that each fit under the pixel ceiling.
+
+    Grown one tile at a time and measured with :func:`pixels`, rather than divided by an
+    estimated tiles-per-image. A row takes the height of its tallest tile, so the cost of adding
+    one is not constant -- the tile that starts a new row adds its whole height to the total.
+    An estimate would be right on average and over the ceiling sometimes, and a composite over
+    the ceiling is a rejected request rather than a slow one.
+
+    A single tile too large to fit goes alone; it is still submitted, because dropping it would
+    silently lose those electors.
+    """
+    out: List[List[Any]] = []
+    current: List[Any] = []
+    for entry in entries:
+        if current and pixels(current + [entry]) > budget:
+            out.append(current)
+            current = [entry]
+        else:
+            current.append(entry)
+    if current:
+        out.append(current)
+    return out
+
+
 def pixels(entries: Sequence[Tuple[Any, Tuple[int, int, int, int], Any]]) -> int:
     """What a composite of these tiles would cost in pixels, before building it."""
     if not entries:

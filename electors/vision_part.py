@@ -25,7 +25,7 @@ from PIL import Image
 
 from assam_rolls import render, schema
 
-from . import extract, grid, pages
+from . import extract, grid, pages, repack
 from . import summary as summary_page
 from . import vision
 
@@ -121,6 +121,96 @@ def _page_text(words: Sequence[vision.Word], image: Image.Image) -> str:
     return "\n".join(vision.grouped_lines(words, 0, image.width))
 
 
+def tiles_for(
+    images: Sequence[Image.Image],
+) -> Tuple[List[Tuple[Image.Image, Tuple[int, int, int, int], Tuple[int, int, int]]], Dict]:
+    """Every box's text lines as a tile, plus what the CPU needs to read for itself.
+
+    Only the four labelled lines go to Vision. Three other things are read here on hardware
+    already paid for, because none of them is worth a paid pixel:
+
+    - the **EPIC**, which sits to the right of ``text_right`` in the photo column. Including it
+      would mean submitting the full box width and giving back most of the saving; tesseract
+      ``eng`` reads it at 96.6% on the AC1 run.
+    - the **section header**, which decides whether serials restart.
+    - the **closing summary**, which is the number every completeness check is measured against.
+    """
+    from . import crops as crop_module
+
+    entries: List[Tuple[Image.Image, Tuple[int, int, int, int], Tuple[int, int, int]]] = []
+    side: Dict[str, Any] = {"pages": {}, "unknown": [], "summary": None}
+
+    for index, image in enumerate(images, start=1):
+        signature = pages.classify(image, index)
+        if signature.kind is pages.PageKind.UNKNOWN:
+            side["unknown"].append(index)
+            continue
+        if signature.kind is pages.PageKind.SUMMARY and side["summary"] is None:
+            side["summary"] = _summary_from(image)
+        if not signature.is_elector:
+            continue
+        boxes = grid.build(signature.h_rules, signature.v_rules)
+        if not boxes:
+            side["unknown"].append(index)
+            continue
+
+        section, recognised = pages.section_of(_header_strip_text(image, boxes))
+        side["pages"][index] = {"section": section, "recognised": recognised, "boxes": {}}
+        for box in boxes:
+            if not grid.has_ink(image, box):
+                continue
+            bands = grid.text_bands(image, box)
+            if not bands:
+                continue
+            top = crop_module.band_window(bands, 0, box)[0]
+            bottom = crop_module.band_window(bands, len(bands) - 1, box)[1]
+            key = (index, box.row, box.column)
+            entries.append((image, (box.left, top, box.text_right, bottom), key))
+            side["pages"][index]["boxes"][key] = _header_of(image, box)
+    return entries, side
+
+
+def _header_of(image: Image.Image, box: grid.Box) -> str:
+    """The serial and EPIC strip, read with the English model.
+
+    ``asm`` renders ``HHK0001471`` as ``1414140001471`` -- it is trained on a script with no
+    Latin letters and maps them onto lookalike digits.
+    """
+    from assam_rolls import ocr
+
+    top = box.top
+    bottom = min(box.bottom, box.top + int((box.bottom - box.top) * 0.22))
+    try:
+        engine = ocr.get_engine("tesseract", lang="eng")
+        return engine._run(image.crop((box.left, top, box.right, bottom)), "eng", None, 2, psm=7)
+    except Exception:
+        return ""
+
+
+def _header_strip_text(image: Image.Image, boxes: Sequence[grid.Box]) -> str:
+    top = min(boxes[0].top, int(image.height * 0.09))
+    if top <= 0:
+        return ""
+    from assam_rolls import ocr
+
+    try:
+        engine = ocr.get_engine("tesseract", lang="asm")
+        return engine._run(image.crop((0, 0, image.width, top)), "asm", None, 1, psm=6)
+    except Exception:
+        return ""
+
+
+def _summary_from(image: Image.Image):
+    """The closing totals, read on the CPU and only kept if the arithmetic balances."""
+    from assam_rolls import ocr
+
+    try:
+        engine = ocr.get_engine("tesseract", lang="asm")
+        return summary_page.read(engine, image)
+    except Exception:
+        return None
+
+
 def rasterize(dpi: int) -> Callable[[bytes, Path], List[Image.Image]]:
     """A renderer that rasterizes every page at ``dpi``."""
 
@@ -170,6 +260,103 @@ def read_part(
     except (subprocess.CalledProcessError, OSError, RuntimeError, ValueError) as exc:
         result.error = f"{type(exc).__name__}: {exc}"
     return result
+
+
+def read_repacked(
+    zip_path: Path,
+    pdf_name: str,
+    api_key: str,
+    renderer: Optional[Callable[[bytes, Path], List[Image.Image]]] = None,
+) -> extract.PartResult:
+    """One part, submitting only the text lines and nothing else.
+
+    Same engine, same pixels of text, same parser as :func:`read_part` -- only the packing
+    differs, which is why the two must agree almost exactly and any real gap is a mapping bug.
+    """
+    meta = schema.parse_source_filename(pdf_name) or {}
+    pdf_bytes = render.read_pdf_bytes(zip_path, pdf_name)
+    result = extract.PartResult(
+        ac_no=meta.get("ac_no", 0),
+        part_no=meta.get("part_no", 0),
+        lang=meta.get("lang", ""),
+        source_zip=zip_path.name,
+        source_pdf=pdf_name,
+        pdf_sha256=render.sha256_bytes(pdf_bytes),
+    )
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            images = (renderer or rasterize(extract.DPI))(pdf_bytes, Path(tmp))
+            result.page_count = len(images)
+            entries, side = tiles_for(images)
+            result.unknown_pages = side["unknown"]
+            if side["summary"] is not None:
+                closing = side["summary"]
+                result.summary_male = closing.male
+                result.summary_female = closing.female
+                result.summary_third = closing.third
+                result.summary_total = closing.total
+
+            words: Dict[Tuple[int, int, int], List[vision.Word]] = {}
+            budget = int(vision.MAX_PIXELS * vision.PIXEL_MARGIN)
+            for batch in repack.batches(entries, budget):
+                words.update(_read_composite(batch, api_key))
+                result.images_billed += 1
+
+            _fill_repacked(result, side, words, meta)
+            for image in images:
+                image.close()
+    except (subprocess.CalledProcessError, OSError, RuntimeError, ValueError) as exc:
+        result.error = f"{type(exc).__name__}: {exc}"
+    return result
+
+
+def _read_composite(batch: Sequence, api_key: str) -> Dict[Tuple[int, int, int], List]:
+    composite, placed = repack.compose(batch)
+    responses = vision.annotate([composite], api_key=api_key)
+    if not responses:
+        raise RuntimeError("no response for a composite")
+    return repack.words_for(placed, vision.words_from(responses[0]))
+
+
+def _fill_repacked(
+    result: extract.PartResult,
+    side: Dict[str, Any],
+    words: Dict[Tuple[int, int, int], List],
+    meta: Dict[str, Any],
+) -> None:
+    """Rows from the tiles' words, in page order, with the serial counted the same way."""
+    serial = 0
+    current_section = pages.Section.MAIN
+    for index in sorted(side["pages"]):
+        page = side["pages"][index]
+        result.elector_pages += 1
+        if not page["recognised"]:
+            result.unrecognised_headers.append(index)
+        section = page["section"]
+        if section is not pages.Section.MAIN:
+            result.supplement_pages.append(index)
+        if section is not current_section:
+            current_section, serial = section, 0
+
+        for key in sorted(page["boxes"]):
+            found = words.get(key, [])
+            if not found:
+                continue
+            width = max((w.right for w in found), default=0) + 1
+            body = vision.lines_by_position(found, 0, width)
+            # The header strip never went to Vision -- the EPIC is outside the text column, and
+            # tesseract's English model reads it for nothing on hardware already paid for.
+            elector = vision.elector_from([page["boxes"][key]], body)
+            if elector.is_empty:
+                elector.flags.append("unreadable")
+            serial += 1
+            elector.serial_no = serial
+            box = grid.Box(
+                row=key[1], column=key[2], left=0, top=0, right=0, bottom=0, text_right=0
+            )
+            result.electors.append(
+                extract._row(result, elector, page=index, box=box, meta=meta, section=section)
+            )
 
 
 def _fill(
