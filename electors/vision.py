@@ -27,7 +27,12 @@ import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
+
+from assam_rolls import schema
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle at runtime, needed only for annotations
+    from .fields import Elector
 
 ENDPOINT = "https://vision.googleapis.com/v1/images:annotate"
 
@@ -179,7 +184,7 @@ ASSAMESE = re.compile(r"[\u0980-\u09FF]")
 LINE_SHARE = 0.7
 
 
-def lines_by_position(words: Sequence[Word], left: int, right: int) -> List[str]:
+def grouped_lines(words: Sequence[Word], left: int, right: int) -> List[str]:
     """Group words into lines from their own coordinates, with no band finder involved.
 
     This is the point of using an engine that returns geometry. Every line of text in this
@@ -212,13 +217,30 @@ def lines_by_position(words: Sequence[Word], left: int, right: int) -> List[str]
     for row in rows:
         row.sort(key=lambda w: w.left)
         out.append(" ".join(w.text for w in row))
-
-    # Drop the header strip. It carries the serial and the EPIC -- Latin and digits -- and the
-    # four lines that matter are Assamese. Left in, it becomes line one and every field after it
-    # is read one line down, which cost the name on half the boxes.
-    while out and not ASSAMESE.search(out[0]):
-        out.pop(0)
     return out
+
+
+def header_and_body(words: Sequence[Word], left: int, right: int) -> Tuple[List[str], List[str]]:
+    """A box split into its header strip and the Assamese lines under it.
+
+    The header carries the serial and the EPIC, which are Latin and digits; the four lines that
+    matter are Assamese. The split is by script rather than by position because the strip is
+    one line on most boxes and two on some, and a fixed count got the second kind wrong.
+    """
+    lines = grouped_lines(words, left, right)
+    split = 0
+    while split < len(lines) and not ASSAMESE.search(lines[split]):
+        split += 1
+    return lines[:split], lines[split:]
+
+
+def lines_by_position(words: Sequence[Word], left: int, right: int) -> List[str]:
+    """The Assamese lines of a box, in reading order.
+
+    Left in, the header becomes line one and every field after it is read one line down, which
+    cost the name on half the boxes.
+    """
+    return header_and_body(words, left, right)[1]
 
 
 def annotate(
@@ -260,6 +282,55 @@ def annotate(
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:400]
         raise RuntimeError(f"vision {exc.code}: {detail}") from exc
+
+
+def elector_from(header: Sequence[str], body: Sequence[str]) -> "Elector":
+    """One elector from the lines Vision returned for its box.
+
+    Deliberately routed through :mod:`electors.second_pass` rather than through
+    ``fields.assemble``. The two differ in where the fields come from: ``assemble`` calls
+    ``assign_bands``, which infers what a line *is* from its position among the others, while
+    ``second_pass`` reads the printed labels. Vision's 72% exact names was measured on the
+    label-reading path, and routing the pipeline through the position-inferring one would
+    publish a number that was never measured.
+
+    Values are then put through the same cleaners the tesseract path uses -- ``strip_foreign``,
+    ``EPIC_RE`` -- so a flag means the same thing whichever engine produced the row.
+    """
+    from . import fields as fields_module
+    from . import second_pass
+
+    found = second_pass.Reading("\n".join(body)).fields()
+    elector = fields_module.Elector()
+
+    elector.name, uncertain = fields_module.strip_foreign(found.get("name", ""))
+    if uncertain:
+        elector.flags.append("name_repaired")
+    elector.relation_name, uncertain = fields_module.strip_foreign(found.get("relation_name", ""))
+    if uncertain:
+        elector.flags.append("relation_repaired")
+    elector.relation_type = found.get("relation_type", "")
+    elector.house_no = found.get("house_no", "")
+    elector.age = found.get("age")
+    elector.sex = found.get("sex", "")
+
+    strip = " ".join(header)
+    match = fields_module.EPIC_RE.search(fields_module.NON_ALNUM.sub("", strip).upper())
+    elector.epic_no = match.group() if match else ""
+    serial = re.findall(r"\d{1,4}", schema.normalize_digits(strip))
+    if serial:
+        elector.serial_no_ocr = int(serial[0])
+
+    if not elector.is_empty:
+        for value, flag in (
+            (elector.epic_no, "no_epic"),
+            (elector.name, "no_name"),
+            (elector.age, "no_age"),
+            (elector.sex, "no_sex"),
+        ):
+            if not value:
+                elector.flags.append(flag)
+    return elector
 
 
 def cost(images: int) -> float:

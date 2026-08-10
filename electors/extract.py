@@ -84,6 +84,10 @@ class PartResult:
     summary_female: Optional[int] = None
     summary_third: Optional[int] = None
     summary_total: Optional[int] = None
+    #: Images submitted to a per-image engine. Zero for tesseract, which bills nothing, and the
+    #: unit the Cloud Vision bill is actually in -- eight pages stacked into one image is one
+    #: image here and one image on the invoice.
+    images_billed: int = 0
     error: str = ""
 
     @property

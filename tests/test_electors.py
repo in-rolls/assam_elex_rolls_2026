@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import random
 
+import pytest
+
 from electors import (
     against,
     bench,
@@ -24,6 +26,7 @@ from electors import (
     timing,
     validate,
     vision,
+    vision_part,
 )
 
 #: One real elector page from part 1, at 400 dpi. Vertical rules come in clusters because
@@ -1643,6 +1646,124 @@ class TestVisionWordMapping:
         assert vision.lines_in(words, [(5, 35)], left=0, right=45) == ["নাম"]
 
 
+class TestVisionPageMapping:
+    """A word on page two of a stack has to come back to page two.
+
+    Unshifted it lands in whichever box sits at that height on page one -- a plausible wrong
+    answer on every page but the first, with nothing raised and nothing to notice.
+    """
+
+    @staticmethod
+    def _response(words):
+        boxed = [
+            {
+                "symbols": [{"text": text}],
+                "boundingBox": {
+                    "vertices": [
+                        {"x": 10, "y": top},
+                        {"x": 90, "y": top},
+                        {"x": 90, "y": top + 20},
+                        {"x": 10, "y": top + 20},
+                    ]
+                },
+            }
+            for text, top in words
+        ]
+        return {"fullTextAnnotation": {"pages": [{"blocks": [{"paragraphs": [{"words": boxed}]}]}]}}
+
+    def _run(self, monkeypatch, words, pages=3, height=100, per_image=8):
+        from PIL import Image
+
+        captured = {}
+
+        def fake_annotate(images, api_key, **kw):
+            captured["images"] = list(images)
+            return [self._response(words) for _ in images]
+
+        monkeypatch.setattr(vision, "annotate", fake_annotate)
+        images = [Image.new("L", (200, height), "white") for _ in range(pages)]
+        found, billed = vision_part.words_per_page(images, api_key="x", pages_per_image=per_image)
+        return found, billed, captured
+
+    def test_each_page_gets_the_words_that_sit_on_it(self, monkeypatch):
+        found, _, _ = self._run(monkeypatch, [("এক", 10), ("দুই", 110), ("তিনি", 210)])
+        assert [[w.text for w in page] for page in found] == [["এক"], ["দুই"], ["তিনি"]]
+
+    def test_words_come_back_in_their_own_page_coordinates(self, monkeypatch):
+        """Page two's word sits at y=110 in the stack and at y=10 on its own page."""
+        found, _, _ = self._run(monkeypatch, [("এক", 10), ("দুই", 110)])
+        assert found[0][0].top == 10
+        assert found[1][0].top == 10
+
+    def test_the_last_page_keeps_words_below_the_final_offset(self, monkeypatch):
+        """An open-ended last band. Bounded by the offset of a page that does not exist, the
+        bottom page would come back empty."""
+        found, _, _ = self._run(monkeypatch, [("শেষ", 250)], pages=3)
+        assert [w.text for w in found[2]] == ["শেষ"]
+
+    def test_pages_are_stacked_and_billed_as_one_image(self, monkeypatch):
+        """The whole reason to use Vision: it bills per image, not per page."""
+        _, billed, captured = self._run(monkeypatch, [("এক", 10)], pages=8, per_image=8)
+        assert billed == 1
+        assert len(captured["images"]) == 1
+        assert captured["images"][0].height == 800
+
+    def test_a_part_longer_than_one_stack_is_billed_per_stack(self, monkeypatch):
+        found, billed, _ = self._run(monkeypatch, [("এক", 10)], pages=9, per_image=8)
+        assert billed == 2
+        assert len(found) == 9
+
+    def test_an_oversized_stack_is_refused_before_a_request_is_spent(self, monkeypatch):
+        from PIL import Image
+
+        def fail(*a, **k):
+            raise AssertionError("a request was sent for a stack that would be rejected")
+
+        monkeypatch.setattr(vision, "annotate", fail)
+        huge = [Image.new("L", (9000, 9000), "white") for _ in range(2)]
+        with pytest.raises(ValueError, match="pixels"):
+            vision_part.words_per_page(huge, api_key="x", pages_per_image=2)
+
+    def test_cost_is_counted_in_images_not_pages(self):
+        """A 30-page part is four images, and the state is $173 rather than $1,400."""
+        assert vision_part.parts_cost([30], pages_per_image=8) == pytest.approx(
+            4 / 1000 * vision.COST_PER_1000
+        )
+
+
+class TestVisionPipelineMatchesWhatWasScored:
+    """The pipeline must build electors the same way the accuracy was measured.
+
+    Vision's 72% exact names came from ``second_pass``, which reads the printed labels. The
+    tesseract path uses ``assign_bands``, which infers what a line is from its position among
+    the others. Both are reasonable and they do not agree, so routing the pipeline through the
+    second one would publish a number nobody measured -- the same class of error as scoring two
+    engines at different token budgets, which reversed a ranking here once already.
+    """
+
+    @staticmethod
+    def _rows():
+        import json
+        from pathlib import Path
+
+        directory = Path(__file__).resolve().parent.parent / "dataset" / "eval"
+        sample = json.loads((directory / "sample.json").read_text(encoding="utf-8"))
+        return [row for row in sample if row.get("vision")]
+
+    def test_the_builder_agrees_with_the_scorer_on_every_box(self):
+        rows = self._rows()
+        assert rows, "dataset/eval carries no Vision output to check against"
+        for row in rows:
+            elector = vision.elector_from([], row["vision"].split("\n"))
+            built = {
+                "name": elector.name,
+                "age": elector.age,
+                "house": elector.house_no,
+                "sex": elector.sex,
+            }
+            assert built == evaluate.terse_fields(row["vision"]), row["key"]
+
+
 class TestParserScriptAndLines:
     """Two parser bugs the dots.ocr run exposed, both silent."""
 
@@ -1772,6 +1893,62 @@ class TestVisionLinesByPosition:
 
     def test_the_threshold_sits_on_the_measured_plateau(self):
         assert 0.6 <= vision.LINE_SHARE <= 0.8
+
+    def test_the_header_is_kept_when_it_is_asked_for(self):
+        """Dropped for the fields, needed for the EPIC. Same split, both sides returned."""
+        words = [self._w("HHK0001471", 5), self._w("খাদৰাম", 40)]
+        header, body = vision.header_and_body(words, 0, 200)
+        assert header == ["HHK0001471"]
+        assert body == ["খাদৰাম"]
+
+    def test_a_two_line_header_is_split_by_script_not_by_count(self):
+        words = [self._w("101", 5), self._w("HHK0001471", 25), self._w("খাদৰাম", 60)]
+        header, body = vision.header_and_body(words, 0, 200)
+        assert header == ["101", "HHK0001471"]
+        assert body == ["খাদৰাম"]
+
+
+class TestVisionElector:
+    """One elector out of the lines Vision returned for its box."""
+
+    def _lines(self, **over):
+        found = {
+            "name": "নাম : খাদৰাম ৰাভা",
+            "relation": "পিতাৰ নাম : গংগাৰাম ৰাভা",
+            "house": "ঘৰ নং : 20 ক",
+            "age": "বয়স : 45 লিঙ্গ : পুৰুষ",
+        }
+        found.update(over)
+        return [v for v in found.values() if v]
+
+    def test_every_field_comes_off_the_labels(self):
+        elector = vision.elector_from(["101 HHK0001471"], self._lines())
+        assert elector.name == "খাদৰাম ৰাভা"
+        assert elector.relation_name == "গংগাৰাম ৰাভা"
+        assert elector.relation_type == "father"
+        assert elector.house_no == "20 ক"
+        assert elector.age == 45
+        assert elector.sex == "M"
+        assert elector.epic_no == "HHK0001471"
+        assert elector.serial_no_ocr == 101
+
+    def test_the_epic_is_read_out_of_the_header_strip(self):
+        """It is Latin and digits, and it is the only field the body cannot supply."""
+        elector = vision.elector_from(["HHK 0001471"], self._lines())
+        assert elector.epic_no == "HHK0001471"
+
+    def test_a_missing_field_is_flagged_rather_than_invented(self):
+        elector = vision.elector_from(["101"], self._lines(age=""))
+        assert elector.age is None
+        assert "no_age" in elector.flags
+        assert "no_epic" in elector.flags
+
+    def test_an_empty_box_is_empty_and_carries_no_missing_field_flags(self):
+        """Flagging four missing fields on a box that has nothing in it buries the boxes that
+        do."""
+        elector = vision.elector_from([], [])
+        assert elector.is_empty
+        assert elector.flags == []
 
 
 class TestTruthAlignment:
