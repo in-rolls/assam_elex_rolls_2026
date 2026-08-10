@@ -111,6 +111,34 @@ def _bands(values: Sequence[int], threshold: float) -> List[Tuple[int, int]]:
 EDGE_TOLERANCE = 0.03
 
 
+#: How unequal three columns may be before they are not three columns.
+#:
+#: The publisher prints boxes of one width, so a real page's columns match to within a few
+#: pixels; 1.25 is loose enough that a missed edge does not disqualify a good page.
+COLUMN_WIDTH_RATIO = 1.25
+
+
+def _evenly_spread(edges: Sequence[Tuple[int, int]]) -> bool:
+    """Whether these columns are the same width, as printed columns are.
+
+    Only consulted where no dividers were found. That branch exists for a real page -- the last
+    page of a part draws no photo panels, and requiring the divider discarded those pages whole,
+    taking fourteen electors of part 5 with them -- but four rules anywhere will satisfy it, and
+    on the closing summary page they do.
+
+    At 400 dpi that page yields two vertical rules, the frame, and is correctly a summary. At
+    the scan's native size it yields four, and this branch built three columns of 745, 196 and
+    197 pixels with their dividers interpolated. The part then loses its closing total, which is
+    the number every completeness check is measured against, and gains about six rows of nothing.
+
+    A real page's columns are equal. That is the whole test.
+    """
+    widths = [right - left for left, right in edges]
+    if not widths or min(widths) <= 0:
+        return False
+    return max(widths) / min(widths) <= COLUMN_WIDTH_RATIO
+
+
 def column_triples(v_rules: Sequence[int]) -> List[Tuple[int, int, int]]:
     """Group vertical rules into ``(left, divider, right)`` per box column.
 
@@ -151,6 +179,8 @@ def column_triples(v_rules: Sequence[int]) -> List[Tuple[int, int, int]]:
     elif len(clusters) >= COLUMNS + 1:
         edges = [(clusters[i][-1], clusters[i + 1][0]) for i in range(COLUMNS)]
         dividers = [None] * COLUMNS
+        if not _evenly_spread(edges):
+            return []
     else:
         return []
 

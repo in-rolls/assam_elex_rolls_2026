@@ -100,6 +100,28 @@ class TestGridGeometry:
             assert left < divider < right
             assert right - left == 1004, "every box is the same width"
 
+    def test_a_page_with_no_dividers_still_gives_three_columns(self):
+        """The last page of a part prints no photo panels. Requiring the divider discarded
+        those pages whole, and part 5 came out fourteen electors short."""
+        bare = [28, 388, 407, 767, 786, 1146]
+        assert len(grid.column_triples(bare)) == grid.COLUMNS
+
+    def test_four_rules_that_are_not_columns_are_refused(self):
+        """The closing summary page at the scan's native size yields four vertical rules, and
+        the divider-less branch built columns of 745, 196 and 197 pixels out of them --
+        interpolating dividers that were never printed.
+
+        The part then loses its closing total, which is the number every completeness check is
+        measured against, and gains about six rows of nothing. A real page's columns are equal.
+        """
+        summary_page = [24, 769, 965, 1162]
+        assert grid.column_triples(summary_page) == []
+
+    def test_a_slightly_uneven_page_is_still_a_page(self):
+        """Loose enough that one missed edge does not disqualify a good page."""
+        nearly = [0, 300, 310, 600, 610, 890]
+        assert len(grid.column_triples(nearly)) == grid.COLUMNS
+
     def test_ten_rows_on_a_full_page(self):
         assert len(grid.row_bands(H_RULES)) == grid.ROWS
 
