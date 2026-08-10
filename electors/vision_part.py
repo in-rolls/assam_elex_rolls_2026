@@ -2,9 +2,10 @@
 
 The tesseract path in :mod:`electors.extract` is built around one page at a time, because that
 is the unit tesseract charges for. Vision charges per **image submitted**, so the unit here is
-eight pages stacked into one tall PNG, and the whole part is four or five calls rather than
-nine hundred process spawns. That is the difference between $1,400 and $173 for the state, and
-it is why this is a separate reader rather than an engine slotted into the existing one.
+several pages stacked into one tall PNG -- six at 300 dpi -- and a whole part is four or five
+calls rather than nine hundred process spawns. That is the difference between $1,400 and $215
+for the state, and it is why this is a separate reader rather than an engine slotted into the
+existing one.
 
 **No tesseract anywhere in it.** The section header and the closing summary were the two places
 the old path still needed a second engine, and Vision has already returned the words for both

@@ -2,14 +2,18 @@
 
 Vision charges for each **image submitted**, not for each page of source, so stacking pages
 into one tall PNG divides the bill by the stacking factor. ``in-rolls/google_vision_ocr`` uses
-exactly this and reports 12,694 pages for about $1.50. At 400 dpi four pages fit in one image
-under the 75 MP ceiling, which makes a constituency about **$1.80** against $6.75 sent one page
-at a time, and the whole state $366.
+exactly this and reports 12,694 pages for about $1.50.
 
-**And it needs no asynchronous API.** ``images:annotate`` takes 16 images per request at 1,800
-requests a minute, so a whole constituency is about 1,150 stacked images in 72 calls. The
-``asyncBatchAnnotate`` methods read and write Cloud Storage URIs and want a service account;
-they would buy nothing at this size.
+**Which makes render resolution the cost lever.** The source PDFs are 144 dpi scans -- no fonts,
+one 1187x1679 raster a page -- so anything above that is upsampling, and how much of it is done
+sets how many pages fit under the ceilings. Measured: 4.2 pages an image at 400 dpi and $327 for
+the state, 6.4 and $215 at 300 dpi, 31 and $45 at the scan's own size. 300 dpi scores within one
+box of 400 on every field and native does not, so 300 dpi is what runs.
+
+**And it needs no asynchronous API.** ``images:annotate`` takes 16 images per request, subject
+to the 40 MB payload ceiling, at 1,800 requests a minute. The ``asyncBatchAnnotate`` methods
+read and write Cloud Storage URIs and want a service account; they would buy nothing at this
+size.
 
 **The reason to want it is the coordinates, not the price.** Every other engine here was handed
 a crop and asked what it said, and this stage has spent its whole life fighting that direction:

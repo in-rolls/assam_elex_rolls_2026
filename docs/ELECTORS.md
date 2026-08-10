@@ -301,21 +301,58 @@ Scored on the 25 boxes every engine answered -- the only basis on which they can
 
 | | whole state | wall clock |
 |---|--:|---|
-| Cloud Vision, 4 pages per image at 400 dpi | **$366** | hours, ~15,000 requests |
+| Cloud Vision, 300 dpi | **$215** | hours |
 | Gemini Flash-Lite, batch | ~$1,500 | a day per batch |
 | dots.ocr, per box | $350–$10,400 in GPU rental | unmeasured; 7.9 years on this Mac |
 
-Cloud Vision reads as well, costs $366, needs no hardware, and is the only engine here whose
+Cloud Vision reads as well, costs $215, needs no hardware, and is the only engine here whose
 throughput at scale is a measured quantity rather than a guess spanning thirty-fold. **It runs
 the state.**
 
-**$366, not the $173 quoted earlier.** That figure assumed eight pages an image, which holds at
-300 dpi; this pipeline renders at 400, where a page is 15.5 MP and only four fit under Vision's
-75 MP ceiling. The stacking factor is now measured from the pages rather than assumed, because
-the constant that disagreed with the render resolution refused every part outright -- caught by
-the guard that checks a stack before spending a request, on the first real part it was pointed
-at. 300 dpi would halve the bill and has never been scored, so it is a $193 question waiting on
-a measurement rather than a saving.
+#### What resolution to feed it
+
+The part PDFs carry **no fonts at all**: 34 images, every page a single 1187x1679 raster. They
+are 144 dpi scans, so rendering at 400 dpi is a 2.78x upsample of pixels that already exist.
+Since Vision bills per *image submitted* and how many pages fit in one is set by their size,
+resolution is the whole cost lever -- and it had never been measured.
+
+Three arms, same parts, same parser, scored on the 25 hand-read boxes all of them returned:
+
+| field | 400 dpi | 300 dpi | native 1187x1679 |
+|---|--:|--:|--:|
+| name exactly right | **72%** | 68% | 56% |
+| name nearly right | **100%** | 96% | 88% |
+| age right | **100%** | 96% | 84% |
+| house no right | **88%** | **88%** | 52% |
+| sex right | **100%** | **100%** | **100%** |
+| pages per image | 4.2 | 6.4 | 31.0 |
+| **whole state** | $327 | **$215** | $45 |
+
+**300 dpi is within one box of 400 dpi on every field and saves $112.** 68% against 72% is a
+single box of twenty-five, and house numbers are identical.
+
+**Native is worse, and not by noise.** House numbers halve and names fall 16 points -- four of
+five fields degrade together, which is what separates a real effect from sampling error. A box
+is ~1000px wide at 400 dpi and ~395px at native, and the note in `extract.py` about conjuncts
+ceasing to be legible turns out not to have been only about tesseract. The $45 is real and so
+is what it costs.
+
+Set against that, `render.py` records that interpolating these scans invents ink badly enough to
+turn a "1" into a "4" for tesseract. Vision evidently does not mind: the upsampled arms win.
+Recorded because the prediction was the other way round.
+
+**Four API constraints, all found by running rather than by reading:**
+
+- **The 40 MB limit is on the request, not the image.** 20 MB per image was already checked;
+  sixteen 6 MB images are legal individually and 96 MB together. Batching by count rejected
+  every 400 dpi and 300 dpi part while letting native through, which would have become the
+  experiment's finding.
+- **`PAGES_PER_IMAGE = 8` is no limit of the API.** At native, 33 pages fit under the pixel
+  ceiling, and the constant -- not the ceiling -- was capping the cheapest arm.
+- **The stacking factor cannot be a constant.** Eight pages is right at 300 dpi and 124 MP at
+  400, against a 75 MP ceiling; it is measured from the pages now.
+- **Requests fail transiently.** DNS failures and broken pipes cost two arms of one run, so
+  `annotate` retries 5xx and network errors and never retries a 4xx.
 
 #### The fourth measurement artifact, and the one that decided this
 
