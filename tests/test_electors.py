@@ -1671,17 +1671,17 @@ class TestVisionPageMapping:
         ]
         return {"fullTextAnnotation": {"pages": [{"blocks": [{"paragraphs": [{"words": boxed}]}]}]}}
 
-    def _run(self, monkeypatch, words, pages=3, height=100, per_image=8):
+    def _run(self, monkeypatch, words, pages=3, height=100, per_image=8, width=200):
         from PIL import Image
 
-        captured = {}
+        captured = {"images": []}
 
         def fake_annotate(images, api_key, **kw):
-            captured["images"] = list(images)
+            captured["images"] += list(images)
             return [self._response(words) for _ in images]
 
         monkeypatch.setattr(vision, "annotate", fake_annotate)
-        images = [Image.new("L", (200, height), "white") for _ in range(pages)]
+        images = [Image.new("L", (width, height), "white") for _ in range(pages)]
         found, billed = vision_part.words_per_page(images, api_key="x", pages_per_image=per_image)
         return found, billed, captured
 
@@ -1725,10 +1725,46 @@ class TestVisionPageMapping:
             vision_part.words_per_page(huge, api_key="x", pages_per_image=2)
 
     def test_cost_is_counted_in_images_not_pages(self):
-        """A 30-page part is four images, and the state is $173 rather than $1,400."""
+        """A 30-page part is four images, and the state is hundreds rather than thousands."""
         assert vision_part.parts_cost([30], pages_per_image=8) == pytest.approx(
             4 / 1000 * vision.COST_PER_1000
         )
+
+    def test_the_stacking_factor_is_measured_from_the_pages(self, monkeypatch):
+        """It was the constant 8, which is right at 300 dpi. The pipeline renders at 400, where
+        eight pages is 124 MP against a 75 MP ceiling, and every part was refused.
+
+        Real 400-dpi dimensions, because that is the size the constant got wrong.
+        """
+        found, billed, captured = self._run(
+            monkeypatch, [("এক", 10)], pages=8, width=3400, height=4400, per_image=None
+        )
+        assert all(image.height * image.width <= vision.MAX_PIXELS for image in captured["images"])
+        assert billed == 2
+        assert len(found) == 8
+
+
+class TestVisionStackingFactor:
+    """How many pages fit in one image, derived rather than assumed."""
+
+    def test_a_400_dpi_page_stacks_four_deep(self):
+        """3,400 x 4,400 is a 400-dpi A4 page. Eight would be 120 MP."""
+        assert vision.pages_that_fit(3400, 4400) == 4
+
+    def test_a_300_dpi_page_stacks_to_the_ceiling(self):
+        """2,550 x 3,300 leaves room for more than eight, and eight is the API's own limit on
+        how much stacking is worth doing."""
+        assert vision.pages_that_fit(2550, 3300) == vision.PAGES_PER_IMAGE
+
+    def test_a_page_too_large_to_stack_still_goes_one_at_a_time(self):
+        """Refusing outright would lose the part; one page an image merely costs more."""
+        assert vision.pages_that_fit(9000, 9000) == 1
+
+    def test_the_stack_leaves_room_for_a_page_larger_than_the_median(self):
+        """The factor is chosen from the pages in hand, and a supplement page renders taller.
+        Filling the ceiling exactly would have a later page tip a stack over it."""
+        fit = vision.pages_that_fit(3400, 4400)
+        assert fit * 3400 * 4400 <= vision.MAX_PIXELS * vision.PIXEL_MARGIN
 
 
 class TestVisionPipelineMatchesWhatWasScored:

@@ -43,9 +43,29 @@ MAX_PIXELS = 75_000_000
 #: Images per ``images:annotate`` request.
 IMAGES_PER_REQUEST = 16
 
-#: Pages stacked into one image. Eight 300-dpi pages is 69.6 MP, inside the 75 MP ceiling with
-#: margin for a page that renders larger than the median.
+#: Most pages that may be stacked into one image, whatever their size allows. A ceiling, not a
+#: target: :func:`pages_that_fit` decides the real number from the pages in hand.
 PAGES_PER_IMAGE = 8
+
+#: Fraction of the pixel ceiling a stack is allowed to use.
+#:
+#: Pages within a part vary -- a supplement page renders taller than a main-roll one -- and the
+#: stacking factor is chosen from the first pages seen. Filling the ceiling exactly would then
+#: have a later, larger page tip a stack over it and lose the part.
+PIXEL_MARGIN = 0.9
+
+
+def pages_that_fit(width: int, height: int, limit: int = MAX_PIXELS) -> int:
+    """How many pages of this size stack into one image without breaching the OCR ceiling.
+
+    Derived rather than assumed. This was the constant ``8``, which is right for 300 dpi -- and
+    the pipeline renders at 400, where eight pages is 124 MP against a 75 MP limit. Every part
+    would have been refused. The guard caught it before a request was spent, but the number had
+    no business being a guess when the pages are right there to measure.
+    """
+    per_page = max(1, width * height)
+    return max(1, min(PAGES_PER_IMAGE, int(limit * PIXEL_MARGIN) // per_page))
+
 
 #: Assamese first, Bengali second. They are one script, and naming both lets the recogniser use
 #: whichever lexicon fits -- the roll is Assamese but the letterforms are shared.

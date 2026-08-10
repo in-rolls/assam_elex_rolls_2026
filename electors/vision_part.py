@@ -18,7 +18,7 @@ from __future__ import annotations
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Sequence, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from PIL import Image
 
@@ -40,7 +40,7 @@ def _chunks(items: Sequence[Any], size: int) -> Iterator[Sequence[Any]]:
 def words_per_page(
     images: Sequence[Image.Image],
     api_key: str,
-    pages_per_image: int = vision.PAGES_PER_IMAGE,
+    pages_per_image: Optional[int] = None,
     images_per_request: int = vision.IMAGES_PER_REQUEST,
 ) -> Tuple[List[List[vision.Word]], int]:
     """Every page's words, and the number of images billed.
@@ -50,7 +50,16 @@ def words_per_page(
     on page two of a stack comes back in stack coordinates, and left unshifted it lands in
     whichever box happens to sit at that height on page one -- a plausible wrong answer on every
     page but the first.
+
+    The stacking factor is measured from the pages unless it is given, because it depends on the
+    render resolution and a constant that disagreed with it refused every part.
     """
+    if not images:
+        return [], 0
+    if pages_per_image is None:
+        widest = max(image.width for image in images)
+        tallest = max(image.height for image in images)
+        pages_per_image = vision.pages_that_fit(widest, tallest)
     stacks = [vision.stack_pages(group) for group in _chunks(images, pages_per_image)]
     for stack in stacks:
         problem = stack.check()
@@ -98,7 +107,7 @@ def read_part(
     zip_path: Path,
     pdf_name: str,
     api_key: str,
-    pages_per_image: int = vision.PAGES_PER_IMAGE,
+    pages_per_image: Optional[int] = None,
 ) -> extract.PartResult:
     """Extract every elector from one part PDF, using Cloud Vision for all of it."""
     meta = schema.parse_source_filename(pdf_name) or {}

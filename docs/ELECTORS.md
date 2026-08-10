@@ -301,13 +301,21 @@ Scored on the 25 boxes every engine answered -- the only basis on which they can
 
 | | whole state | wall clock |
 |---|--:|---|
-| Cloud Vision, 8 pages per image | **$173** | hours, ~7,200 requests |
+| Cloud Vision, 4 pages per image at 400 dpi | **$366** | hours, ~15,000 requests |
 | Gemini Flash-Lite, batch | ~$1,500 | a day per batch |
 | dots.ocr, per box | $350–$10,400 in GPU rental | unmeasured; 7.9 years on this Mac |
 
-Cloud Vision reads as well, costs $173, needs no hardware, and is the only engine here whose
+Cloud Vision reads as well, costs $366, needs no hardware, and is the only engine here whose
 throughput at scale is a measured quantity rather than a guess spanning thirty-fold. **It runs
 the state.**
+
+**$366, not the $173 quoted earlier.** That figure assumed eight pages an image, which holds at
+300 dpi; this pipeline renders at 400, where a page is 15.5 MP and only four fit under Vision's
+75 MP ceiling. The stacking factor is now measured from the pages rather than assumed, because
+the constant that disagreed with the render resolution refused every part outright -- caught by
+the guard that checks a stack before spending a request, on the first real part it was pointed
+at. 300 dpi would halve the bill and has never been scored, so it is a $193 question waiting on
+a measurement rather than a saving.
 
 #### The fourth measurement artifact, and the one that decided this
 
