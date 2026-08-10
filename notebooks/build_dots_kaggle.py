@@ -87,8 +87,14 @@ SUPPORTED = torch.cuda.get_arch_list()
 ARCH = f"sm_{CAPABILITY[0]}{CAPABILITY[1]}"
 print("torch was built for:", " ".join(SUPPORTED))
 if ARCH not in SUPPORTED:
-    print(f"\\n*** {ARCH} is NOT in that list. This GPU cannot run the installed torch. ***")
-    print("*** Re-run the notebook until Kaggle assigns a T4; the API cannot request one. ***")""",
+    # Raised here rather than left to fail later: the first CUDA op inside generate() dies with
+    # an opaque AcceleratorError three minutes and a 3 GB model download later. This costs 30
+    # seconds and says what to do.
+    raise SystemExit(
+        f"{ARCH} ({torch.cuda.get_device_name(0)}) is not in torch's arch list, so this GPU "
+        f"cannot run the installed torch. Kaggle assigns P100 or T4 at random and the API "
+        f"cannot ask for one -- resubmit until a T4 comes up."
+    )""",
     ),
     (
         CODE,
