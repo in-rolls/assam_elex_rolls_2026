@@ -718,11 +718,20 @@ def cmd_resolution(args: argparse.Namespace) -> int:
 
     from . import evaluate, resolution, vision
 
-    if args.load:
+    if args.load or args.dots:
+        from . import crops as crops_module
+
         loaded = evaluate.load(Path(args.truth)) if args.truth else None
-        print(
-            resolution.report(resolution.load(Path(args.load)), loaded["truth"] if loaded else None)
-        )
+        arms = resolution.load(Path(args.load)) if args.load else []
+        if args.dots:
+            # Readings from whatever GPU ran them, parsed with the same parser Vision's output
+            # goes through. Two parsers for one comparison would measure the parsers.
+            readings = json.loads(Path(args.dots).read_text(encoding="utf-8"))
+            arms = arms + crops_module.readings_to_arm(readings)
+        if not arms:
+            print("nothing to compare", file=sys.stderr)
+            return 1
+        print(resolution.report(arms, loaded["truth"] if loaded else None))
         return 0
 
     api_key = args.api_key or os.environ.get("VISION_API_KEY", "")
@@ -938,6 +947,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_res.add_argument("--arms", default="", help="comma-separated subset of the arms")
     p_res.add_argument("--save", default="", help="write the readings so analysis can be redone")
     p_res.add_argument("--load", default="", help="re-report saved readings, spending nothing")
+    p_res.add_argument(
+        "--dots",
+        default="",
+        help="dots_readings.json from the Kaggle notebook, compared as another arm",
+    )
     p_res.add_argument(
         "--stack",
         type=int,
