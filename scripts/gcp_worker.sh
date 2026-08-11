@@ -48,8 +48,8 @@ export OMP_NUM_THREADS=1
 # need to tell the difference.
 export PYTHONUNBUFFERED=1
 
-say "host $(hostname), $(nproc) vCPU, $(free -g | awk '/^Mem:/{print $2}') GB RAM"
-[ "$WORKERS" -eq 0 ] && WORKERS=$(nproc)
+say "host $(hostname), $(nproc --all) vCPU, $(free -g | awk '/^Mem:/{print $2}') GB RAM"
+[ "$WORKERS" -eq 0 ] && WORKERS=$(nproc --all)
 
 say "installing poppler, tesseract and python"
 export DEBIAN_FRONTEND=noninteractive
