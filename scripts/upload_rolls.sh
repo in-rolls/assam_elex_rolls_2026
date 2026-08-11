@@ -19,7 +19,14 @@ KEEP=${3:-}
 
 say() { echo "$(date +%H:%M:%S) | $*"; }
 
+# --watch keeps the loop alive so archives can be dropped into the directory while it runs.
+# Downloading 374 GB is days of somebody's attention in batches, and having to remember to
+# restart an uploader between batches is exactly the kind of step that gets forgotten at 2am.
+WATCH=""
+[ "${KEEP}" = "--watch" ] && { WATCH=yes; KEEP=""; }
+
 shopt -s nullglob
+while true; do
 # Version sort, so AC1 precedes AC10 precedes AC100. Plain glob order interleaves them, and the
 # worker walks its AC list in order -- a mismatch leaves it waiting on an archive that is queued
 # behind twenty others.
@@ -53,5 +60,10 @@ for path in $(ls -1 "$DIR"/*.zip 2>/dev/null | sort -V); do
     rm -f "$path"
     say "  verified and removed locally; $(df -h . | awk 'NR==2{print $4}') free"
   fi
+done
+  [ -z "$WATCH" ] && break
+  # A partially-downloaded file has no .zip extension yet, so an idle pass means the browser is
+  # between batches rather than mid-file.
+  sleep 60
 done
 say "done"
