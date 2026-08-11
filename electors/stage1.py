@@ -52,7 +52,8 @@ from . import crops, extract, pages, repack, summary, vision, vision_part
 #:          and all of a part's columns are built with ink deciding which hold an elector.
 #:          Together these recovered 625 rows in AC1 that reconciliation had reported missing.
 #: 2.2.0 -- a status code must be one of the five the roll defines in its own legend.
-STAGE1_VERSION = "2.2.0"
+#: 2.3.0 -- a closing page tesseract could not read is kept, so stage two can spend on it.
+STAGE1_VERSION = "2.3.0"
 
 
 @dataclass
@@ -169,6 +170,11 @@ def prepare_part(
                     )
 
             _write(part_dir / "placements.json", placements)
+            # The closing page tesseract could not read, left for stage two to buy a reading of.
+            if side.get("unread_summary") is not None:
+                side["unread_summary"].save(
+                    part_dir / "summary_page.png", format="PNG", optimize=True
+                )
             write_side(part_dir / "side.json", side)
             crops.write_manifest(written, part_dir, append=False)
             for image in images:

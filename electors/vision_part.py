@@ -141,7 +141,7 @@ def tiles_for(
     from . import crops as crop_module
 
     entries: List[Tuple[Image.Image, Tuple[int, int, int, int], Tuple[int, int, int]]] = []
-    side: Dict[str, Any] = {"pages": {}, "unknown": [], "summary": None}
+    side: Dict[str, Any] = {"pages": {}, "unknown": [], "summary": None, "unread_summary": None}
 
     # Classify every page first, then reconsider the ones that came out as anything but elector
     # pages. A part's last page can hold a single elector, and one page's rules cannot tell that
@@ -158,6 +158,16 @@ def tiles_for(
             continue
         if signature.kind is pages.PageKind.SUMMARY and side["summary"] is None:
             side["summary"] = _summary_from(image)
+            # Keep the page tesseract could not read, so stage two can spend on it. The closing
+            # row wraps across four lines because its description cell is tall, and the parser
+            # wants a balancing triple on one line -- so about a fifth of parts end up with no
+            # total, and therefore with no check on their extracted rows at all.
+            #
+            # Kept here rather than re-rendered later because this is the only moment the page
+            # is in memory, and a page is a few hundred kilobytes against the several gigabytes
+            # of composites this stage already writes.
+            if side["summary"] is None:
+                side["unread_summary"] = image.copy()
         if not signature.is_elector:
             continue
         boxes = grid.build(signature.h_rules, signature.v_rules, columns=signature.columns)

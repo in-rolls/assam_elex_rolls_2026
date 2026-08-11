@@ -102,6 +102,13 @@ def read_part(
         side = stage1.read_side(part_dir / "side.json")
         result.unknown_pages = list(side["unknown"])
         result.page_count = len(side["pages"]) + len(side["unknown"])
+        if side["summary"] is None:
+            # Bought only where the free reading failed, and only once: the words are cached
+            # beside the composites', so a later parser change re-reads them for nothing.
+            bought = summary_from_vision(part_dir, api_key, annotate)
+            if bought is not None:
+                side["summary"] = bought
+                result.images_billed += 1
         if side["summary"] is not None:
             closing = side["summary"]
             result.summary_male = closing.male
@@ -135,6 +142,53 @@ def read_part(
     except (OSError, RuntimeError, ValueError) as exc:
         result.error = f"{type(exc).__name__}: {exc}"
     return result
+
+
+def summary_from_vision(
+    part_dir: Path, api_key: str, annotate: Optional[Callable] = None
+) -> Optional[Any]:
+    """The closing totals for a part tesseract could not read, bought from Vision.
+
+    About a fifth of parts end up with no printed total, so a fifth of the dataset has **no
+    check on it at all** -- the rows are extracted and nothing says whether the right number of
+    them came out. The cause is not a hard page: it is that the closing row's description cell
+    wraps across four lines, and ``summary.parse`` wants a balancing triple on one line. The
+    numbers are there; tesseract reconstructs the line without them.
+
+    One image a part, on a fifth of parts: about $9 for the state, against $148 already spent on
+    the boxes. Cheap for taking validation from four parts in five to all of them.
+
+    The arithmetic still decides. A triple that does not balance is refused here exactly as it is
+    on the tesseract path, so a bought reading can no more replace a right answer with a
+    plausible wrong one than a free one could.
+    """
+    page = part_dir / "summary_page.png"
+    if not page.exists():
+        return None
+
+    from PIL import Image
+
+    from . import summary as summary_module
+
+    cached = cached_words(part_dir, page.name)
+    if cached is None:
+        with Image.open(page) as image:
+            image.load()
+            responses = (
+                annotate([image]) if annotate is not None else vision.annotate([image], api_key)
+            )
+        if not responses:
+            return None
+        cached = vision.words_from(responses[0])
+        save_words(part_dir, page.name, cached)
+
+    with Image.open(page) as image:
+        text = "\n".join(vision.grouped_lines(cached, 0, image.width))
+    found = summary_module.parse(text)
+    if not found:
+        return None
+    male, female, third, total = found
+    return summary_module.RollSummary(male=male, female=female, third=third, total=total, scale=1)
 
 
 def words_path(part_dir: Path, image: str) -> Path:
