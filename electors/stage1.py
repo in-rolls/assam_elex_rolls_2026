@@ -51,7 +51,8 @@ from . import crops, extract, pages, repack, summary, vision, vision_part
 #:          page's second row is no longer rejected by a gutter estimated from header rules,
 #:          and all of a part's columns are built with ink deciding which hold an elector.
 #:          Together these recovered 625 rows in AC1 that reconciliation had reported missing.
-STAGE1_VERSION = "2.1.0"
+#: 2.2.0 -- a status code must be one of the five the roll defines in its own legend.
+STAGE1_VERSION = "2.2.0"
 
 
 @dataclass

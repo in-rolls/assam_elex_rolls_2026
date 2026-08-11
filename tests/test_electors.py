@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 from pathlib import Path
 
 import pytest
@@ -2121,6 +2122,31 @@ class TestSectionMarkersAreWords:
     def test_an_unreadable_header_is_flagged_not_guessed(self):
         section, recognised = pages.section_of("qqq zzz")
         assert section is pages.Section.MAIN and not recognised
+
+
+class TestStatusCodesAreTheRollsOwn:
+    """The roll defines its own codes, in a legend at the foot of every closing page.
+
+        E-মৃত, S-স্থানান্তৰিত/ বাসস্থান পৰিবৰ্তন, R-প্ৰতিলিপি, M-নিখোজ, Q-অযোগ্য
+
+    Dead, shifted, duplicate, missing, ineligible. A closed set, which is what makes anything
+    else in that cell a misread digit rather than a marking -- and the difference between
+    detecting 5,167 struck-off entries in AC1 against an implied 3,816, and detecting 3,826.
+    """
+
+    @pytest.mark.parametrize(
+        "cell,code", [("E 15", "E"), ("S 134", "S"), ("R 3", "R"), ("M 7", "M"), ("Q 9", "Q")]
+    )
+    def test_each_code_the_roll_defines_is_read(self, cell, code):
+        found = re.match(rf"^\s*([{vision_part.STATUS_CODES}])[\s.]+\d", cell)
+        assert found and found.group(1) == code
+
+    @pytest.mark.parametrize("cell", ["# 139", "A 12", "H 5", "D 8", "2C", "13"])
+    def test_a_letter_outside_the_legend_is_a_mangled_digit(self, cell):
+        assert not re.match(rf"^\s*([{vision_part.STATUS_CODES}])[\s.]+\d", cell)
+
+    def test_the_legend_is_exactly_the_five(self):
+        assert set(vision_part.STATUS_CODES) == set("ESRMQ")
 
 
 class TestStruckOffEntries:

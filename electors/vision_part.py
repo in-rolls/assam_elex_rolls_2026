@@ -181,6 +181,12 @@ def tiles_for(
     return entries, side
 
 
+#: The letters the roll uses to mark an entry that is no longer a live elector, defined by its
+#: own legend: E dead, S shifted, R duplicate, M missing, Q ineligible. A closed set, so anything
+#: else in that cell is a misread digit rather than a marking.
+STATUS_CODES = "ESRMQ"
+
+
 #: The serial cell's own ruled borders, as fractions of the box. Measured off the rules rather
 #: than guessed: at 400 dpi a 1004x415 box rules that cell at x 15..328, y 15..77. Two earlier
 #: attempts at these numbers by eye read 0 of 30 serials.
@@ -218,12 +224,16 @@ def _header_of(image: Image.Image, box: grid.Box) -> Dict[str, str]:
     a fifth of them entirely.
 
     The **status code** is a letter the roll prints inside the serial cell, to the left of the
-    number: ``E   15`` where a live entry shows ``15``. Observed values are E, R, S, A and #, and
-    what each stands for is not established here. Every box carrying one also carries the
-    diagonal watermark, and the counts land near what the roll's own arithmetic implies -- 11
-    against an implied 10 for part 5, 28 against 24 for part 1 -- so a code is read as "not a
-    live elector" and :func:`electors.run.struck_off_check` reports the two numbers side by side
-    rather than either being trusted alone.
+    number: ``E   15`` where a live entry shows ``15``. The roll defines them itself, in a legend
+    at the foot of every closing page::
+
+        E-মৃত, S-স্থানান্তৰিত/ বাসস্থান পৰিবৰ্তন, R-প্ৰতিলিপি, M-নিখোজ, Q-অযোগ্য
+
+    dead, shifted, duplicate, missing, ineligible. All five mean the same thing for counting
+    purposes -- not a live elector -- and nothing outside that set is a code. Accepting any
+    letter read 5,167 across AC1 against 3,816 implied by the roll's own arithmetic, 34% over;
+    restricting to the five leaves 3,826, which is 0.3% over. The 1,341 rejected were #, A, H
+    and D: mangled digits, not markings.
 
     This is the signal because the watermark is not. Vision returns five Latin fragments from a
     whole 67 MP composite -- 'D', 'ED', 'RIZED' -- so reading the stamp itself finds nothing.
@@ -257,7 +267,7 @@ def _header_of(image: Image.Image, box: grid.Box) -> Dict[str, str]:
 
     # A code only counts when it is a lone letter *followed by* the serial. Anything else in this
     # cell is a mangled digit, and treating those as codes would mark live electors dead.
-    found = re.match(r"^\s*([A-Za-z#@*])[\s.]+\d", cell)
+    found = re.match(rf"^\s*([{STATUS_CODES}])[\s.]+\d", cell)
     return {
         "serial": re.sub(r"\D", "", cell),
         "epic": epic,
