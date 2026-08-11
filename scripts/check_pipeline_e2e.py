@@ -61,7 +61,7 @@ def main(stage_dir: Path, scratch: Path) -> int:
             api_key="",
             shard_dir=scratch / "shards",
             manifest=scratch / "manifest.json",
-            limit=5,
+            limit=None,
             log=lambda message: None,
         )
         print(run.render_report([first]))
@@ -74,7 +74,7 @@ def main(stage_dir: Path, scratch: Path) -> int:
             api_key="",
             shard_dir=scratch / "shards",
             manifest=scratch / "manifest.json",
-            limit=5,
+            limit=None,
             log=lambda message: None,
         )
         print(f"  parts cached before resume   {billed_before}")
@@ -96,6 +96,7 @@ def main(stage_dir: Path, scratch: Path) -> int:
     print(f"     rows traceable to bytes   {traceable:,}  ({traceable / len(rows):.1%})")
     print(f"     roll sections present     {sorted(s for s in sections if s)}")
     print(f"     manifest constituencies   {sorted(manifest)}")
+    print(f"     reconciled                {first.parts_matching}/{first.parts_measured} parts")
     print(
         f"     manifest AC1              {manifest['1']['rows']:,} rows, "
         f"{manifest['1']['parts_matching_roll']}/{manifest['1']['parts_measured']} reconciled"
@@ -104,7 +105,8 @@ def main(stage_dir: Path, scratch: Path) -> int:
     ok = (
         len(rows) == first.rows == again.rows
         and traceable == len(rows)
-        and first.parts_matching == first.parts_measured == 5
+        and first.parts_measured > 0
+        and first.parts_matching == first.parts_measured
     )
     print()
     print("  every property held" if ok else "  SOMETHING DID NOT HOLD")

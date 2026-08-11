@@ -953,10 +953,20 @@ def cmd_run(args: argparse.Namespace) -> int:
     from . import run as runner
     from . import vision
 
+    # Empty means application-default credentials, which is the preferred path -- on a VM that
+    # is the attached service account and no secret exists to leak.
     api_key = "" if args.prepare_only else os.environ.get("VISION_API_KEY", "")
-    if not api_key and not args.prepare_only:
-        print("VISION_API_KEY is not set (use --prepare-only to stop before Vision)")
-        return 1
+    if not args.prepare_only and not api_key:
+        try:
+            vision.bearer_token()
+        except Exception as exc:
+            print(
+                f"no Cloud Vision credentials: {type(exc).__name__}: {exc}\n"
+                "run 'gcloud auth application-default login', or set VISION_API_KEY, "
+                "or pass --prepare-only to stop before Vision",
+                file=sys.stderr,
+            )
+            return 1
     render.require_poppler()
 
     runs = []

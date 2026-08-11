@@ -376,14 +376,69 @@ def batch_images(encoded: Sequence[bytes]) -> List[List[int]]:
 RETRYABLE = (500, 502, 503, 504)
 
 
+#: OAuth scope for Cloud Vision. ``cloud-platform`` is what both a user's application-default
+#: credentials and a VM's attached service account carry.
+SCOPES = ("https://www.googleapis.com/auth/cloud-platform",)
+
+_credentials: Any = None
+_project: str = ""
+
+
+def bearer_token() -> str:
+    """An access token from application-default credentials, refreshed as needed."""
+    return auth_headers()["Authorization"].split(" ", 1)[1]
+
+
+def auth_headers() -> Dict[str, str]:
+    """Authorization for Cloud Vision, without an API key.
+
+    Preferred everywhere, and the only sane option on a rented VM: the instance's attached
+    service account is read from the metadata server, so no secret is written to the box, baked
+    into an image, or passed on a command line where it lands in shell history. The same call
+    resolves a developer's ``gcloud auth application-default login`` locally, so the code path
+    that runs on GCP is the one that was tested here.
+
+    The two credential kinds need different headers, which is worth the branch rather than a
+    setup instruction nobody will remember. A **user** credential has no project of its own, so
+    Google refuses the call outright -- "the API requires a quota project, which is not set by
+    default" -- until ``x-goog-user-project`` says who to bill. A **service account** already
+    belongs to a project and rejects the header unless it also holds ``serviceusage.services.use``.
+
+    The credentials object is kept because it holds the refresh token and its own expiry; minting
+    a fresh one per request would add a round trip to every call.
+    """
+    global _credentials, _project
+    import google.auth
+    from google.auth.transport.requests import Request
+
+    if _credentials is None:
+        _credentials, _project = google.auth.default(scopes=list(SCOPES))
+    if not _credentials.valid:
+        _credentials.refresh(Request())
+
+    headers = {"Authorization": f"Bearer {_credentials.token}"}
+    # A refresh token is what distinguishes a signed-in human from a service account.
+    quota = getattr(_credentials, "quota_project_id", None)
+    if not quota and getattr(_credentials, "refresh_token", None):
+        quota = _project
+    if quota:
+        headers["x-goog-user-project"] = quota
+    return headers
+
+
 def annotate(
     images: Sequence[Any],
-    api_key: str,
+    api_key: str = "",
     language_hints: Sequence[str] = LANGUAGE_HINTS,
     timeout: int = 180,
     attempts: int = 3,
 ) -> List[Dict[str, Any]]:
-    """Up to :data:`IMAGES_PER_REQUEST` images in one call, returned in submission order."""
+    """Up to :data:`IMAGES_PER_REQUEST` images in one call, returned in submission order.
+
+    Authenticates with an API key when one is given and with application-default credentials
+    otherwise. The credentials path is the default because a key in an environment variable is a
+    key in a process listing, a log line and a shell history.
+    """
     if len(images) > IMAGES_PER_REQUEST:
         raise ValueError(f"{len(images)} images exceeds the {IMAGES_PER_REQUEST} per request")
 
@@ -406,11 +461,11 @@ def annotate(
 
     last = ""
     for attempt in range(1, attempts + 1):
-        request = urllib.request.Request(
-            f"{ENDPOINT}?key={api_key}",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-        )
+        headers = {"Content-Type": "application/json"}
+        url = f"{ENDPOINT}?key={api_key}" if api_key else ENDPOINT
+        if not api_key:
+            headers.update(auth_headers())
+        request = urllib.request.Request(url, data=payload, headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=timeout) as handle:
                 return json.loads(handle.read()).get("responses", [])
