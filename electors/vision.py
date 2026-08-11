@@ -459,6 +459,10 @@ def elector_from(header: Sequence[str], body: Sequence[str]) -> "Elector":
     elector.age = found.get("age")
     elector.sex = found.get("sex", "")
 
+    # The watermark is stamped across the elector's own lines, so it arrives in the body rather
+    # than the header strip -- which is why it is looked for here and not beside the serial.
+    elector.deleted = fields_module.is_struck_off(" ".join(body).split())
+
     strip = " ".join(header)
     match = fields_module.EPIC_RE.search(fields_module.NON_ALNUM.sub("", strip).upper())
     elector.epic_no = match.group() if match else ""

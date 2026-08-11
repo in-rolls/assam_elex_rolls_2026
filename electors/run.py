@@ -48,6 +48,8 @@ class ACRun:
     parts_measured: int = 0
     parts_matching: int = 0
     residuals: List[Dict[str, Any]] = field(default_factory=list)
+    #: Watermarked deletions detected, against what the roll's own arithmetic implies.
+    struck_off: Dict[str, Any] = field(default_factory=dict)
     failed_parts: List[Dict[str, str]] = field(default_factory=list)
     stage1_seconds: float = 0.0
     stage2_seconds: float = 0.0
@@ -65,6 +67,8 @@ class ACRun:
             "parts_measured": self.parts_measured,
             "parts_matching_roll": self.parts_matching,
             "parts_failed": len(self.failed_parts),
+            "struck_off_detected": self.struck_off.get("detected"),
+            "struck_off_implied": self.struck_off.get("implied"),
             "images_billed": self.images_billed,
             "vision_usd": round(self.cost, 2),
             "stage1_seconds": round(self.stage1_seconds, 1),
@@ -192,6 +196,72 @@ def reconcile(work_dir: Path, rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     return {"measured": measured, "matching": matching, "residuals": residuals}
 
 
+def struck_off_check(
+    work_dir: Path, rows: Sequence[Dict[str, Any]], published: Dict[int, int]
+) -> Dict[str, Any]:
+    """What the roll's own arithmetic says was struck off, against what was detected.
+
+    A second route to the same number, sharing no code with the first. The detector reads a
+    watermark off the pixels; this derives the count from two numbers the publisher printed on
+    different pages and that this pipeline did not produce::
+
+        info-page net = main-list total + additions - struck off
+
+    So ``main + additions - net`` is how many entries should carry the stamp. Over the first 19
+    parts of AC1 that is 514, and part 4's 14 was confirmed by hand.
+
+    This matters because the watermark is the one field with no other check on it. A detector
+    that silently found nothing would look exactly like a roll with no deletions, and every
+    row would be published as a live elector. ``published`` maps part number to the info page's
+    ``electors_total``, from ``dataset/parts.jsonl.gz``.
+    """
+    counted: Dict[int, Dict[str, int]] = {}
+    for row in rows:
+        part = counted.setdefault(row["part_no"], {"main": 0, "extra": 0, "deleted": 0})
+        if row.get("roll_section", pages.Section.MAIN.value) == pages.Section.MAIN.value:
+            part["main"] += 1
+        else:
+            part["extra"] += 1
+        if row.get("deleted"):
+            part["deleted"] += 1
+
+    per_part: List[Dict[str, Any]] = []
+    for part_no, found in sorted(counted.items()):
+        net = published.get(part_no)
+        if net is None:
+            continue
+        implied = found["main"] + found["extra"] - net
+        per_part.append(
+            {
+                "part_no": part_no,
+                "detected": found["deleted"],
+                "implied": implied,
+                "diff": found["deleted"] - implied,
+            }
+        )
+    return {
+        "parts": len(per_part),
+        "detected": sum(p["detected"] for p in per_part),
+        "implied": sum(p["implied"] for p in per_part),
+        "per_part": per_part,
+    }
+
+
+def published_totals(ac_no: int, dataset: Path = Path("dataset/parts.jsonl.gz")) -> Dict[int, int]:
+    """Each part's published net elector count, from the info pages already extracted."""
+    import gzip
+
+    if not dataset.exists():
+        return {}
+    out: Dict[int, int] = {}
+    with gzip.open(dataset, "rt", encoding="utf-8") as handle:
+        for line in handle:
+            row = json.loads(line)
+            if row.get("ac_no") == ac_no and row.get("electors_total") is not None:
+                out[row["part_no"]] = row["electors_total"]
+    return out
+
+
 def run_ac(
     zip_path: Path,
     work_dir: Path,
@@ -257,6 +327,7 @@ def run_ac(
     run.parts_measured = found["measured"]
     run.parts_matching = found["matching"]
     run.residuals = found["residuals"]
+    run.struck_off = struck_off_check(work_dir, rows, published_totals(ac_no))
 
     path = output.write_shard(rows, ac_no, directory=shard_dir)
     run.shard = path.name
@@ -293,6 +364,16 @@ def render_report(runs: Sequence[ACRun]) -> str:
     unmeasured = sum(r.parts for r in ok) - measured
     if unmeasured:
         lines.append(f"   unmeasured            {unmeasured} parts, closing page unreadable")
+    detected = sum(r.struck_off.get("detected", 0) for r in ok)
+    implied = sum(r.struck_off.get("implied", 0) for r in ok)
+    if implied or detected:
+        lines.append(
+            f"   struck off            {detected:,} detected, {implied:,} implied by the "
+            f"roll's own arithmetic"
+        )
+        if implied and detected < implied * 0.8:
+            lines.append("   ^^ the watermark is being missed; those rows publish as live electors")
+
     residuals = [(r.ac_no, d) for r in ok for d in r.residuals]
     if residuals:
         lines.append("")

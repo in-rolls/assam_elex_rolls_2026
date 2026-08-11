@@ -278,6 +278,9 @@ COLUMNS = [
     "house_no",
     "age",
     "sex",
+    # Struck off the roll: printed, numbered and counted in the part's closing total, but no
+    # longer an elector. A row count is not an elector count until these are excluded.
+    "deleted",
     "lang",
     "roll_section",
     "page_no",

@@ -41,6 +41,9 @@ SCHEMA = pa.schema(
         ("house_no", pa.string()),
         ("age", pa.int32()),
         ("sex", pa.string()),
+        # Struck off the roll. Counted in the part's printed total, so a row count is not an
+        # elector count until these are excluded.
+        ("deleted", pa.bool_()),
         ("lang", pa.string()),
         ("roll_section", pa.string()),
         ("page_no", pa.int32()),

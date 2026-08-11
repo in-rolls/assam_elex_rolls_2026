@@ -141,6 +141,10 @@ class Elector:
     house_no: str = ""
     age: Optional[int] = None
     sex: str = ""
+    #: Struck off the roll: still printed, still numbered, still counted in the part's closing
+    #: total, but no longer an elector. A column rather than a flag, because anyone counting
+    #: electors has to be able to exclude these and flags are not where people look.
+    deleted: bool = False
     flags: List[str] = field(default_factory=list)
 
     @property
@@ -398,6 +402,45 @@ def sex_of(line: str) -> str:
         if ratio > score:
             best, score = code, ratio
     return best if score >= SEX_SIMILARITY else ""
+
+
+#: The watermark stamped across an entry struck off the roll, and the marker beside its serial.
+#: Latin, in a document that is otherwise entirely Assamese, which is what makes it findable.
+STRUCK_WORDS = ("DELETED",)
+
+#: How closely a token must resemble DELETED to count as the watermark.
+#:
+#: Looser than the sex threshold, and deliberately. The stamp is drawn diagonally in hollow
+#: outline *over* the elector's own text, so its glyphs are broken by whatever they cross --
+#: tesseract reads it as "OA TEBE" and cannot recover it at any rotation. A reading that keeps
+#: half the letters is still unambiguous here, because nothing else on these pages is Latin
+#: except the EPIC, which is excluded below.
+STRUCK_SIMILARITY = 0.55
+
+
+def is_struck_off(words: Sequence[str]) -> bool:
+    """Whether this box carries the DELETED watermark.
+
+    A struck-off entry stays printed, numbered and counted in the part's closing মূল তালিকা
+    total -- it is simply no longer an elector. Nothing here read it, so every such row was
+    published as live: 873 for the part whose roll says 850. Reconciliation cannot catch that,
+    because 873 is the number being reconciled to.
+
+    Scored against the whole token rather than searched for as a substring, for the same reason
+    :func:`sex_of` is: a substring test finds only the undamaged reads, and the damaged ones are
+    not a random sample of the rows.
+
+    The EPIC is skipped explicitly. It is the one other Latin string on the page and it is not
+    what this is looking for.
+    """
+    for word in words:
+        token = re.sub(r"[^A-Za-z]", "", word).upper()
+        if len(token) < 4 or EPIC_RE.fullmatch(word.strip()):
+            continue
+        for target in STRUCK_WORDS:
+            if difflib.SequenceMatcher(None, token, target).ratio() >= STRUCK_SIMILARITY:
+                return True
+    return False
 
 
 def _is_age_line(line: str) -> bool:

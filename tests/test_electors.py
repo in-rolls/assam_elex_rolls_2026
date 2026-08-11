@@ -2081,6 +2081,64 @@ class TestStackByteCeiling:
         assert vision.encoded_size(Image.new("L", (50, 50), "white")) > 0
 
 
+class TestStruckOffEntries:
+    """A struck-off elector stays printed, numbered and counted -- and is not an elector.
+
+    Part 1 publishes 873 boxes against a roll whose net is 850. Nothing read the DELETED
+    watermark, so all 873 went out as live electors. Reconciliation cannot catch this: 873 is
+    the number being reconciled *to*.
+    """
+
+    @pytest.mark.parametrize("token", ["DELETED", "DELETEO", "OELETED", "DELTED", "DELETED."])
+    def test_a_damaged_stamp_is_still_the_stamp(self, token):
+        """The stamp is hollow, diagonal and drawn over the elector's own text.
+
+        Its glyphs are broken by whatever they cross, so a substring test would find only the
+        clean reads -- and the damaged ones are not a random sample of the rows.
+        """
+        assert fields.is_struck_off([token])
+
+    def test_it_is_found_among_the_electors_own_words(self):
+        assert fields.is_struck_off("নাম : হাইনা বসুমাতাৰী DELETED".split())
+
+    @pytest.mark.parametrize("token", ["HHK0001464", "QTD0043265"])
+    def test_an_epic_is_not_mistaken_for_the_stamp(self, token):
+        """The EPIC is the only other Latin string on these pages."""
+        assert not fields.is_struck_off([token])
+
+    def test_assamese_never_triggers_it(self):
+        assert not fields.is_struck_off(["পুৰুষ", "মহিলা", "ফটো", "উপলব্ধ"])
+
+    def test_short_noise_never_triggers_it(self):
+        assert not fields.is_struck_off(["OA", "TEBE", "E", "15"])
+
+    def test_deleted_is_a_column_not_a_flag(self):
+        """Anyone counting electors has to exclude these, and flags are not where people look."""
+        assert "deleted" in output.COLUMNS
+
+    def test_the_roll_arithmetic_gives_an_independent_expected_count(self):
+        """net = main + additions - struck off, from two numbers printed on different pages.
+
+        The watermark is the one field with no other check on it. A detector that silently
+        found nothing would look exactly like a roll with no deletions.
+        """
+        rows = [{"part_no": 4, "roll_section": "main", "deleted": False} for _ in range(483)] + [
+            {"part_no": 4, "roll_section": "addition", "deleted": False} for _ in range(28)
+        ]
+        for row in rows[:14]:
+            row["deleted"] = True
+        found = run.struck_off_check(Path("."), rows, {4: 497})
+        assert found["implied"] == 14 and found["detected"] == 14
+        assert found["per_part"][0]["diff"] == 0
+
+    def test_a_detector_finding_nothing_is_visible_not_silent(self):
+        rows = [{"part_no": 1, "roll_section": "main", "deleted": False} for _ in range(873)]
+        rows += [{"part_no": 1, "roll_section": "addition", "deleted": False}]
+        found = run.struck_off_check(Path("."), rows, {1: 850})
+        assert found["implied"] == 24 and found["detected"] == 0
+        assert found["per_part"][0]["diff"] == -24
+
+
 class TestPartialLastPage:
     """The last page of a part holds whatever is left, and it used to be thrown away.
 
