@@ -145,6 +145,10 @@ class Elector:
     #: total, but no longer an elector. A column rather than a flag, because anyone counting
     #: electors has to be able to exclude these and flags are not where people look.
     deleted: bool = False
+    #: The letter the roll prints in the serial cell of an entry that is no longer live -- E, R,
+    #: S, A or #. Kept as printed: what each stands for is not established, and collapsing them
+    #: to a boolean would throw away the only evidence of the distinction.
+    status_code: str = ""
     flags: List[str] = field(default_factory=list)
 
     @property
@@ -672,6 +676,34 @@ SERIAL_FRACTION = 0.55
 #: Stripped before the EPIC is matched. A real read came back ``S 106 -, HHK3535/704``: the
 #: EPIC is plainly there and a stray slash inside the digits was enough to reject it.
 NON_ALNUM = re.compile(r"[^A-Za-z0-9]")
+
+#: Letters an OCR puts where a digit belongs, and the digit each one is.
+#:
+#: Applied **only past the third character** of an EPIC, where the format admits nothing but
+#: digits, so this can never turn a real letter into a number. Confining it that way is what
+#: makes it a repair rather than a guess: 91.0% of reads were already exactly three letters and
+#: seven digits, and almost every remainder was an ``HHKO001465`` for ``HHK0001465``.
+DIGIT_LOOKALIKES = str.maketrans({"O": "0", "Q": "0", "D": "0", "I": "1", "L": "1", "S": "5",
+                                  "B": "8", "Z": "2", "G": "6"})
+
+#: An EPIC as printed: three letters then seven digits.
+EPIC_SHAPE = re.compile(r"([A-Z]{3})([A-Z0-9]{7})")
+
+
+def repair_epic(text: str) -> str:
+    """The EPIC from a header read, with digit positions forced to digits.
+
+    The EPIC is the only globally unique field in the dataset -- it is what makes a row joinable
+    to anything outside it -- so a character lost to a lookalike costs more here than anywhere
+    else. The substitution is confined to the seven positions that cannot hold a letter, which
+    is why it does not need a confidence threshold.
+    """
+    cleaned = NON_ALNUM.sub("", text).upper()
+    found = EPIC_SHAPE.search(cleaned)
+    if found:
+        return found.group(1) + found.group(2).translate(DIGIT_LOOKALIKES)
+    found = EPIC_RE.search(cleaned)
+    return found.group() if found else ""
 
 
 #: How close two readings of the same band may be and still count as agreement.

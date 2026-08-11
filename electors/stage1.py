@@ -177,7 +177,7 @@ def write_side(path: Path, side: Dict[str, Any]) -> None:
                 str(number): {
                     "section": page["section"].value,
                     "recognised": page["recognised"],
-                    "boxes": {f"{k[1]},{k[2]}": text for k, text in page["boxes"].items()},
+                    "boxes": {f"{k[1]},{k[2]}": read for k, read in page["boxes"].items()},
                 }
                 for number, page in side["pages"].items()
             },
@@ -206,8 +206,8 @@ def read_side(path: Path) -> Dict[str, Any]:
                 "section": pages.Section(page["section"]),
                 "recognised": page["recognised"],
                 "boxes": {
-                    (int(number), int(k.split(",")[0]), int(k.split(",")[1])): text
-                    for k, text in page["boxes"].items()
+                    (int(number), int(k.split(",")[0]), int(k.split(",")[1])): read
+                    for k, read in page["boxes"].items()
                 },
             }
             for number, page in raw["pages"].items()

@@ -16,6 +16,7 @@ engine rather than adding a fallback.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -129,9 +130,11 @@ def tiles_for(
     Only the four labelled lines go to Vision. Three other things are read here on hardware
     already paid for, because none of them is worth a paid pixel:
 
-    - the **EPIC**, which sits to the right of ``text_right`` in the photo column. Including it
-      would mean submitting the full box width and giving back most of the saving; tesseract
-      ``eng`` reads it at 96.6% on the AC1 run.
+    - the **EPIC** and the serial, which sit to the right of ``text_right`` in the photo column.
+      Including them would mean submitting the full box width and giving back most of the
+      saving. Read from their own cells with tesseract ``eng``, the EPIC comes back well formed
+      on 96.7% of boxes -- against 62.3% for the single whole-strip pass this replaces, which
+      asked for a boxed serial and an EPIC as though they were one line.
     - the **section header**, which decides whether serials restart.
     - the **closing summary**, which is the number every completeness check is measured against.
     """
@@ -178,21 +181,88 @@ def tiles_for(
     return entries, side
 
 
-def _header_of(image: Image.Image, box: grid.Box) -> str:
-    """The serial and EPIC strip, read with the English model.
+#: The serial cell's own ruled borders, as fractions of the box. Measured off the rules rather
+#: than guessed: at 400 dpi a 1004x415 box rules that cell at x 15..328, y 15..77. Two earlier
+#: attempts at these numbers by eye read 0 of 30 serials.
+SERIAL_CELL = (0.020, 0.042, 0.325, 0.182)
 
-    ``asm`` renders ``HHK0001471`` as ``1414140001471`` -- it is trained on a script with no
-    Latin letters and maps them onto lookalike digits.
-    """
+#: Where the EPIC sits, as fractions of the box, with the right edge extended past it.
+#:
+#: The extension is the point. The EPIC is printed hard against the box's right rule, so cropping
+#: at the rule slices the last character -- ``HHK0001457`` came back as ``HHK000145/``. Forty
+#: pixels of margin costs nothing and takes the field from 88.9% to 96.7%; the whole-strip read
+#: this replaces managed 62.3%.
+EPIC_REGION = (0.55, 0.0, 1.0, 0.19)
+EPIC_PAD = 40
+
+
+def _read(image: Image.Image, rect: Tuple[int, int, int, int], psm: int) -> str:
     from assam_rolls import ocr
 
-    top = box.top
-    bottom = min(box.bottom, box.top + int((box.bottom - box.top) * 0.22))
     try:
         engine = ocr.get_engine("tesseract", lang="eng")
-        return engine._run(image.crop((box.left, top, box.right, bottom)), "eng", None, 2, psm=7)
+        return " ".join(engine._run(image.crop(rect), "eng", None, 2, psm=psm).split())
     except Exception:
         return ""
+
+
+def _header_of(image: Image.Image, box: grid.Box) -> Dict[str, str]:
+    """The serial, the EPIC and the status code, each read from its own cell.
+
+    Read with the English model: ``asm`` renders ``HHK0001471`` as ``1414140001471``, being
+    trained on a script with no Latin letters and mapping them onto lookalike digits.
+
+    Three crops rather than one. The old version OCR'd the whole strip in a single pass and got
+    62.3% well-formed EPICs over 14,486 boxes -- the boxed serial and the EPIC are different
+    kinds of thing sitting in different cells, and asking for both at once as a single line lost
+    a fifth of them entirely.
+
+    The **status code** is a letter the roll prints inside the serial cell, to the left of the
+    number: ``E   15`` where a live entry shows ``15``. Observed values are E, R, S, A and #, and
+    what each stands for is not established here. Every box carrying one also carries the
+    diagonal watermark, and the counts land near what the roll's own arithmetic implies -- 11
+    against an implied 10 for part 5, 28 against 24 for part 1 -- so a code is read as "not a
+    live elector" and :func:`electors.run.struck_off_check` reports the two numbers side by side
+    rather than either being trusted alone.
+
+    This is the signal because the watermark is not. Vision returns five Latin fragments from a
+    whole 67 MP composite -- 'D', 'ED', 'RIZED' -- so reading the stamp itself finds nothing.
+    """
+    width = box.right - box.left
+    height = box.bottom - box.top
+
+    left, top, right, bottom = SERIAL_CELL
+    cell = _read(
+        image,
+        (
+            box.left + int(width * left),
+            box.top + int(height * top),
+            box.left + int(width * right),
+            box.top + int(height * bottom),
+        ),
+        psm=7,
+    )
+
+    left, top, right, bottom = EPIC_REGION
+    epic = _read(
+        image,
+        (
+            box.left + int(width * left),
+            box.top + int(height * top),
+            min(image.width, box.left + int(width * right) + EPIC_PAD),
+            box.top + int(height * bottom),
+        ),
+        psm=7,
+    ).replace(" ", "")
+
+    # A code only counts when it is a lone letter *followed by* the serial. Anything else in this
+    # cell is a mangled digit, and treating those as codes would mark live electors dead.
+    found = re.match(r"^\s*([A-Za-z#@*])[\s.]+\d", cell)
+    return {
+        "serial": re.sub(r"\D", "", cell),
+        "epic": epic,
+        "code": found.group(1).upper() if found else "",
+    }
 
 
 def _header_strip_text(image: Image.Image, boxes: Sequence[grid.Box]) -> str:
@@ -354,7 +424,14 @@ def _fill_repacked(
             body = vision.lines_by_position(found, 0, width)
             # The header strip never went to Vision -- the EPIC is outside the text column, and
             # tesseract's English model reads it for nothing on hardware already paid for.
-            elector = vision.elector_from([page["boxes"][key]], body)
+            side_read = page["boxes"][key]
+            elector = vision.elector_from([side_read["epic"]], body)
+            # The roll's own markings, read from their own cells rather than inferred from the
+            # words: a status code means this entry is no longer a live elector.
+            elector.status_code = side_read.get("code", "")
+            elector.deleted = bool(elector.status_code)
+            if side_read.get("serial", "").isdigit():
+                elector.serial_no_ocr = int(side_read["serial"])
             if elector.is_empty:
                 elector.flags.append("unreadable")
             serial += 1

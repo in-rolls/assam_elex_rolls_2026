@@ -91,17 +91,22 @@ LIMIT=""
 [ "$PARTS" -gt 0 ] && LIMIT="--limit $PARTS"
 
 for AC in $ACS; do
-  NAME="AC${AC}_ASM.zip"
-  # Wait for the archive rather than skipping it. The upload from a laptop and the boot of this
-  # machine are independent, and an instance that starts first should idle for a few minutes
-  # instead of reporting the constituency missing and moving on -- which reads, later, exactly
-  # like a constituency that had nothing in it.
+  # Wait for the archive rather than skipping it, and do not assume its language. Barak Valley
+  # publishes in Bengali, so the folder holds AC116_BEN.zip beside AC1_ASM.zip and a hardcoded
+  # _ASM would report eleven real constituencies as missing. The upload from a laptop and the
+  # boot of this machine are also independent, and an instance that wins that race should idle
+  # rather than move on -- which reads, later, exactly like a constituency that had nothing in it.
+  NAME=""
   WAITED=0
-  until gsutil -q stat "$BUCKET/source/$NAME" 2>/dev/null; do
-    [ "$WAITED" -ge 3600 ] && break
-    [ $((WAITED % 300)) -eq 0 ] && say "waiting for $NAME to appear in the bucket (${WAITED}s)"
+  while [ -z "$NAME" ]; do
+    NAME=$(gsutil ls "$BUCKET/source/AC${AC}_*.zip" 2>/dev/null | head -1 | xargs -r basename)
+    [ -n "$NAME" ] && break
+    [ "$WAITED" -ge 7200 ] && break
+    [ $((WAITED % 300)) -eq 0 ] && say "waiting for AC${AC} to appear in the bucket (${WAITED}s)"
     sleep 30; WAITED=$((WAITED + 30))
   done
+  [ -z "$NAME" ] && { say "AC${AC} never appeared"; continue; }
+
   say "fetching $NAME"
   gsutil -q cp "$BUCKET/source/$NAME" "$ROOT/$NAME" || { say "no $NAME in the bucket"; continue; }
 

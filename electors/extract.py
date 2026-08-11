@@ -281,6 +281,7 @@ COLUMNS = [
     # Struck off the roll: printed, numbered and counted in the part's closing total, but no
     # longer an elector. A row count is not an elector count until these are excluded.
     "deleted",
+    "status_code",
     "lang",
     "roll_section",
     "page_no",
