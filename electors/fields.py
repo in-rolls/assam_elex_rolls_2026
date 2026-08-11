@@ -683,8 +683,9 @@ NON_ALNUM = re.compile(r"[^A-Za-z0-9]")
 #: digits, so this can never turn a real letter into a number. Confining it that way is what
 #: makes it a repair rather than a guess: 91.0% of reads were already exactly three letters and
 #: seven digits, and almost every remainder was an ``HHKO001465`` for ``HHK0001465``.
-DIGIT_LOOKALIKES = str.maketrans({"O": "0", "Q": "0", "D": "0", "I": "1", "L": "1", "S": "5",
-                                  "B": "8", "Z": "2", "G": "6"})
+DIGIT_LOOKALIKES = str.maketrans(
+    {"O": "0", "Q": "0", "D": "0", "I": "1", "L": "1", "S": "5", "B": "8", "Z": "2", "G": "6"}
+)
 
 #: An EPIC as printed: three letters then seven digits.
 EPIC_SHAPE = re.compile(r"([A-Z]{3})([A-Z0-9]{7})")
@@ -796,7 +797,9 @@ def assemble(lines: Tuple[List[str], List[str]], epic_read: str, serial_read: st
         elector.age = elector.age if elector.age is not None else age
         elector.sex = elector.sex or sex
 
-    match = EPIC_RE.search(NON_ALNUM.sub("", epic_read).upper())
+    match = EPIC_SHAPE.search(NON_ALNUM.sub("", epic_read).upper()) or EPIC_RE.search(
+        NON_ALNUM.sub("", epic_read).upper()
+    )
     elector.epic_no = match.group() if match else ""
 
     found = re.findall(r"\d{1,4}", schema.normalize_digits(serial_read))

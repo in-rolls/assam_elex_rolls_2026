@@ -515,8 +515,7 @@ def elector_from(header: Sequence[str], body: Sequence[str]) -> "Elector":
     elector.sex = found.get("sex", "")
 
     strip = " ".join(header)
-    match = fields_module.EPIC_RE.search(fields_module.NON_ALNUM.sub("", strip).upper())
-    elector.epic_no = match.group() if match else ""
+    elector.epic_no = fields_module.repair_epic(strip)
     serial = re.findall(r"\d{1,4}", schema.normalize_digits(strip))
     if serial:
         elector.serial_no_ocr = int(serial[0])
