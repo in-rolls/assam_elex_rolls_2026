@@ -176,6 +176,25 @@ def column_triples(v_rules: Sequence[int]) -> List[Tuple[int, int, int]]:
     if len(clusters) >= COLUMNS * 2 + 1:
         edges = [(clusters[i * 2][-1], clusters[i * 2 + 2][0]) for i in range(COLUMNS)]
         dividers = [clusters[i * 2 + 1][0] for i in range(COLUMNS)]
+    elif len(clusters) == COLUMNS * 2:
+        # The last column ran out of electors partway down, so its photo divider stops being
+        # printed and the page yields six clusters instead of seven. Every edge is still there:
+        #
+        #     78 | 854 | 1082,1108,1133 | 1909 | 2137,2164,2189 | 3220
+        #     L1   div1        R1/L2       div2       R2/L3        R3      (div3 never drawn)
+        #
+        # Read as three bare columns instead, part 3 page 23 was rejected outright and its
+        # eleven electors -- serials 601 to 611, plainly printed -- were dropped with nothing
+        # raised. The divider is derived from box width where it was never inked, which is what
+        # the branch below already does for pages that print no dividers at all.
+        edges = [
+            (clusters[0][-1], clusters[2][0]),
+            (clusters[2][-1], clusters[4][0]),
+            (clusters[4][-1], clusters[5][0]),
+        ]
+        dividers = [clusters[1][0], clusters[3][0], None]
+        if not _evenly_spread(edges):
+            return []
     elif len(clusters) >= COLUMNS + 1:
         edges = [(clusters[i][-1], clusters[i + 1][0]) for i in range(COLUMNS)]
         dividers = [None] * COLUMNS

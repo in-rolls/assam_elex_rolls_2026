@@ -120,11 +120,20 @@ class Crop:
 
     @property
     def name(self) -> str:
-        return self.path.stem
+        """The row's key: where the box is, never which file it landed in.
+
+        These were the same thing while every crop was its own PNG. Once tiles are packed many
+        to a composite they are not: every tile in ``composite000`` shared that stem, so 873
+        manifest rows keyed down to 3 and 870 electors disappeared between the stages without a
+        word. The position is unique by construction; the filename is not.
+        """
+        return name_for(self.part, self.page, self.row, self.column, self.band)
 
     def as_row(self) -> Dict[str, Any]:
         return {
             "name": self.name,
+            # Which image the tile is in -- one composite holds hundreds.
+            "image": self.path.name,
             "ac_no": self.ac_no,
             "part_no": self.part,
             "page_no": self.page,
@@ -299,9 +308,14 @@ def read_manifest(out_dir: Path) -> Dict[str, Dict[str, Any]]:
         return {}
     rows: Dict[str, Dict[str, Any]] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            row = json.loads(line)
-            rows[row["name"]] = row
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if row["name"] in rows:
+            # Keys collide only if the writer used something that is not a position. Raised
+            # rather than overwritten: silently keeping the last row is how 873 tiles became 3.
+            raise ValueError(f"duplicate manifest key {row['name']!r} in {path}")
+        rows[row["name"]] = row
     return rows
 
 

@@ -838,6 +838,152 @@ def cmd_crops(args: argparse.Namespace) -> int:
     return 0
 
 
+def _one_prep(args) -> Dict[str, Any]:
+    """Worker for stage one. Top-level so it pickles."""
+    from dataclasses import asdict
+
+    from . import stage1
+
+    zip_path, pdf_name, part_no, out_dir, dpi = args
+    out = Path(out_dir)
+    if stage1.done(out, part_no):
+        return {
+            "part_no": part_no,
+            "cached": True,
+            "boxes": 0,
+            "composites": 0,
+            "pages": 0,
+            "elector_pages": 0,
+            "unknown_pages": [],
+            "summary_total": None,
+            "seconds": 0.0,
+            "error": "",
+            "ac_no": 0,
+        }
+    prep = stage1.prepare_part(Path(zip_path), pdf_name, part_no, out, dpi=dpi)
+    return dict(asdict(prep), cached=False)
+
+
+def cmd_stage1(args: argparse.Namespace) -> int:
+    """Render, find the boxes, repack them, and read what the CPU can. No API calls."""
+    from . import stage1
+
+    zip_path = Path(args.zip)
+    if not zip_path.exists():
+        print(f"no such zip: {zip_path}", file=sys.stderr)
+        return 1
+    render.require_poppler()
+
+    parts = [p for p in render.iter_zip_parts(zip_path)]
+    if args.limit:
+        parts = parts[: args.limit]
+    if not parts:
+        print(f"no recognisable part PDFs in {zip_path}", file=sys.stderr)
+        return 1
+
+    ac_no = parts[0].ac_no
+    out_dir = Path(args.out) / f"AC{ac_no:03d}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    already = sum(1 for p in parts if stage1.done(out_dir, p.part_no))
+    log = timing.setup(f"stage1-AC{ac_no:03d}")
+    log.info(
+        "%s: %d parts, AC %d, %d workers%s -> %s",
+        zip_path.name,
+        len(parts),
+        ac_no,
+        args.workers,
+        f", {already} already prepared" if already else "",
+        out_dir,
+    )
+    clock = timing.RunClock(total=len(parts), workers=args.workers)
+
+    preps: List[Any] = []
+    with ProcessPoolExecutor(max_workers=args.workers) as pool:
+        payload = [(str(zip_path), p.pdf_name, p.part_no, str(out_dir), args.dpi) for p in parts]
+        for row in (f.result() for f in as_completed([pool.submit(_one_prep, i) for i in payload])):
+            preps.append(stage1.PartPrep(**{k: v for k, v in row.items() if k != "cached"}))
+            clock.record(row.get("seconds"), bool(row.get("cached")))
+            log.info(
+                "%s | %s boxes, %s composites%s",
+                clock.progress(
+                    row["part_no"], row["boxes"], row.get("seconds"), bool(row.get("cached"))
+                ),
+                f"{row['boxes']:,}",
+                row["composites"],
+                f"  ERROR {row['error']}" if row["error"] else "",
+            )
+
+    found = stage1.summarise(preps)
+    for line in clock.summary():
+        log.info("%s", line)
+    print(f"\nstage one for AC {ac_no} -> {out_dir}")
+    print(
+        f"  pages {found['pages']:,}   boxes {found['boxes']:,}   "
+        f"composites {found['composites']:,}"
+    )
+    print(
+        f"  against each part's own printed total: "
+        f"{found['parts_matching_roll']}/{found['parts_measured']} exact"
+    )
+    if found["parts_unmeasured"]:
+        print(
+            f"  {len(found['parts_unmeasured'])} parts whose closing total could not be read "
+            f"(excluded, not guessed): {found['parts_unmeasured'][:10]}"
+        )
+    if found["residuals"]:
+        print(f"  {len(found['residuals'])} parts not matching their roll total:")
+        for r in found["residuals"][:10]:
+            print(
+                f"     part {r['part_no']}: {r['main_boxes']} main boxes "
+                f"(+{r['supplement_boxes']} supplement) vs {r['roll_total']} printed "
+                f"({r['diff']:+d})"
+            )
+    if found["unknown_pages"]:
+        print(f"  pages whose geometry did not resolve: {found['unknown_pages']}")
+    if found["failed"]:
+        print(f"  {found['failed']} parts failed")
+    print(f"\n  Cloud Vision would then cost ${found['vision_cost']:.2f} for this constituency")
+    return 0
+
+
+def cmd_verify(args: argparse.Namespace) -> int:
+    """Structure first, then pixels. No API calls."""
+    from . import verify
+
+    stage_dir = Path(args.stage1_dir)
+    parts = sorted(stage_dir.glob("part*"))
+    if not parts:
+        print(f"no parts under {stage_dir}", file=sys.stderr)
+        return 1
+
+    by_part = {}
+    if args.zip:
+        zip_path = Path(args.zip)
+        by_part = {p.part_no: p.pdf_name for p in render.iter_zip_parts(zip_path)}
+
+    checks = []
+    for part_dir in parts:
+        check = verify.check_structure(part_dir)
+        if args.zip and check.ok and check.part_no in by_part:
+            verify.check_pixels(
+                Path(args.zip),
+                by_part[check.part_no],
+                part_dir,
+                check,
+                sample=None if args.all or args.sample == 0 else args.sample,
+            )
+        checks.append(check)
+        mark = "ok" if check.ok else f"{len(check.problems)} PROBLEM(S)"
+        print(
+            f"  part {check.part_no:<4} {check.tiles:>5} tiles  "
+            f"{check.identical}/{check.compared} identical  {mark}"
+        )
+
+    print()
+    print(verify.render_report(checks))
+    return 0 if all(c.ok for c in checks) else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="electors", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -970,6 +1116,25 @@ def build_parser() -> argparse.ArgumentParser:
     p_crops.add_argument("--dpi", type=int, default=extract.DPI)
     p_crops.add_argument("--zip-to", default="", help="also zip the folder to this path")
     p_crops.set_defaults(func=cmd_crops)
+
+    p_s1 = sub.add_parser(
+        "stage1", help="render, find boxes, repack for Vision -- CPU only, no API calls"
+    )
+    p_s1.add_argument("zip")
+    p_s1.add_argument("--out", default="out/stage1")
+    p_s1.add_argument("--workers", type=int, default=8)
+    p_s1.add_argument("--limit", type=int, default=0, help="first N parts only")
+    p_s1.add_argument("--dpi", type=int, default=extract.DPI)
+    p_s1.set_defaults(func=cmd_stage1)
+
+    p_ver = sub.add_parser(
+        "verify", help="prove the repack lost nothing and placed every tile correctly"
+    )
+    p_ver.add_argument("stage1_dir", help="e.g. out/stage1/AC001")
+    p_ver.add_argument("--zip", default="", help="source zip, needed for the pixel check")
+    p_ver.add_argument("--sample", type=int, default=40, help="tiles per part; 0 means all")
+    p_ver.add_argument("--all", action="store_true", help="compare every tile, not a sample")
+    p_ver.set_defaults(func=cmd_verify)
 
     p_report = sub.add_parser("report", help="reconcile a shard against the info pages")
     p_report.add_argument("shard")

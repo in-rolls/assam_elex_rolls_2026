@@ -7,6 +7,7 @@ failure it exists to prevent, because all of them were failures first.
 from __future__ import annotations
 
 import random
+from pathlib import Path
 
 import pytest
 
@@ -2072,6 +2073,50 @@ class TestStackByteCeiling:
         from PIL import Image
 
         assert vision.encoded_size(Image.new("L", (50, 50), "white")) > 0
+
+
+class TestManifestKeys:
+    """The manifest key is where the box is, never which file it landed in.
+
+    These were the same thing while every crop was its own PNG. Packed many to a composite they
+    are not: 873 tiles all carried the stem ``composite000``, keyed down to 3 rows, and 870
+    electors would have vanished between the stages without a word.
+    """
+
+    @staticmethod
+    def _crop(row, column, image="composite000.png"):
+        return crops.Crop(
+            part=1,
+            page=3,
+            row=row,
+            column=column,
+            path=Path("/x") / image,
+            left=0,
+            top=0,
+            right=10,
+            bottom=10,
+            ac_no=1,
+            section="main",
+        )
+
+    def test_tiles_sharing_one_composite_keep_distinct_keys(self):
+        a, b = self._crop(0, 0), self._crop(0, 1)
+        assert a.name != b.name
+        assert a.name == "p1_pg3_r0c0" and b.name == "p1_pg3_r0c1"
+
+    def test_the_row_still_records_which_image_holds_it(self):
+        assert self._crop(2, 1).as_row()["image"] == "composite000.png"
+
+    def test_a_duplicate_key_is_raised_not_overwritten(self, tmp_path):
+        """Keeping the last row silently is exactly how 873 tiles became 3."""
+        crops.write_manifest([self._crop(0, 0), self._crop(0, 0)], tmp_path, append=False)
+        with pytest.raises(ValueError, match="duplicate manifest key"):
+            crops.read_manifest(tmp_path)
+
+    def test_a_manifest_of_distinct_tiles_reads_back_whole(self, tmp_path):
+        made = [self._crop(r, c) for r in range(10) for c in range(3)]
+        crops.write_manifest(made, tmp_path, append=False)
+        assert len(crops.read_manifest(tmp_path)) == 30
 
 
 class TestRepack:
