@@ -215,7 +215,14 @@ def read_part(
                     # strip, not because the derived sequence was wrong -- and flagging it
                     # pushed needs_review to 95%, drowning every signal that mattered.
                     result.electors.append(
-                        _row(result, elector, page=index, box=box, meta=meta, section=section)
+                        _row(
+                            result,
+                            elector,
+                            page=index,
+                            box=box,
+                            meta=meta,
+                            section=section,
+                        )
                     )
                 image.close()
     except (subprocess.CalledProcessError, OSError, ocr.OCRError) as exc:

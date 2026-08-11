@@ -110,7 +110,12 @@ NAME_RE = re.compile(
     rf"(?P<kind>{RELATION_WORDS})?\s*নাম{MATRA}\s*[:：]\s*(?P<value>[^|<\n]{{2,40}})"
 )
 
-RELATION_KIND = {"পিতাৰ": "father", "স্বামীৰ": "husband", "মাতাৰ": "mother", "মাতৃৰ": "mother"}
+RELATION_KIND = {
+    "পিতাৰ": "father",
+    "স্বামীৰ": "husband",
+    "মাতাৰ": "mother",
+    "মাতৃৰ": "mother",
+}
 
 #: Assamese text long enough to be a name, used when the model omits the ``নাম :`` label.
 BARE_NAME = re.compile(r"^[^|<>\n]*[ঀ-৿]{3,}[^|<>\n]*$")
@@ -353,7 +358,13 @@ class TerseEngine:
                 "&& uv pip install --python .venv-surya/bin/python 'savitr[backend]'`"
             )
         self._process = subprocess.Popen(
-            [self._python, self._worker, "--terse", "--max-tokens", str(self._max_tokens)],
+            [
+                self._python,
+                self._worker,
+                "--terse",
+                "--max-tokens",
+                str(self._max_tokens),
+            ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,

@@ -212,6 +212,7 @@ def _rasterize_page(pdf_path: Path, workdir: Path, page: int) -> Optional[Image.
     result = subprocess.run(
         [
             "pdftoppm",
+            "-gray",
             "-r",
             "144",
             "-png",

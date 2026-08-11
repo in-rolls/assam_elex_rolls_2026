@@ -245,10 +245,10 @@ def summarize(checks: Sequence[PartCheck], rows: Sequence[Dict[str, Any]]) -> Di
         "rows_with_serial_disagreement": sum(c.serial_gaps for c in checks),
         # A ratio, not a count -- this is what catches a biased field.
         "male_share": statistics.fmean(a for a, _ in shares) if shares else None,
-        "published_male_share": statistics.fmean(b for _, b in shares) if shares else None,
+        "published_male_share": (statistics.fmean(b for _, b in shares) if shares else None),
         # Against the roll's own male/female, which is the right denominator: the info page's
         # net counts a different population.
-        "roll_male_share": statistics.fmean(b for _, b in roll_shares) if roll_shares else None,
+        "roll_male_share": (statistics.fmean(b for _, b in roll_shares) if roll_shares else None),
         # The publisher's net differs from what it prints; reported, not treated as a target.
         "printed_minus_published_mean": round(mean, 1),
         "printed_minus_published_sd": round(sigma, 1),

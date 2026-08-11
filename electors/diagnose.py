@@ -377,6 +377,10 @@ def render(found: Sequence[Association], suggested: Sequence[str]) -> str:
     lines = ["WHERE FAILURES CONCENTRATE", ""]  # noqa: E501
     lines += [f"   {a}" for a in found[:15]]
     if suggested:
-        lines += ["", "WORTH TRYING (hypotheses -- each still has to clear the gates)", ""]
+        lines += [
+            "",
+            "WORTH TRYING (hypotheses -- each still has to clear the gates)",
+            "",
+        ]
         lines += [f"   - {s}" for s in suggested]
     return "\n".join(lines)

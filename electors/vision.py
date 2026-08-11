@@ -516,6 +516,8 @@ def elector_from(header: Sequence[str], body: Sequence[str]) -> "Elector":
 
     strip = " ".join(header)
     elector.epic_no = fields_module.repair_epic(strip)
+    if fields_module.epic_was_repaired(strip):
+        elector.flags.append("epic_repaired")
     serial = re.findall(r"\d{1,4}", schema.normalize_digits(strip))
     if serial:
         elector.serial_no_ocr = int(serial[0])

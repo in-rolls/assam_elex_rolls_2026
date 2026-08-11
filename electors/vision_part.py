@@ -166,7 +166,11 @@ def tiles_for(
             continue
 
         section, recognised = pages.section_of(_header_strip_text(image, boxes))
-        side["pages"][index] = {"section": section, "recognised": recognised, "boxes": {}}
+        side["pages"][index] = {
+            "section": section,
+            "recognised": recognised,
+            "boxes": {},
+        }
         for box in boxes:
             if not grid.has_ink(image, box):
                 continue
@@ -447,7 +451,13 @@ def _fill_repacked(
             serial += 1
             elector.serial_no = serial
             box = grid.Box(
-                row=key[1], column=key[2], left=0, top=0, right=0, bottom=0, text_right=0
+                row=key[1],
+                column=key[2],
+                left=0,
+                top=0,
+                right=0,
+                bottom=0,
+                text_right=0,
             )
             result.electors.append(
                 extract._row(result, elector, page=index, box=box, meta=meta, section=section)

@@ -43,10 +43,19 @@ from typing import Any, Dict, List, Optional, Sequence
 ELECTOR_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "properties": {
-        "serial_no": {"type": "integer", "description": "the number printed in the box header"},
-        "epic_no": {"type": "string", "description": "voter id, Latin letters and digits"},
+        "serial_no": {
+            "type": "integer",
+            "description": "the number printed in the box header",
+        },
+        "epic_no": {
+            "type": "string",
+            "description": "voter id, Latin letters and digits",
+        },
         "name": {"type": "string", "description": "elector's name, in Assamese script"},
-        "relation_name": {"type": "string", "description": "the relative's name, Assamese"},
+        "relation_name": {
+            "type": "string",
+            "description": "the relative's name, Assamese",
+        },
         # "unknown" rather than "": the API rejects an empty enum member, and naming the
         # sentinel is better anyway -- it gives the model a way to say "not legible" instead of
         # picking one of three relatives at random.

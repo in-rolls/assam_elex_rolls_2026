@@ -147,7 +147,14 @@ def cmd_parse(args: argparse.Namespace) -> int:
     done = 0
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         payload = [
-            (str(zip_path), p.pdf_name, str(cache_dir), args.capture, args.engine, api_key)
+            (
+                str(zip_path),
+                p.pdf_name,
+                str(cache_dir),
+                args.capture,
+                args.engine,
+                api_key,
+            )
             for p in parts
         ]
         # Reported as each part *finishes*, not in submission order. `pool.map` yields in
@@ -365,7 +372,8 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
     rows = diagnose.derive_features(rows)
     if not rows:
         print(
-            f"no cached parts under {args.cache}; run `quality` or `parse` first", file=sys.stderr
+            f"no cached parts under {args.cache}; run `quality` or `parse` first",
+            file=sys.stderr,
         )
         return 1
 
@@ -563,7 +571,10 @@ def cmd_rebuild(args: argparse.Namespace) -> int:
 
     parts = list(args.parts) if args.parts else replay.cached_parts(ac=args.ac)
     if not parts:
-        print(f"no captured lines for AC {args.ac}; run `parse --capture` first", file=sys.stderr)
+        print(
+            f"no captured lines for AC {args.ac}; run `parse --capture` first",
+            file=sys.stderr,
+        )
         return 1
 
     log = timing.setup(f"rebuild-AC{args.ac:03d}", to_file=False)
@@ -576,7 +587,11 @@ def cmd_rebuild(args: argparse.Namespace) -> int:
         part_rows = replay.replay(captured)
         rows.extend(part_rows)
         clock.record(0.0, was_cached=False)
-        log.info("%s | %s rows", clock.progress(part, len(part_rows), 0.0, False), f"{len(rows):,}")
+        log.info(
+            "%s | %s rows",
+            clock.progress(part, len(part_rows), 0.0, False),
+            f"{len(rows):,}",
+        )
 
     if not rows:
         print("no rows rebuilt", file=sys.stderr)
@@ -652,7 +667,10 @@ def cmd_second_pass(args: argparse.Namespace) -> int:
                 if second_pass.wanted(r)
             }
             log.info(
-                "part %s: %d of %d boxes want a second read", part.part_no, len(targets), len(rows)
+                "part %s: %d of %d boxes want a second read",
+                part.part_no,
+                len(targets),
+                len(rows),
             )
             if not targets:
                 continue
@@ -762,7 +780,10 @@ def cmd_resolution(args: argparse.Namespace) -> int:
     arms = [a.strip() for a in args.arms.split(",")] if args.arms else list(resolution.ARMS)
     unknown = [a for a in arms if a not in resolution.ARMS]
     if unknown:
-        print(f"unknown arm(s): {unknown}; known: {list(resolution.ARMS)}", file=sys.stderr)
+        print(
+            f"unknown arm(s): {unknown}; known: {list(resolution.ARMS)}",
+            file=sys.stderr,
+        )
         return 1
 
     log = timing.setup("resolution")
@@ -907,7 +928,10 @@ def cmd_stage1(args: argparse.Namespace) -> int:
             log.info(
                 "%s | %s boxes, %s composites%s",
                 clock.progress(
-                    row["part_no"], row["boxes"], row.get("seconds"), bool(row.get("cached"))
+                    row["part_no"],
+                    row["boxes"],
+                    row.get("seconds"),
+                    bool(row.get("cached")),
                 ),
                 f"{row['boxes']:,}",
                 row["composites"],
@@ -1130,7 +1154,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_esc.set_defaults(func=cmd_escalate)
 
     p_rebuild = sub.add_parser(
-        "rebuild", help="rewrite the shard from cached OCR text, with today's parser and no OCR"
+        "rebuild",
+        help="rewrite the shard from cached OCR text, with today's parser and no OCR",
     )
     p_rebuild.add_argument("--parts", type=int, nargs="*")
     p_rebuild.add_argument("--ac", type=int, default=1)
@@ -1139,7 +1164,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_rebuild.set_defaults(func=cmd_rebuild)
 
     p_second = sub.add_parser(
-        "second-pass", help="re-read boxes the cheap pass could not, with savitr's roll model"
+        "second-pass",
+        help="re-read boxes the cheap pass could not, with savitr's roll model",
     )
     p_second.add_argument("zip")
     p_second.add_argument("--parts", type=int, nargs="+", required=True)
@@ -1175,7 +1201,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_res.set_defaults(func=cmd_resolution)
 
     p_crops = sub.add_parser(
-        "crops", help="cut box images out for a second reader running on another machine"
+        "crops",
+        help="cut box images out for a second reader running on another machine",
     )
     p_crops.add_argument("zip")
     p_crops.add_argument("--out", default="out/crops", help="directory to write the PNGs into")

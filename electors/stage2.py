@@ -155,7 +155,10 @@ def save_words(part_dir: Path, image: str, found: Sequence[vision.Word]) -> None
     """
     temporary = words_path(part_dir, image).with_suffix(".json.tmp")
     temporary.write_text(
-        json.dumps([[w.text, w.left, w.top, w.right, w.bottom] for w in found], ensure_ascii=False),
+        json.dumps(
+            [[w.text, w.left, w.top, w.right, w.bottom] for w in found],
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
     temporary.replace(words_path(part_dir, image))

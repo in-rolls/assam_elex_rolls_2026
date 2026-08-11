@@ -34,6 +34,16 @@ while true; do
 # Version sorted, so AC1 precedes AC10 precedes AC100; plain sort interleaves them.
 for path in $(find "$DIR" -maxdepth 1 -name '*.zip' 2>/dev/null | sort -V); do
   name=$(basename "$path")
+  # Delete nothing that is not a roll archive. The name is checked here, immediately before the
+  # only destructive step in this script, rather than trusted from however the list was built --
+  # because the list was built wrongly once. A glob that matched nothing became a bare `ls -1`,
+  # which listed the working directory, and this script uploaded README.md, LICENSE, Makefile,
+  # DATA.md and pyproject.toml to the bucket and then deleted all five. They were in git; that
+  # was luck, not design.
+  case "$name" in
+    AC[0-9]*.zip) ;;
+    *) say "ignoring $name -- not a roll archive"; continue;;
+  esac
   # Space in a name means a browser's duplicate download, and a space in an object name breaks
   # every shell path that touches it later. Skipped rather than renamed: the original is there.
   case "$name" in *" "*) say "skipping $name -- a duplicate download"; continue;; esac

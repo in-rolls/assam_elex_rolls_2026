@@ -300,7 +300,11 @@ def report(
         )
 
     found = agreement(arms)
-    lines += ["", f"AGREEMENT BETWEEN ARMS over {found.boxes:,} boxes all of them returned", ""]
+    lines += [
+        "",
+        f"AGREEMENT BETWEEN ARMS over {found.boxes:,} boxes all of them returned",
+        "",
+    ]
     lines.append("   (this is agreement, not accuracy -- three arms of one engine can be wrong")
     lines.append("    together, and are likelier to be than three engines would be)")
     lines.append("")
@@ -317,7 +321,11 @@ def report(
 
     rates = blank_rates(arms)
     if rates:
-        lines += ["", "FIELDS LEFT EMPTY -- the comparison that needs no ground truth", ""]
+        lines += [
+            "",
+            "FIELDS LEFT EMPTY -- the comparison that needs no ground truth",
+            "",
+        ]
         lines.append("   (a missing value is a failure whichever spelling would have been right)")
         lines.append("")
         lines.append("   " + f"{'field':<10}" + "".join(f"{n:>14}" for n in rates))

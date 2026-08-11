@@ -235,7 +235,7 @@ def read_side(path: Path) -> Dict[str, Any]:
         },
         "stage1_version": raw.get("stage1_version", ""),
         "unknown": raw["unknown"],
-        "summary": None if raw["summary"] is None else summary.RollSummary(**raw["summary"]),
+        "summary": (None if raw["summary"] is None else summary.RollSummary(**raw["summary"])),
     }
 
 

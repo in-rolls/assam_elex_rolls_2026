@@ -97,9 +97,7 @@ def main() -> int:
                 if not found:
                     continue
                 page = images[row["page_no"] - 1]
-                crop = page.crop(
-                    (found["left"], found["top"], found["right"], found["bottom"])
-                )
+                crop = page.crop((found["left"], found["top"], found["right"], found["bottom"]))
                 mark = "PARTIAL" if (part_no, row["page_no"]) in interesting else "full"
                 name = f"p{part_no}_pg{row['page_no']}_r{row['box_row']}c{row['box_col']}.png"
                 crop.save(out / name)

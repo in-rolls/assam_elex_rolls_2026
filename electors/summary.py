@@ -40,7 +40,14 @@ MAIN_ROW = re.compile(r"মূল\s*তালিকা")
 #: Scale/segmentation pairs tried in order until the arithmetic balances. Scale does most of
 #: the work -- the usual lesson here -- but this page is a wide sparse table rather than a
 #: block of prose, so a couple of segmentation modes are worth trying once scale is exhausted.
-ATTEMPTS: Tuple[Tuple[int, int], ...] = ((1, 6), (2, 6), (3, 6), (1, 4), (2, 4), (1, 11))
+ATTEMPTS: Tuple[Tuple[int, int], ...] = (
+    (1, 6),
+    (2, 6),
+    (3, 6),
+    (1, 4),
+    (2, 4),
+    (1, 11),
+)
 
 #: A part with fewer electors than this is not plausible, and a "total" that small is a
 #: fragment of some other number on the page.

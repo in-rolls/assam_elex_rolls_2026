@@ -175,7 +175,8 @@ def _write_rows(path: Path, rows: Sequence[Dict[str, Any]]) -> None:
     """Atomically, so a kill mid-write cannot leave a half-part that looks complete."""
     temporary = path.with_suffix(".jsonl.tmp")
     temporary.write_text(
-        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8"
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
+        encoding="utf-8",
     )
     temporary.replace(path)
 

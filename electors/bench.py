@@ -131,7 +131,7 @@ def gate_no_damage(
     return GateResult(
         name="no degradation",
         passed=not problems,
-        detail="; ".join(problems) if problems else f"all {len(guarded)} guarded metrics held",
+        detail=("; ".join(problems) if problems else f"all {len(guarded)} guarded metrics held"),
     )
 
 

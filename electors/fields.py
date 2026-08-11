@@ -160,7 +160,14 @@ class Elector:
         is how the first run came up nine electors short of the published total.
         """
         return not any(
-            (self.epic_no, self.name, self.age, self.relation_name, self.house_no, self.sex)
+            (
+                self.epic_no,
+                self.name,
+                self.age,
+                self.relation_name,
+                self.house_no,
+                self.sex,
+            )
         )
 
     @property
@@ -620,7 +627,11 @@ def read_page(
     # its own zone the same page matches **30 of 30**, at every scale and segmentation mode
     # tried -- a fix that works at only one setting is usually a coincidence.
     strips = [
-        (box, box.top + 4, max(box.top + 12, bands[box][0][0] if bands[box] else box.top + 110))
+        (
+            box,
+            box.top + 4,
+            max(box.top + 12, bands[box][0][0] if bands[box] else box.top + 110),
+        )
         for box in live
     ]
     epic_reads = batch.texts(
@@ -684,11 +695,39 @@ NON_ALNUM = re.compile(r"[^A-Za-z0-9]")
 #: makes it a repair rather than a guess: 91.0% of reads were already exactly three letters and
 #: seven digits, and almost every remainder was an ``HHKO001465`` for ``HHK0001465``.
 DIGIT_LOOKALIKES = str.maketrans(
-    {"O": "0", "Q": "0", "D": "0", "I": "1", "L": "1", "S": "5", "B": "8", "Z": "2", "G": "6"}
+    {
+        "O": "0",
+        "Q": "0",
+        "D": "0",
+        "I": "1",
+        "L": "1",
+        "S": "5",
+        "B": "8",
+        "Z": "2",
+        "G": "6",
+    }
 )
 
 #: An EPIC as printed: three letters then seven digits.
 EPIC_SHAPE = re.compile(r"([A-Z]{3})([A-Z0-9]{7})")
+
+
+def epic_was_repaired(text: str) -> bool:
+    """Whether :func:`repair_epic` had to substitute anything to make this EPIC well formed.
+
+    Worth recording, because a repaired EPIC is not the same kind of value as a clean one. The
+    substitution only fires on an already damaged read, and it can collapse two distinct cards
+    onto one string: over AC10, a row sharing an EPIC with another row is **eleven times** more
+    likely to have an unreadable name than a row picked at random, and 718 of 934 shared EPICs
+    carry different names on their two rows.
+
+    So the repair trades "obviously broken" for "plausibly wrong" -- a good trade for a field you
+    read, a bad one for a field you join on, and the difference has to be visible in the data
+    rather than in a commit message.
+    """
+    cleaned = NON_ALNUM.sub("", text).upper()
+    found = EPIC_SHAPE.search(cleaned)
+    return bool(found and found.group(2) != found.group(2).translate(DIGIT_LOOKALIKES))
 
 
 def repair_epic(text: str) -> str:
