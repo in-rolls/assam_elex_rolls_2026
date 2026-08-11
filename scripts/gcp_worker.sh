@@ -66,7 +66,7 @@ say "resumed with $(find "$ROOT/stage1" -name manifest.jsonl 2>/dev/null | wc -l
 # never reaching its own end.
 (
   while true; do
-    sleep 180
+    sleep 90
     gsutil -q -m rsync -r "$ROOT/stage1" "$BUCKET/stage1" 2>/dev/null
     gsutil -q -m rsync -r "$ROOT/shards" "$BUCKET/shards" 2>/dev/null
     gsutil -q cp "$LOG" "$BUCKET/run.log" 2>/dev/null
