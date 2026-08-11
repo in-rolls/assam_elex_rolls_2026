@@ -2081,6 +2081,116 @@ class TestStackByteCeiling:
         assert vision.encoded_size(Image.new("L", (50, 50), "white")) > 0
 
 
+class TestPartialLastPage:
+    """The last page of a part holds whatever is left, and it used to be thrown away.
+
+    Part 18's page 25 is a single box -- serial 661, ৰাজেশ নুজ্জাৰী, age 25, plainly printed --
+    and it was read as a closing summary and dropped. Four of the first twenty parts lost exactly
+    one elector this way; part 6 lost nineteen. Nothing raised anything: the count was simply
+    short against a printed total nobody was comparing it to.
+
+    The fix is that column geometry belongs to the *part*, not the page. Real x positions below,
+    from AC1 at 400 dpi.
+    """
+
+    #: The three columns AC1 draws, from pages that draw all three.
+    ESTABLISHED = [(78, 854, 1082), (1133, 1909, 2137), (2189, 2965, 3193)]
+
+    #: Part 18 page 25: one box in the first column, and nothing else on the sheet.
+    ONE_COLUMN = [78, 855, 1080, 1108]
+
+    #: Part 6 page 39: nineteen electors, with the *middle* divider not drawn.
+    MIDDLE_DIVIDER_MISSING = [78, 854, 1082, 1108, 1133, 2135, 2164, 2189, 2968, 3192, 3220]
+
+    #: Part 5 page 15: a three-elector addition list. The border it shares between columns two and
+    #: three prints as 2164, 2189 -- the 2137 line, which is where the full pages put that edge,
+    #: is simply not inked.
+    SUPPLEMENT = [78, 854, 1080, 1108, 1133, 2164, 2189, 3192, 3220]
+
+    #: Part 5 page 16: the real closing summary.
+    REAL_SUMMARY = [67, 3236]
+
+    def test_a_page_of_one_box_is_read_against_the_parts_geometry(self):
+        found = grid.columns_present(self.ONE_COLUMN, self.ESTABLISHED)
+        assert found == [(78, 854, 1082)]
+
+    def test_a_missing_middle_divider_does_not_lose_the_page(self):
+        """Part 3's page 23 lacks its last divider and part 6's page 39 its middle one.
+
+        Both yield six clusters, so no positional reading of the cluster count is right for
+        both -- which is why the edges are matched against the part instead of counted.
+        """
+        assert grid.columns_present(self.MIDDLE_DIVIDER_MISSING, self.ESTABLISHED) == (
+            self.ESTABLISHED
+        )
+
+    def test_a_shared_border_may_be_inked_anywhere_across_its_width(self):
+        """Part 5's page 15 held three electors and an exact edge test found two.
+
+        Neighbouring columns share a border drawn as two or three lines, and which of them the
+        publisher inks varies by page. Demanding a rule within a few pixels of where the full
+        pages put that edge dropped the middle column, and the elector on it.
+        """
+        assert len(grid.columns_present(self.SUPPLEMENT, self.ESTABLISHED)) == 3
+
+    def test_a_supplement_page_lost_here_would_still_reconcile(self):
+        """Why this cannot be left to the printed total to catch.
+
+        Part 5's page 15 is an addition list. Supplements are counted separately from the
+        closing মূল তালিকা total, so losing it left the main list balancing at 351 while three
+        real electors -- serials 352, 353, 354 -- were missing and nothing said so.
+        """
+        assert grid.columns_present(self.SUPPLEMENT, self.ESTABLISHED) != []
+
+    def test_the_real_closing_summary_is_still_a_summary(self):
+        assert grid.columns_present(self.REAL_SUMMARY, self.ESTABLISHED) == []
+
+    def test_columns_must_be_a_prefix_because_boxes_fill_in_reading_order(self):
+        """A page can hold columns 1, or 1-2, or 1-2-3 -- never 2 and 3 with 1 empty."""
+        assert grid.columns_present([1133, 2137, 2189, 3193], self.ESTABLISHED) == []
+
+    def test_the_page_alone_cannot_settle_it(self):
+        """Without the part's geometry these rules are a table, and are read as one."""
+        assert grid.column_triples(self.ONE_COLUMN) == []
+
+    def test_the_closing_summary_is_not_promoted_to_an_elector_page(self):
+        """The check that keeps this safe: a summary's rules are not on the column edges.
+
+        Getting this wrong costs the part its printed total, which is the only number in the
+        source that the extraction is measured against.
+        """
+        assert grid.columns_present([120, 300, 1600, 2400], self.ESTABLISHED) == []
+
+    def test_a_page_with_no_vertical_rules_yields_nothing(self):
+        assert grid.columns_present([], self.ESTABLISHED) == []
+
+    def test_geometry_is_taken_only_from_pages_that_drew_all_three(self):
+        partial = [(78, 854, 1082)]
+        assert grid.typical_columns([self.ESTABLISHED, partial, self.ESTABLISHED]) == (
+            self.ESTABLISHED
+        )
+
+    def test_a_part_with_no_full_page_establishes_nothing(self):
+        """Refused rather than extrapolated from one column."""
+        assert grid.typical_columns([[(78, 854, 1082)]]) == []
+
+    def test_build_uses_the_given_columns_over_the_pages_own_rules(self):
+        boxes = grid.build(H_RULES, self.ONE_COLUMN, columns=[(78, 854, 1082)])
+        assert boxes and {b.column for b in boxes} == {0}
+        assert boxes[0].left == 78 and boxes[0].text_right == 854
+
+    def test_recovery_only_touches_pages_that_were_not_elector_pages(self):
+        good = pages.PageSignature(
+            number=3, kind=pages.PageKind.ELECTOR, h_rules=H_RULES, v_rules=V_RULES
+        )
+        last = pages.PageSignature(
+            number=4, kind=pages.PageKind.SUMMARY, h_rules=H_RULES, v_rules=self.ONE_COLUMN
+        )
+        before, after = pages.recover_partial([good, last])
+        assert before is good
+        assert after.kind is pages.PageKind.ELECTOR and after.columns == ((78, 854, 1082),)
+
+
 class TestRunnerAcrossConstituencies:
     """The AC number must be the only thing that changes between runs.
 

@@ -139,6 +139,94 @@ def _evenly_spread(edges: Sequence[Tuple[int, int]]) -> bool:
     return max(widths) / min(widths) <= COLUMN_WIDTH_RATIO
 
 
+#: How far a rule may sit from where the part's full pages put a column edge and still be that
+#: edge. Twelve pixels at 400 dpi is under a third of a millimetre of print.
+EDGE_MATCH = 12
+
+
+def typical_columns(
+    triples: Sequence[Sequence[Tuple[int, int, int]]],
+) -> List[Tuple[int, int, int]]:
+    """Where this part draws its columns, from the pages that drew all three.
+
+    A part prints its columns at the same x positions on every page; only how far down the
+    electors reach varies. So the geometry is a property of the *part*, and the pages that show
+    it clearly can settle it for the page that does not.
+
+    Taken from the part in hand rather than from a constant: the positions are a function of the
+    render dpi and the publisher's layout, and a constant would silently stop being right at
+    another resolution -- which is the failure this project already hit once at native size.
+    """
+    if not triples:
+        return []
+    by_position: List[List[Tuple[int, int, int]]] = [[] for _ in range(COLUMNS)]
+    for page in triples:
+        if len(page) != COLUMNS:
+            continue
+        for index, triple in enumerate(page):
+            by_position[index].append(triple)
+    out: List[Tuple[int, int, int]] = []
+    for found in by_position:
+        if not found:
+            return []
+        left = _mode([t[0] for t in found], tolerance=EDGE_MATCH)
+        divider = _mode([t[1] for t in found], tolerance=EDGE_MATCH)
+        right = _mode([t[2] for t in found], tolerance=EDGE_MATCH)
+        if left is None or divider is None or right is None:
+            return []
+        out.append((left, divider, right))
+    return out
+
+
+def columns_present(
+    v_rules: Sequence[int], established: Sequence[Tuple[int, int, int]]
+) -> List[Tuple[int, int, int]]:
+    """Which of the part's columns this page actually drew.
+
+    The last page of a part holds whatever is left, which can be a single elector in the first
+    column. Read from that page alone the rules are ambiguous -- three vertical lines are a box
+    or they are a row of a table, and the closing summary *is* a ruled table. Read against the
+    part's own geometry they are not: a column counts as drawn only when a rule sits on both its
+    edges, and the summary page has no rules at 78 and 1082.
+
+    This replaces guessing from the cluster count, which cannot work in general. Part 6's page 39
+    is missing its *middle* divider while part 3's page 23 is missing its *last*; both yield six
+    clusters, and no positional reading of six clusters is right for both.
+
+    Two details carry the whole result.
+
+    **The right edge is matched across the shared border, not on one line.** Neighbouring columns
+    share a border drawn as a cluster of two or three lines, and which of them the publisher inks
+    varies by page. Part 5's page 15 prints that cluster as 2164, 2189 with the 2137 line absent,
+    so demanding a rule within a few pixels of 2137 lost the middle column and one of the three
+    electors on it. Anywhere between the column's right edge and the next column's left edge is
+    the same border.
+
+    **The columns must be a prefix.** Boxes fill in reading order, so a page can hold columns 1,
+    or 1-2, or 1-2-3 -- never 1 and 3. That gap is what a table produces when two of its rules
+    happen to land near column edges, and refusing it is what keeps a summary page out.
+    """
+    if not established or not v_rules:
+        return []
+    rules = sorted(set(v_rules))
+
+    def near(position: int, reach: int = EDGE_MATCH) -> bool:
+        return any(abs(rule - position) <= reach for rule in rules)
+
+    def border(index: int) -> bool:
+        """A rule anywhere in the border this column shares with the next."""
+        right = established[index][2]
+        limit = established[index + 1][0] if index + 1 < len(established) else right
+        return any(right - EDGE_MATCH <= rule <= limit + EDGE_MATCH for rule in rules)
+
+    out: List[Tuple[int, int, int]] = []
+    for index, column in enumerate(established):
+        if not near(column[0]) or not border(index):
+            break
+        out.append(column)
+    return out
+
+
 def column_triples(v_rules: Sequence[int]) -> List[Tuple[int, int, int]]:
     """Group vertical rules into ``(left, divider, right)`` per box column.
 
@@ -173,6 +261,8 @@ def column_triples(v_rules: Sequence[int]) -> List[Tuple[int, int, int]]:
         else:
             clusters.append([rule])
 
+    edges: List[Tuple[int, int]]
+    dividers: List[Optional[int]]
     if len(clusters) >= COLUMNS * 2 + 1:
         edges = [(clusters[i * 2][-1], clusters[i * 2 + 2][0]) for i in range(COLUMNS)]
         dividers = [clusters[i * 2 + 1][0] for i in range(COLUMNS)]
@@ -201,6 +291,9 @@ def column_triples(v_rules: Sequence[int]) -> List[Tuple[int, int, int]]:
         if not _evenly_spread(edges):
             return []
     else:
+        # Not three columns. A page drawing fewer -- the last page of a part, holding whatever
+        # is left -- is recovered by columns_present against the part's own geometry, not here:
+        # from one page's rules alone a single box and a table row are the same thing.
         return []
 
     out: List[Tuple[int, int, int]] = []
@@ -282,9 +375,19 @@ def row_bands(h_rules: Sequence[int]) -> List[Tuple[int, int]]:
     return best
 
 
-def build(h_rules: Sequence[int], v_rules: Sequence[int]) -> List[Box]:
-    """Every elector box on the page, in reading order."""
-    columns = column_triples(v_rules)
+def build(
+    h_rules: Sequence[int],
+    v_rules: Sequence[int],
+    columns: Optional[Sequence[Tuple[int, int, int]]] = None,
+) -> List[Box]:
+    """Every elector box on the page, in reading order.
+
+    ``columns`` overrides what this page's own rules imply, for the last page of a part -- see
+    :func:`columns_present`. Rows always come from the page itself, because how far down the page
+    the electors reach is exactly what varies.
+    """
+    if columns is None:
+        columns = column_triples(v_rules)
     rows = row_bands(h_rules)
     if not columns or not rows:
         return []

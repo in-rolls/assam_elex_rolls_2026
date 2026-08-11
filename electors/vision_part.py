@@ -140,8 +140,16 @@ def tiles_for(
     entries: List[Tuple[Image.Image, Tuple[int, int, int, int], Tuple[int, int, int]]] = []
     side: Dict[str, Any] = {"pages": {}, "unknown": [], "summary": None}
 
-    for index, image in enumerate(images, start=1):
-        signature = pages.classify(image, index)
+    # Classify every page first, then reconsider the ones that came out as anything but elector
+    # pages. A part's last page can hold a single elector, and one page's rules cannot tell that
+    # box from a row of the closing summary's table -- but the part's other pages can, because
+    # they draw their columns in the same places. Part 18's serial 661 was lost exactly here.
+    signatures = pages.recover_partial(
+        [pages.classify(image, n) for n, image in enumerate(images, start=1)]
+    )
+
+    for signature, image in zip(signatures, images):
+        index = signature.number
         if signature.kind is pages.PageKind.UNKNOWN:
             side["unknown"].append(index)
             continue
@@ -149,7 +157,7 @@ def tiles_for(
             side["summary"] = _summary_from(image)
         if not signature.is_elector:
             continue
-        boxes = grid.build(signature.h_rules, signature.v_rules)
+        boxes = grid.build(signature.h_rules, signature.v_rules, columns=signature.columns)
         if not boxes:
             side["unknown"].append(index)
             continue

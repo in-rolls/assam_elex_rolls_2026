@@ -24,9 +24,9 @@ produce 30 plausible rows of nonsense.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from PIL import Image
 
@@ -99,6 +99,9 @@ class PageSignature:
     kind: PageKind
     h_rules: Sequence[int]
     v_rules: Sequence[int]
+    #: Set only where the page's own rules could not settle its columns and the part's geometry
+    #: did -- the last page of a part, which may draw one column where the sheet holds three.
+    columns: Optional[Sequence[Tuple[int, int, int]]] = None
 
     @property
     def is_elector(self) -> bool:
@@ -139,6 +142,47 @@ def classify(image: Image.Image, number: int) -> PageSignature:
         kind = PageKind.UNKNOWN
 
     return PageSignature(number=number, kind=kind, h_rules=tuple(h_rules), v_rules=tuple(v_rules))
+
+
+def recover_partial(signatures: Sequence[PageSignature]) -> List[PageSignature]:
+    """Reconsider the pages that were not elector pages, knowing what this part's columns look like.
+
+    One pass cannot decide a page holding a single elector. Three vertical rules are a box or they
+    are a row of a table, and nothing on the page itself says which -- so the first pass calls it
+    a summary and the elector is gone. The part's *other* pages settle it: a part draws its
+    columns at the same x positions on every page, so a page with rules on those positions is a
+    page of that part's boxes.
+
+    This is not only about the main list's last page. Part 5's page 15 is a three-elector addition
+    list -- serials 352, 353, 354 -- and it was dropped whole. **Reconciliation would never have
+    found that**: supplements are counted separately from the printed ``মূল তালিকা`` total, so the
+    main list still balanced at 351 while three real electors were missing.
+
+    Run as a second pass over the signatures already computed, so it costs no rule detection and
+    no re-render. Only non-elector pages are reconsidered, so a page already understood cannot be
+    changed by this.
+    """
+    established = typical_columns(signatures)
+    if not established:
+        return list(signatures)
+
+    out: List[PageSignature] = []
+    for signature in signatures:
+        if signature.is_elector or signature.kind is PageKind.INFO or not signature.v_rules:
+            out.append(signature)
+            continue
+        columns = grid.columns_present(signature.v_rules, established)
+        if columns and grid.row_bands(signature.h_rules):
+            signature = replace(signature, kind=PageKind.ELECTOR, columns=tuple(columns))
+        out.append(signature)
+    return out
+
+
+def typical_columns(signatures: Sequence[PageSignature]) -> List[Tuple[int, int, int]]:
+    """Where this part draws its columns, from the pages that drew all three."""
+    return grid.typical_columns(
+        [grid.column_triples(s.v_rules) for s in signatures if s.is_elector]
+    )
 
 
 def elector_pages(signatures: Sequence[PageSignature]) -> List[PageSignature]:
