@@ -59,8 +59,14 @@ apt-get -qq update
 apt-get -qq install -y poppler-utils tesseract-ocr tesseract-ocr-asm tesseract-ocr-eng \
   python3-pip python3-venv git >/dev/null
 
+# Removed first, because a stopped instance keeps its disk and this script runs again on every
+# boot. git clone into an existing directory fails, the failure is not fatal, and the machine
+# then runs whatever it was cloned with last time -- which is how AC10 spent two hours being
+# processed by code three fixes out of date while the log cheerfully said it had cloned.
 say "cloning the pipeline at its current main"
-git clone -q https://github.com/in-rolls/assam_elex_rolls_2026.git "$ROOT/repo"
+rm -rf "$ROOT/repo"
+git clone -q https://github.com/in-rolls/assam_elex_rolls_2026.git "$ROOT/repo" || {
+  say "clone failed -- refusing to run stale code"; exit 1; }
 cd "$ROOT/repo"
 say "at commit $(git rev-parse --short HEAD)"
 python3 -m venv "$ROOT/venv"
