@@ -77,10 +77,16 @@ say "resumed with $(find "$ROOT/stage1" -name manifest.jsonl 2>/dev/null | wc -l
 # Resume, part two: keep pushing, so the next instance has something to resume from. Started
 # before the work rather than after it, because the failure this guards against is the work
 # never reaching its own end.
+# Composites are deliberately not synced. They are a pure function of the archive and this
+# code -- about $12 of CPU to rebuild for the whole state -- while Vision's words cost $146 and
+# cannot be regenerated at any price. So the cheap-to-reproduce bulk stays on the instance's
+# disk and dies with it, and only what was paid for goes to the bucket: 0.6 KB a box against
+# 36 KB. It is also the difference between rsyncing two gigabytes every ninety seconds and
+# rsyncing a few megabytes.
 (
   while true; do
     sleep 90
-    gsutil -q -m rsync -r "$ROOT/stage1" "$BUCKET/stage1" 2>/dev/null
+    gsutil -q -m rsync -r -x '.*composite.*\.png$' "$ROOT/stage1" "$BUCKET/stage1" 2>/dev/null
     gsutil -q -m rsync -r "$ROOT/shards" "$BUCKET/shards" 2>/dev/null
     gsutil -q cp "$LOG" "$BUCKET/run.log" 2>/dev/null
   done
@@ -90,40 +96,59 @@ SYNC=$!
 LIMIT=""
 [ "$PARTS" -gt 0 ] && LIMIT="--limit $PARTS"
 
-for AC in $ACS; do
-  # Wait for the archive rather than skipping it, and do not assume its language. Barak Valley
-  # publishes in Bengali, so the folder holds AC116_BEN.zip beside AC1_ASM.zip and a hardcoded
-  # _ASM would report eleven real constituencies as missing. The upload from a laptop and the
-  # boot of this machine are also independent, and an instance that wins that race should idle
-  # rather than move on -- which reads, later, exactly like a constituency that had nothing in it.
+# "auto" means: take whatever is in the bucket that has no shard yet, and keep taking. The
+# alternative -- a fixed list walked in order -- stalls on the first constituency that has not
+# been uploaded yet while later ones sit ready, and it needs the uploader and the worker to
+# agree on an order. Discovery needs them to agree on nothing.
+IDLE=0
+while true; do
   NAME=""
-  WAITED=0
-  while [ -z "$NAME" ]; do
-    NAME=$(gsutil ls "$BUCKET/source/AC${AC}_*.zip" 2>/dev/null | head -1 | xargs -r basename)
-    [ -n "$NAME" ] && break
-    [ "$WAITED" -ge 7200 ] && break
-    [ $((WAITED % 300)) -eq 0 ] && say "waiting for AC${AC} to appear in the bucket (${WAITED}s)"
-    sleep 30; WAITED=$((WAITED + 30))
+  for candidate in $(gsutil ls "$BUCKET/source/AC*.zip" 2>/dev/null | xargs -r -n1 basename | sort -V); do
+    AC=$(echo "$candidate" | sed -E 's/^AC0*([0-9]+)_.*/\1/')
+    # A shard in the bucket is the only record that a constituency is finished, and it is
+    # written last, so a half-done AC is picked up again rather than skipped.
+    gsutil -q stat "$BUCKET/shards/AC$(printf %03d "$AC").parquet" 2>/dev/null && continue
+    NAME=$candidate
+    break
   done
-  [ -z "$NAME" ] && { say "AC${AC} never appeared"; continue; }
 
+  if [ -z "$NAME" ]; then
+    if [ "$ACS" != "auto" ]; then break; fi
+    IDLE=$((IDLE + 60))
+    if [ "$IDLE" -ge 3600 ]; then
+      say "nothing new for an hour -- stopping so the machine can be shut down"
+      break
+    fi
+    [ $((IDLE % 600)) -eq 0 ] && say "every constituency in the bucket is done; waiting for more"
+    sleep 60
+    continue
+  fi
+  IDLE=0
+
+  AC=$(echo "$NAME" | sed -E 's/^AC0*([0-9]+)_.*/\1/')
   say "fetching $NAME"
-  gsutil -q cp "$BUCKET/source/$NAME" "$ROOT/$NAME" || { say "no $NAME in the bucket"; continue; }
+  gsutil -q cp "$BUCKET/source/$NAME" "$ROOT/$NAME" || { say "could not fetch $NAME"; sleep 60; continue; }
 
   say "running AC$AC with $WORKERS workers $LIMIT"
-  # No VISION_API_KEY: the client falls back to the instance's service account.
   "$ROOT/venv/bin/python" -m electors run "$ROOT/$NAME" \
     --work "$ROOT/stage1" --shards "$ROOT/shards" \
     --manifest "$ROOT/shards/manifest.json" --workers "$WORKERS" $LIMIT
   say "AC$AC finished with status $?"
 
-  # The zip is 1.7 GB and is not needed again; the composites are, and they stay.
+  # Push this AC's results before touching anything, so a machine lost now loses no money.
+  gsutil -q -m rsync -r -x '.*composite.*\.png$' "$ROOT/stage1" "$BUCKET/stage1" 2>/dev/null
+  gsutil -q -m rsync -r "$ROOT/shards" "$BUCKET/shards" 2>/dev/null
+
+  # The archive stays in the bucket; the local copy and the composites are finished with. The
+  # composites are ~6 GB an AC and would fill the disk by the fifth constituency.
   rm -f "$ROOT/$NAME"
+  find "$ROOT/stage1" -name 'composite*.png' -delete
+  say "AC$AC done; $(df -h "$ROOT" | awk 'NR==2{print $4}') free on the instance"
 done
 
 kill $SYNC 2>/dev/null
 say "final sync"
-gsutil -q -m rsync -r "$ROOT/stage1" "$BUCKET/stage1"
+gsutil -q -m rsync -r -x '.*composite.*\.png$' "$ROOT/stage1" "$BUCKET/stage1"
 gsutil -q -m rsync -r "$ROOT/shards" "$BUCKET/shards"
 gsutil -q cp "$LOG" "$BUCKET/run.log"
 say "done -- results under $BUCKET/shards, composites under $BUCKET/stage1"
