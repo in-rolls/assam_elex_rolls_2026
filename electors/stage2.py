@@ -115,22 +115,61 @@ def read_part(
             placed = placements.get(path.name)
             if placed is None:
                 raise ValueError(f"{path.name} has no placements -- cannot attribute its words")
-            with Image.open(path) as image:
-                image.load()
-                responses = (
-                    annotate([image])
-                    if annotate is not None
-                    else vision.annotate([image], api_key=api_key)
-                )
-            if not responses:
-                raise RuntimeError(f"no response for {path.name}")
-            words.update(repack.words_for(placed, vision.words_from(responses[0])))
-            result.images_billed += 1
+            found = cached_words(part_dir, path.name)
+            if found is None:
+                with Image.open(path) as image:
+                    image.load()
+                    responses = (
+                        annotate([image])
+                        if annotate is not None
+                        else vision.annotate([image], api_key=api_key)
+                    )
+                if not responses:
+                    raise RuntimeError(f"no response for {path.name}")
+                found = vision.words_from(responses[0])
+                save_words(part_dir, path.name, found)
+                result.images_billed += 1
+            words.update(repack.words_for(placed, found))
 
         vision_part._fill_repacked(result, side, words, meta)
     except (OSError, RuntimeError, ValueError) as exc:
         result.error = f"{type(exc).__name__}: {exc}"
     return result
+
+
+def words_path(part_dir: Path, image: str) -> Path:
+    return part_dir / f"{Path(image).stem}.words.json"
+
+
+def save_words(part_dir: Path, image: str, found: Sequence[vision.Word]) -> None:
+    """Keep what Vision said, so saying it again never has to be bought twice.
+
+    Rows were the only thing kept, and rows are a *parse* of the answer rather than the answer.
+    Every improvement to the parser therefore cost the whole API bill again: the EPIC fix that
+    took well-formed reads from 62% to 99% would have meant re-buying every image in the state
+    to apply it. Words are the last point at which the money has been spent and no judgement has
+    yet been made, so they are what to keep.
+
+    About 6,000 words a composite, which is a megabyte or so -- next to nothing beside the
+    composite itself, and a tiny fraction of what re-reading it would cost.
+    """
+    temporary = words_path(part_dir, image).with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps([[w.text, w.left, w.top, w.right, w.bottom] for w in found], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    temporary.replace(words_path(part_dir, image))
+
+
+def cached_words(part_dir: Path, image: str) -> Optional[List[vision.Word]]:
+    """What Vision said last time, or None if this image has never been read."""
+    path = words_path(part_dir, image)
+    if not path.exists():
+        return None
+    return [
+        vision.Word(text, left, top, right, bottom)
+        for text, left, top, right, bottom in json.loads(path.read_text(encoding="utf-8"))
+    ]
 
 
 def ready(part_dir: Path) -> bool:
