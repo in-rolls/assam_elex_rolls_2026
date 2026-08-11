@@ -25,12 +25,14 @@ say() { echo "$(date +%H:%M:%S) | $*"; }
 WATCH=""
 [ "${KEEP}" = "--watch" ] && { WATCH=yes; KEEP=""; }
 
-shopt -s nullglob
 while true; do
-# Version sort, so AC1 precedes AC10 precedes AC100. Plain glob order interleaves them, and the
-# worker walks its AC list in order -- a mismatch leaves it waiting on an archive that is queued
-# behind twenty others.
-for path in $(ls -1 "$DIR"/*.zip 2>/dev/null | sort -V); do
+# find, not a glob. Under nullglob an unmatched pattern disappears entirely, so `ls -1 $DIR/*.zip`
+# becomes a bare `ls -1` -- which lists the current directory. Once every archive had been
+# uploaded and deleted, this script started earnestly trying to upload `electors`, `tests` and
+# `models` to the bucket.
+#
+# Version sorted, so AC1 precedes AC10 precedes AC100; plain sort interleaves them.
+for path in $(find "$DIR" -maxdepth 1 -name '*.zip' 2>/dev/null | sort -V); do
   name=$(basename "$path")
   # Space in a name means a browser's duplicate download, and a space in an object name breaks
   # every shell path that touches it later. Skipped rather than renamed: the original is there.
