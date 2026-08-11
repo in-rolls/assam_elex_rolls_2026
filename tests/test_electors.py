@@ -2363,7 +2363,46 @@ class TestStageHandoff:
     def test_side_survives_the_round_trip_whole(self, tmp_path):
         stage1.write_side(tmp_path / "side.json", self._side())
         back = stage1.read_side(tmp_path / "side.json")
-        assert back == self._side()
+        assert {k: v for k, v in back.items() if k != "stage1_version"} == self._side()
+
+    def test_the_side_read_records_which_stage_one_wrote_it(self, tmp_path):
+        """Resume is keyed on this, so a fix invalidates its own stale output."""
+        stage1.write_side(tmp_path / "side.json", self._side())
+        assert stage1.read_side(tmp_path / "side.json")["stage1_version"] == stage1.STAGE1_VERSION
+
+    def test_a_part_prepared_by_older_code_is_not_treated_as_done(self, tmp_path):
+        """The failure this prevents: a rerun after a fix serving what the fix replaced.
+
+        It happened twice in one evening -- once from composites left on disk, once from the
+        same output pulled back out of a bucket by a fresh machine -- and both times the only
+        thing that caught it was a human reading a log line.
+        """
+        part_dir = tmp_path / "part0007"
+        part_dir.mkdir()
+        (part_dir / "placements.json").write_text("{}", encoding="utf-8")
+        crops.write_manifest(
+            [crops.Crop(part=7, page=1, row=0, column=0, path=part_dir / "c.png")],
+            part_dir,
+            append=False,
+        )
+        stage1.write_side(part_dir / "side.json", self._side())
+        assert stage1.done(tmp_path, 7)
+
+        stale = json.loads((part_dir / "side.json").read_text(encoding="utf-8"))
+        stale["stage1_version"] = "1.0.0"
+        (part_dir / "side.json").write_text(json.dumps(stale), encoding="utf-8")
+        assert not stage1.done(tmp_path, 7)
+
+    def test_a_part_with_no_side_read_at_all_is_not_done(self, tmp_path):
+        part_dir = tmp_path / "part0008"
+        part_dir.mkdir()
+        (part_dir / "placements.json").write_text("{}", encoding="utf-8")
+        crops.write_manifest(
+            [crops.Crop(part=8, page=1, row=0, column=0, path=part_dir / "c.png")],
+            part_dir,
+            append=False,
+        )
+        assert not stage1.done(tmp_path, 8)
 
     def test_the_sex_breakdown_is_not_flattened_to_a_total(self, tmp_path):
         """An earlier version kept only the total, so stage two could not report male/female."""

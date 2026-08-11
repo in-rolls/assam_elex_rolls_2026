@@ -34,6 +34,21 @@ from assam_rolls import render, schema
 
 from . import crops, extract, pages, repack, summary, vision, vision_part
 
+#: Bumped whenever stage one changes what it writes, because ``done`` is keyed on it.
+#:
+#: The concern is data, not code. ``done`` proved a part had been prepared, never *by what*, so
+#: a resume happily served side reads produced before a fix -- twice in one evening. Once when
+#: composites on disk let a rerun skip parts whose EPICs were still at 62%, and again when a new
+#: instance pulled that same output back out of the bucket and reported "resumed with 111 parts
+#: already prepared". Both were caught by reading a log line, which is not a control.
+#:
+#: ``extract.PIPELINE_VERSION`` does exactly this for the row cache and is why that cache has
+#: never had the same problem.
+#:
+#: 2.0.0 -- the EPIC and serial are read from their own cells rather than one strip pass, and a
+#:          struck-off entry's status code is recorded.
+STAGE1_VERSION = "2.0.0"
+
 
 @dataclass
 class PartPrep:
@@ -181,6 +196,7 @@ def write_side(path: Path, side: Dict[str, Any]) -> None:
                 }
                 for number, page in side["pages"].items()
             },
+            "stage1_version": STAGE1_VERSION,
             "unknown": side["unknown"],
             "summary": (
                 None
@@ -212,6 +228,7 @@ def read_side(path: Path) -> Dict[str, Any]:
             }
             for number, page in raw["pages"].items()
         },
+        "stage1_version": raw.get("stage1_version", ""),
         "unknown": raw["unknown"],
         "summary": None if raw["summary"] is None else summary.RollSummary(**raw["summary"]),
     }
@@ -223,9 +240,22 @@ def done(out_dir: Path, part_no: int) -> bool:
     Requires the manifest *and* the placements: a part interrupted between writing composites
     and writing where the tiles are cannot be read by stage two, and half-finished work that
     looks finished is worse than work that was never started.
+
+    And requires the side reads to have been written by *this* version of stage one. Without
+    that, a rerun after a fix serves the output the fix was meant to replace, and the resulting
+    constituency is a silent mixture of two vintages with nothing in the data to tell them
+    apart. Re-preparing a part costs a few seconds of CPU; not re-preparing it costs the fix.
     """
     part_dir = out_dir / f"part{part_no:04d}"
-    return (part_dir / crops.MANIFEST).exists() and (part_dir / "placements.json").exists()
+    if not (part_dir / crops.MANIFEST).exists() or not (part_dir / "placements.json").exists():
+        return False
+    side = part_dir / "side.json"
+    if not side.exists():
+        return False
+    try:
+        return json.loads(side.read_text(encoding="utf-8")).get("stage1_version") == STAGE1_VERSION
+    except (ValueError, OSError):
+        return False
 
 
 def summarise(preps: Sequence[PartPrep]) -> Dict[str, Any]:
