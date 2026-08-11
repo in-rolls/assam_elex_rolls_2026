@@ -33,6 +33,7 @@ def _electors_balance(row) -> bool:
         return False
     return values[0] + values[1] + values[2] == values[3]
 
+
 #: Fields read as text. A ``None`` here means ink was present and nothing came back.
 TEXT_FIELDS = (
     "ac_name",

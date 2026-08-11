@@ -76,7 +76,9 @@ def main() -> int:
                     handle.write(base64.b64decode(payload["png"]))
                 text, tokens = engine.ocr_image(path)
                 print(
-                    json.dumps({"text": text, "tokens": tokens, "capped": tokens >= args.max_tokens}),
+                    json.dumps(
+                        {"text": text, "tokens": tokens, "capped": tokens >= args.max_tokens}
+                    ),
                     flush=True,
                 )
             except Exception as exc:  # keep serving; one bad crop must not kill the run

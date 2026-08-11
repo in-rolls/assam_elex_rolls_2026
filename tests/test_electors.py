@@ -22,11 +22,13 @@ from electors import (
     fields,
     gemini,
     grid,
+    output,
     pages,
     quality,
     repack,
     replay,
     resolution,
+    run,
     second_pass,
     stage1,
     stage2,
@@ -2077,6 +2079,95 @@ class TestStackByteCeiling:
         from PIL import Image
 
         assert vision.encoded_size(Image.new("L", (50, 50), "white")) > 0
+
+
+class TestRunnerAcrossConstituencies:
+    """The AC number must be the only thing that changes between runs.
+
+    Everything here is the plumbing that decides whether AC6-AC10 slot in behind AC1-AC5 or
+    quietly overwrite them. It is testable without a second zip, which is the point -- the
+    failure would be a shard filed under the wrong constituency, and that is not the kind of
+    thing to discover after paying for the reading.
+    """
+
+    @pytest.mark.parametrize(
+        "name,expected",
+        [("AC1_ASM.zip", 1), ("AC17_ASM.zip", 17), ("AC126_ASM.zip", 126)],
+    )
+    def test_the_ac_number_comes_from_the_archive_name(self, name, expected):
+        assert run._ac_number(Path("data/ac_rolls") / name) == expected
+
+    def test_an_archive_with_no_number_is_refused_not_guessed(self):
+        with pytest.raises(ValueError, match="cannot read an AC number"):
+            run._ac_number(Path("rolls.zip"))
+
+    def test_the_manifest_accumulates_rather_than_replacing(self, tmp_path):
+        """Five constituencies must leave five entries, not the last one."""
+        manifest = tmp_path / "manifest.json"
+        for ac_no in (6, 7, 8):
+            shard = output.write_shard([], ac_no, directory=tmp_path)
+            output.update_manifest(ac_no, shard, {"rows": ac_no * 10}, manifest=manifest)
+        entries = json.loads(manifest.read_text(encoding="utf-8"))
+        assert sorted(entries) == ["6", "7", "8"]
+        assert entries["7"]["rows"] == 70
+
+    def test_rerunning_one_ac_replaces_only_its_own_entry(self, tmp_path):
+        manifest = tmp_path / "manifest.json"
+        for ac_no in (6, 7):
+            shard = output.write_shard([], ac_no, directory=tmp_path)
+            output.update_manifest(ac_no, shard, {"rows": 1}, manifest=manifest)
+        output.update_manifest(7, output.shard_path(7, tmp_path), {"rows": 999}, manifest=manifest)
+        entries = json.loads(manifest.read_text(encoding="utf-8"))
+        assert entries["6"]["rows"] == 1 and entries["7"]["rows"] == 999
+
+    def test_cached_rows_are_reused_instead_of_re_read(self, tmp_path):
+        """A part already read is a part already paid for."""
+        part_dir = tmp_path / "part0003"
+        part_dir.mkdir()
+        (part_dir / run.ROWS).write_text(
+            json.dumps({"part_no": 3, "ac_no": 1, "roll_section": "main"}) + "\n",
+            encoding="utf-8",
+        )
+        billed = []
+        rows = run.read(tmp_path, "", on_part=lambda n, c, b: billed.append(b))
+        assert len(rows) == 1 and billed == [0]
+
+    def test_reconciliation_separates_unmeasured_from_failing(self, tmp_path):
+        """A part whose closing page could not be read is not a part that passed."""
+        for number, closing in ((1, 2), (2, None)):
+            part_dir = tmp_path / f"part{number:04d}"
+            part_dir.mkdir()
+            side = {"pages": {}, "unknown": [], "summary": None}
+            if closing is not None:
+                side["summary"] = summary.RollSummary(
+                    male=1, female=1, third=0, total=closing, scale=400
+                )
+            stage1.write_side(part_dir / "side.json", side)
+        rows = [
+            {"part_no": 1, "roll_section": "main"},
+            {"part_no": 1, "roll_section": "main"},
+            {"part_no": 2, "roll_section": "main"},
+        ]
+        found = run.reconcile(tmp_path, rows)
+        assert found["measured"] == 1 and found["matching"] == 1
+        assert found["residuals"] == []
+
+    def test_supplement_rows_are_not_scored_against_the_main_total(self, tmp_path):
+        """Part 4 read 511 boxes against a printed 483; the 28 were its supplement."""
+        part_dir = tmp_path / "part0004"
+        part_dir.mkdir()
+        stage1.write_side(
+            part_dir / "side.json",
+            {
+                "pages": {},
+                "unknown": [],
+                "summary": summary.RollSummary(male=240, female=243, third=0, total=483, scale=400),
+            },
+        )
+        rows = [{"part_no": 4, "roll_section": "main"} for _ in range(483)]
+        rows += [{"part_no": 4, "roll_section": "addition"} for _ in range(28)]
+        found = run.reconcile(tmp_path, rows)
+        assert found["matching"] == 1 and found["residuals"] == []
 
 
 class TestStageHandoff:

@@ -39,7 +39,7 @@ def main() -> int:
         return 0
 
     print(f"{len(stale):,} pages are not {CANONICAL_PAGE_SIZE[0]}x{CANONICAL_PAGE_SIZE[1]}")
-    acs = sorted({int(p.stem.split('-')[0]) for p in stale})
+    acs = sorted({int(p.stem.split("-")[0]) for p in stale})
     print(f"across {len(acs)} constituencies: {acs}")
 
     dropped_cache = 0

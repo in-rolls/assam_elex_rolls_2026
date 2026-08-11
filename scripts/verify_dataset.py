@@ -48,13 +48,13 @@ print("COVERAGE")
 check("every part present", len(records) == EXPECTED_TOTAL, f"{len(records):,}/{EXPECTED_TOTAL:,}")
 check("all 126 constituencies", len({r["ac_no_file"] for r in records}) == 126)
 for lang, expected in EXPECTED_BY_LANG.items():
-    check(f"{lang} complete", by_lang.get(lang) == expected, f"{by_lang.get(lang, 0):,}/{expected:,}")
+    check(
+        f"{lang} complete", by_lang.get(lang) == expected, f"{by_lang.get(lang, 0):,}/{expected:,}"
+    )
 
 print("\nPROVENANCE")
 always_empty = [
-    c
-    for c in records[0]
-    if c != "sections" and all(r.get(c) in (None, "") for r in records)
+    c for c in records[0] if c != "sections" and all(r.get(c) in (None, "") for r in records)
 ]
 check(
     "no column empty across every row (bar anomaly_notes)",
@@ -69,10 +69,7 @@ check(
 )
 check(
     "no cross-language contamination",
-    all(
-        (r["lang"] == "ASM") == ("asm=" in r["engine_version"])
-        for r in records
-    ),
+    all((r["lang"] == "ASM") == ("asm=" in r["engine_version"]) for r in records),
 )
 
 print("\nSTITCHING (random sample, using only what each row carries)")
@@ -88,7 +85,9 @@ for record in random.sample(records, 6):
     )
 
 print("\nENCODING")
-check("parts.csv carries the UTF-8 BOM", (OUT / "parts.csv").read_bytes().startswith(b"\xef\xbb\xbf"))
+check(
+    "parts.csv carries the UTF-8 BOM", (OUT / "parts.csv").read_bytes().startswith(b"\xef\xbb\xbf")
+)
 text_fields = ("district", "ac_name", "ps_address", "main_town_village", "gram_panchayat")
 bad_nfc = [
     (r["ac_no_file"], f)
@@ -97,7 +96,9 @@ bad_nfc = [
     if isinstance(r.get(f), str) and r[f] != unicodedata.normalize("NFC", r[f])
 ]
 check("every text field is NFC", not bad_nfc, f"{len(bad_nfc)} not NFC")
-check("scripts written literally, not escaped", "\\u" not in (OUT / "parts.jsonl").read_text("utf-8"))
+check(
+    "scripts written literally, not escaped", "\\u" not in (OUT / "parts.jsonl").read_text("utf-8")
+)
 
 print("\nSCHEMA ACROSS LANGUAGES")
 columns = {tuple(sorted(k for k in r if k != "sections")) for r in records}
@@ -113,10 +114,22 @@ for field, lang in EDITION_ONLY.items():
     )
 
 print("\nNULL CONVENTION")
-numeric = ("part_no", "start_serial", "end_serial", "electors_male", "electors_female",
-           "electors_third_gender", "electors_total", "pin_code", "ac_no", "pc_no")
+numeric = (
+    "part_no",
+    "start_serial",
+    "end_serial",
+    "electors_male",
+    "electors_female",
+    "electors_third_gender",
+    "electors_total",
+    "pin_code",
+    "ac_no",
+    "pc_no",
+)
 nulls = {k: sum(1 for r in records if r.get(k) is None) for k in numeric}
-check("no unread numeric fields", not any(nulls.values()), str({k: v for k, v in nulls.items() if v}))
+check(
+    "no unread numeric fields", not any(nulls.values()), str({k: v for k, v in nulls.items() if v})
+)
 blank_ward = sum(1 for r in records if r.get("ward_no") == "")
 check("rural parts read blank, not null", blank_ward > 0, f"{blank_ward:,} blank wards")
 
@@ -124,8 +137,15 @@ print("\nARITHMETIC (independent of OCR quality claims)")
 sums = sum(
     1
     for r in records
-    if None not in (r["electors_male"], r["electors_female"], r["electors_third_gender"], r["electors_total"])
-    and r["electors_male"] + r["electors_female"] + r["electors_third_gender"] == r["electors_total"]
+    if None
+    not in (
+        r["electors_male"],
+        r["electors_female"],
+        r["electors_third_gender"],
+        r["electors_total"],
+    )
+    and r["electors_male"] + r["electors_female"] + r["electors_third_gender"]
+    == r["electors_total"]
 )
 check("male+female+third == total", sums / len(records) > 0.995, f"{sums/len(records):.3%}")
 matched = sum(1 for r in records if r["ac_no"] == r["ac_no_file"])

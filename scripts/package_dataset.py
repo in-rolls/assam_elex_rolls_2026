@@ -81,7 +81,9 @@ def main() -> int:
             print(f"FAIL: {archive} does not decompress to {source}", file=sys.stderr)
             return 1
         raw_mb, gz_mb = source.stat().st_size / 1e6, archive.stat().st_size / 1e6
-        print(f"  {name:22s} {raw_mb:>7.1f} MB -> {gz_mb:>5.1f} MB  ({1 - gz_mb / raw_mb:.0%} smaller), verified")
+        print(
+            f"  {name:22s} {raw_mb:>7.1f} MB -> {gz_mb:>5.1f} MB  ({1 - gz_mb / raw_mb:.0%} smaller), verified"
+        )
         published.append(archive)
 
     for name in VERBATIM:

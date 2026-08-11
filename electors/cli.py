@@ -946,6 +946,63 @@ def cmd_stage1(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_run(args: argparse.Namespace) -> int:
+    """The whole chain per constituency. Resumable, and it never pays for a part twice."""
+    import os
+
+    from . import run as runner
+    from . import vision
+
+    api_key = "" if args.prepare_only else os.environ.get("VISION_API_KEY", "")
+    if not api_key and not args.prepare_only:
+        print("VISION_API_KEY is not set (use --prepare-only to stop before Vision)")
+        return 1
+    render.require_poppler()
+
+    runs = []
+    for name in args.zips:
+        zip_path = Path(name)
+        if not zip_path.exists():
+            print(f"no such zip: {zip_path}", file=sys.stderr)
+            return 1
+        ac_no = runner._ac_number(zip_path)
+        work = Path(args.work) / f"AC{ac_no:03d}"
+        print(f"\nAC{ac_no}  {zip_path.name}")
+
+        if args.prepare_only:
+            runner.prepare(
+                zip_path,
+                work,
+                limit=args.limit or None,
+                workers=args.workers,
+                on_part=lambda p: print(
+                    f"    stage1 part {p.part_no:<5} {p.boxes:>5} boxes  {p.composites} images"
+                    + (f"  FAILED {p.error}" if p.error else "")
+                ),
+            )
+            images = runner.images_billed(work)
+            print(f"    prepared. {images} images would cost ${vision.cost(images):.2f}")
+            continue
+
+        found = runner.run_ac(
+            zip_path,
+            work,
+            api_key,
+            shard_dir=Path(args.shards),
+            manifest=Path(args.manifest),
+            limit=args.limit or None,
+            workers=args.workers,
+            log=print,
+        )
+        runs.append(found)
+        print(f"    {found.rows:,} rows -> {found.shard}  ${found.cost:.2f}")
+
+    if runs:
+        print()
+        print(runner.render_report(runs))
+    return 0 if all(not r.error for r in runs) else 1
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     """Structure first, then pixels. No API calls."""
     from . import verify
@@ -1126,6 +1183,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_s1.add_argument("--limit", type=int, default=0, help="first N parts only")
     p_s1.add_argument("--dpi", type=int, default=extract.DPI)
     p_s1.set_defaults(func=cmd_stage1)
+
+    p_run = sub.add_parser("run", help="zip -> stage 1 -> Vision -> Parquet shard, per AC")
+    p_run.add_argument("zips", nargs="+", help="one or more AC zips, e.g. data/ac_rolls/AC*.zip")
+    p_run.add_argument("--work", default="out/stage1", help="where prepared parts live")
+    p_run.add_argument("--shards", default=str(output.SHARD_DIR))
+    p_run.add_argument("--manifest", default=str(output.MANIFEST))
+    p_run.add_argument("--workers", type=int, default=8)
+    p_run.add_argument("--limit", type=int, default=0, help="first N parts of each AC only")
+    p_run.add_argument(
+        "--prepare-only", action="store_true", help="stage one only -- spend no money"
+    )
+    p_run.set_defaults(func=cmd_run)
 
     p_ver = sub.add_parser(
         "verify", help="prove the repack lost nothing and placed every tile correctly"
