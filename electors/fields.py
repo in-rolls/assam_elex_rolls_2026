@@ -28,11 +28,21 @@ line read ``বৈবলমলস ' 2/ লঙ্গ ' পৰম``, label garbled
 both lost. That, not the sex matcher, was the 44.2% male share against the roll's own 50.8%.
 The ``লিঙ্গ`` label is the durable thing on that line, and it is searched for from the end.
 
-**The serial number is derived, not read.** It is small, sits alone in a wide strip, and OCR
-returns it for barely half the boxes even at three scales. But serials run consecutively
-through a part, so position determines it and OCR only *confirms* it -- the same move the
-info pipeline made with the elector arithmetic, where a checkable relation beat a better
-guess. A disagreement is recorded rather than resolved silently.
+**The serial number is derived, not read.** Serials run consecutively through a part, so
+position determines it, and the counts reconcile exactly against the roll's own printed totals
+-- 205 of 205 measurable parts of AC10 -- which is far stronger evidence than an OCR of a small
+number.
+
+``serial_no_ocr`` was meant to confirm it and **cannot**, because the cell it reads is not always
+the same cell. A main-roll box carries one numbered box; a supplement box carries two, the
+elector's serial and the entry's number within that supplement::
+
+    main roll        [        1 ]                 HHK0001998
+    addition list    [      352 ] [        1 ]    QTD0108308
+
+A fixed crop lands on different fields on the two layouts, so the two agree on 42% of rows and
+form a consecutive run on 2.7% of pages. That is not a reading failure to chase; it is two
+different quantities being compared. Kept as a diagnostic, not published as a check.
 """
 
 from __future__ import annotations

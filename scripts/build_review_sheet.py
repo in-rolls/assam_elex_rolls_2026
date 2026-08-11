@@ -48,6 +48,11 @@ FIELDS = ("name", "relation", "age", "sex", "house_no", "epic_no")
 
 def shown_value(row: Dict[str, Any], field: str) -> Any:
     """What to print beside the crop. Only ``relation`` is assembled rather than read off."""
+    # The serial is derived by counting rows, not read, and the OCR that could check it agrees
+    # only 42% of the time -- while forming a consecutive run on 2.7% of pages, which is what a
+    # 10%-per-box error rate looks like. So the OCR is probably the wrong one, and "probably" is
+    # not good enough for a published column: the printed serial sits in the top-left of every
+    # box, so a person can settle it.
     if field != "relation":
         return row.get(field)
     name = row.get("relation_name")
