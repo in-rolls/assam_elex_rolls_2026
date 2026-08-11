@@ -79,6 +79,16 @@ LIMIT=""
 
 for AC in $ACS; do
   NAME="AC${AC}_ASM.zip"
+  # Wait for the archive rather than skipping it. The upload from a laptop and the boot of this
+  # machine are independent, and an instance that starts first should idle for a few minutes
+  # instead of reporting the constituency missing and moving on -- which reads, later, exactly
+  # like a constituency that had nothing in it.
+  WAITED=0
+  until gsutil -q stat "$BUCKET/source/$NAME" 2>/dev/null; do
+    [ "$WAITED" -ge 3600 ] && break
+    [ $((WAITED % 300)) -eq 0 ] && say "waiting for $NAME to appear in the bucket (${WAITED}s)"
+    sleep 30; WAITED=$((WAITED + 30))
+  done
   say "fetching $NAME"
   gsutil -q cp "$BUCKET/source/$NAME" "$ROOT/$NAME" || { say "no $NAME in the bucket"; continue; }
 
