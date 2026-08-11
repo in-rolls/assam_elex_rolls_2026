@@ -6,6 +6,7 @@ failure it exists to prevent, because all of them were failures first.
 
 from __future__ import annotations
 
+import json
 import random
 from pathlib import Path
 
@@ -27,6 +28,9 @@ from electors import (
     replay,
     resolution,
     second_pass,
+    stage1,
+    stage2,
+    summary,
     timing,
     validate,
     vision,
@@ -2073,6 +2077,91 @@ class TestStackByteCeiling:
         from PIL import Image
 
         assert vision.encoded_size(Image.new("L", (50, 50), "white")) > 0
+
+
+class TestStageHandoff:
+    """What stage one writes must be exactly what stage two needs -- no re-rendering.
+
+    The split only saves anything if stage two can work from the files alone. Anything the
+    handoff drops, stage two has to recover by opening the PDF again, which is the cost the
+    split exists to avoid.
+    """
+
+    def _side(self):
+        return {
+            "pages": {
+                3: {
+                    "section": pages.Section.MAIN,
+                    "recognised": True,
+                    "boxes": {(3, 0, 0): "HHK0001471", (3, 0, 1): "HHK0001472"},
+                },
+                4: {"section": pages.Section.ADDITION, "recognised": False, "boxes": {}},
+            },
+            "unknown": [7],
+            "summary": summary.RollSummary(male=315, female=302, third=1, total=618, scale=400),
+        }
+
+    def test_side_survives_the_round_trip_whole(self, tmp_path):
+        stage1.write_side(tmp_path / "side.json", self._side())
+        back = stage1.read_side(tmp_path / "side.json")
+        assert back == self._side()
+
+    def test_the_sex_breakdown_is_not_flattened_to_a_total(self, tmp_path):
+        """An earlier version kept only the total, so stage two could not report male/female."""
+        stage1.write_side(tmp_path / "side.json", self._side())
+        closing = stage1.read_side(tmp_path / "side.json")["summary"]
+        assert (closing.male, closing.female, closing.third) == (315, 302, 1)
+
+    def test_sections_come_back_as_the_enum_not_a_string(self, tmp_path):
+        stage1.write_side(tmp_path / "side.json", self._side())
+        back = stage1.read_side(tmp_path / "side.json")
+        assert back["pages"][4]["section"] is pages.Section.ADDITION
+
+    def test_placements_rebuild_with_the_keys_they_were_written_with(self, tmp_path):
+        (tmp_path / "placements.json").write_text(
+            json.dumps(
+                {
+                    "composite000.png": [
+                        {
+                            "page": 3,
+                            "box_row": 0,
+                            "box_col": 1,
+                            "left": 800,
+                            "top": 0,
+                            "right": 1576,
+                            "bottom": 300,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        placed = stage2.placements_of(tmp_path)["composite000.png"]
+        assert [p.key for p in placed] == [(3, 0, 1)]
+        assert (placed[0].left, placed[0].bottom) == (800, 300)
+
+    def test_identity_is_read_from_the_manifest_not_the_directory_name(self, tmp_path):
+        """A directory can be renamed; the sha that ties a row to source bytes cannot."""
+        crops.write_manifest(
+            [
+                crops.Crop(
+                    part=9,
+                    page=1,
+                    row=0,
+                    column=0,
+                    path=tmp_path / "composite000.png",
+                    ac_no=42,
+                    source_zip="AC42_ASM.zip",
+                    source_pdf="2026-EROLLGEN-S03-42-FinalRoll-Revision1-ASM-9-WI.pdf",
+                    pdf_sha256="c" * 64,
+                )
+            ],
+            tmp_path,
+            append=False,
+        )
+        who = stage2.identity(tmp_path)
+        assert who["ac_no"] == 42 and who["part_no"] == 9
+        assert who["source_zip"] == "AC42_ASM.zip" and who["pdf_sha256"] == "c" * 64
 
 
 class TestManifestKeys:

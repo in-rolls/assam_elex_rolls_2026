@@ -110,6 +110,7 @@ class Crop:
     bottom: int = 0
     ac_no: int = 0
     section: str = ""
+    source_zip: str = ""
     source_pdf: str = ""
     pdf_sha256: str = ""
 
@@ -145,6 +146,7 @@ class Crop:
             "right": self.right,
             "bottom": self.bottom,
             "roll_section": self.section,
+            "source_zip": self.source_zip,
             "source_pdf": self.source_pdf,
             "pdf_sha256": self.pdf_sha256,
         }

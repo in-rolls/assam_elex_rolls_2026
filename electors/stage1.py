@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from assam_rolls import render, schema
 
-from . import crops, extract, pages, repack, vision, vision_part
+from . import crops, extract, pages, repack, summary, vision, vision_part
 
 
 @dataclass
@@ -142,27 +142,14 @@ def prepare_part(
                             bottom=rect[3],
                             ac_no=prep.ac_no,
                             section=page_side["section"].value,
+                            source_zip=zip_path.name,
                             source_pdf=pdf_name,
                             pdf_sha256=sha,
                         )
                     )
 
             _write(part_dir / "placements.json", placements)
-            _write(
-                part_dir / "side.json",
-                {
-                    "epic": {
-                        f"{k[0]},{k[1]},{k[2]}": text
-                        for page in side["pages"].values()
-                        for k, text in page["boxes"].items()
-                    },
-                    "sections": {str(n): p["section"].value for n, p in side["pages"].items()},
-                    "unrecognised_headers": [
-                        n for n, p in side["pages"].items() if not p["recognised"]
-                    ],
-                    "summary_total": prep.summary_total,
-                },
-            )
+            write_side(part_dir / "side.json", side)
             crops.write_manifest(written, part_dir, append=False)
             for image in images:
                 image.close()
@@ -174,6 +161,60 @@ def prepare_part(
 
 def _write(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def write_side(path: Path, side: Dict[str, Any]) -> None:
+    """The CPU's own readings, in a form that survives the trip to disk unchanged.
+
+    A round trip, not a summary. The first version wrote a flattened digest -- EPICs, section
+    values, a total -- and stage two would have had to re-render the part to recover the sex
+    breakdown and the unreadable pages, which is the re-rendering the split exists to avoid.
+    """
+    _write(
+        path,
+        {
+            "pages": {
+                str(number): {
+                    "section": page["section"].value,
+                    "recognised": page["recognised"],
+                    "boxes": {f"{k[1]},{k[2]}": text for k, text in page["boxes"].items()},
+                }
+                for number, page in side["pages"].items()
+            },
+            "unknown": side["unknown"],
+            "summary": (
+                None
+                if side["summary"] is None
+                else {
+                    "male": side["summary"].male,
+                    "female": side["summary"].female,
+                    "third": side["summary"].third,
+                    "total": side["summary"].total,
+                    "scale": side["summary"].scale,
+                }
+            ),
+        },
+    )
+
+
+def read_side(path: Path) -> Dict[str, Any]:
+    """``write_side`` inverted, giving back exactly what ``tiles_for`` produced."""
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    return {
+        "pages": {
+            int(number): {
+                "section": pages.Section(page["section"]),
+                "recognised": page["recognised"],
+                "boxes": {
+                    (int(number), int(k.split(",")[0]), int(k.split(",")[1])): text
+                    for k, text in page["boxes"].items()
+                },
+            }
+            for number, page in raw["pages"].items()
+        },
+        "unknown": raw["unknown"],
+        "summary": None if raw["summary"] is None else summary.RollSummary(**raw["summary"]),
+    }
 
 
 def done(out_dir: Path, part_no: int) -> bool:
