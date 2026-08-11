@@ -100,7 +100,11 @@ def _render_pages(pdf_bytes: bytes, workdir: Path, dpi: int = DPI) -> List[Path]
     pdf = workdir / "part.pdf"
     pdf.write_bytes(pdf_bytes)
     subprocess.run(
-        ["pdftoppm", "-r", str(dpi), "-png", str(pdf), str(workdir / "page")],
+        # -gray, because the source is a bilevel scan: every page in out/pages has R == G == B
+        # on every pixel, so the colour channels are two exact copies. Rendering them costs three
+        # times the temp bytes and three times the decode, and every consumer here immediately
+        # calls convert("L") anyway.
+        ["pdftoppm", "-gray", "-r", str(dpi), "-png", str(pdf), str(workdir / "page")],
         check=True,
         capture_output=True,
     )

@@ -664,6 +664,7 @@ def cmd_second_pass(args: argparse.Namespace) -> int:
                 subprocess.run(
                     [
                         "pdftoppm",
+                        "-gray",
                         "-r",
                         str(extract.DPI),
                         "-png",

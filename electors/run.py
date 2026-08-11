@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
@@ -34,6 +34,11 @@ from . import output, pages, stage1, stage2, vision
 
 #: Cached rows for one part, so a resumed run re-reads them instead of re-buying them.
 ROWS = "rows.jsonl"
+
+#: Concurrent Cloud Vision requests. The API allows 1,800 a minute and one composite takes about
+#: nine seconds, so this is nowhere near the service's limit -- it is chosen to stay well inside
+#: it while cutting the state's wait from ten days to under a day.
+VISION_WORKERS = 24
 
 
 @dataclass
@@ -110,34 +115,60 @@ def read(
     api_key: str,
     parts: Optional[Sequence[int]] = None,
     on_part: Optional[Callable[[int, int, int], None]] = None,
+    workers: int = VISION_WORKERS,
 ) -> List[Dict[str, Any]]:
     """Stage two over every prepared part, using cached rows where they exist.
 
     The cache is written per part rather than per constituency because that is the unit of
     money: a part read is a part paid for, and it should stay read.
+
+    Parts are read **concurrently**, because this stage does not compute anything -- it waits.
+    Measured sequentially: 8.7 seconds an image, a load average of 0.8 on 32 cores, and 239
+    hours for the state's 99,000 images. That is ten days of a machine being billed to hold a
+    socket open, more than the API calls themselves cost. Cloud Vision allows 1,800 requests a
+    minute; one at a time uses seven.
+
+    Threads rather than processes: the work is a network round trip, so the interpreter lock is
+    never the constraint, and each part writes only its own files.
     """
-    rows: List[Dict[str, Any]] = []
     wanted = set(parts) if parts else None
+    todo = []
     for part_dir in sorted(work_dir.glob("part*")):
         number = int(part_dir.name.replace("part", ""))
         if wanted is not None and number not in wanted:
             continue
+        todo.append((number, part_dir))
+
+    found: Dict[int, List[Dict[str, Any]]] = {}
+    errors: List[str] = []
+
+    def one(number: int, part_dir: Path) -> None:
         cache = part_dir / ROWS
         if cache.exists():
-            found = [json.loads(line) for line in cache.read_text(encoding="utf-8").splitlines()]
+            rows = [json.loads(line) for line in cache.read_text(encoding="utf-8").splitlines()]
             billed = 0
         else:
             if not stage2.ready(part_dir):
-                continue
+                return
             result = stage2.read_part(part_dir, api_key)
             if result.error:
-                raise RuntimeError(f"part {number}: {result.error}")
-            found, billed = result.electors, result.images_billed
-            _write_rows(cache, found)
-        rows.extend(found)
+                errors.append(f"part {number}: {result.error}")
+                return
+            rows, billed = result.electors, result.images_billed
+            _write_rows(cache, rows)
+        found[number] = rows
         if on_part:
-            on_part(number, len(found), billed)
-    return rows
+            on_part(number, len(rows), billed)
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        for future in as_completed([pool.submit(one, n, d) for n, d in todo]):
+            future.result()
+
+    if errors:
+        raise RuntimeError("; ".join(errors[:5]))
+    # Reassembled in part order. Concurrency decides when a part is read, never where its rows
+    # land, and a shard whose row order depends on scheduling is not reproducible.
+    return [row for number in sorted(found) for row in found[number]]
 
 
 def _write_rows(path: Path, rows: Sequence[Dict[str, Any]]) -> None:
@@ -270,6 +301,7 @@ def run_ac(
     manifest: Path = output.MANIFEST,
     limit: Optional[int] = None,
     workers: int = 4,
+    vision_workers: int = VISION_WORKERS,
     log: Optional[Callable[[str], None]] = None,
 ) -> ACRun:
     """One constituency, end to end. The AC number is the only thing that changes."""
@@ -303,6 +335,7 @@ def run_ac(
         rows = read(
             work_dir,
             api_key,
+            workers=vision_workers,
             on_part=lambda n, count, billed: say(
                 f"    stage2 part {n:<5} {count:>5} rows"
                 + ("  (cached)" if not billed else f"  {billed} images")
