@@ -2081,6 +2081,48 @@ class TestStackByteCeiling:
         assert vision.encoded_size(Image.new("L", (50, 50), "white")) > 0
 
 
+class TestSectionMarkersAreWords:
+    """A village is not a supplement.
+
+    Part 38's polling station is যোগেন্দ্ৰপুৰ -- Jogendrapur -- and the marker for an addition
+    list is যোগ, its first three letters. Matched as a substring, every page of that station was
+    filed as a supplement: 534 rows of a 1,048-row main list, and the part then reconciled at
+    514 against its own printed total.
+    """
+
+    STATION = (
+        "বিধানসভা সমষ্টিৰ নম্বৰ আৰু নাম : 1-গোসাইগাওঁ খণ্ড নং : 38 "
+        "অংশৰ নম্বৰ আৰু নাম : 1-যোগেন্দ্ৰপুৰ এফ ভি"
+    )
+    SUPPLEMENT = (
+        "বিধানসভা সমষ্টিৰ নম্বৰ আৰু নাম : 1-গোসাইগাওঁ খণ্ড নং : 38 "
+        "যোগ তালিকা 1 (27-12-2025 04-02-2026 )"
+    )
+
+    def test_a_station_named_jogendrapur_is_a_main_roll_page(self):
+        assert pages.section_of(self.STATION)[0] is pages.Section.MAIN
+
+    def test_the_real_addition_list_is_still_found(self):
+        assert pages.section_of(self.SUPPLEMENT)[0] is pages.Section.ADDITION
+
+    def test_a_station_ending_in_abad_is_not_a_deletion_list(self):
+        """বাদ would have been the worse one: countless place names end in -abad."""
+        header = "সমষ্টিৰ নাম : 1-ক অংশৰ নম্বৰ আৰু নাম : 5-আহমদাবাদ এফ ভি"
+        assert pages.section_of(header)[0] is pages.Section.MAIN
+
+    def test_a_deletion_list_is_still_found(self):
+        assert pages.section_of("খণ্ড নং : 7 বিয়োজন তালিকা 1")[0] is pages.Section.DELETION
+
+    def test_a_marker_inside_the_station_name_never_counts(self):
+        """Even a whole-word marker is not a marker when it sits in the station field."""
+        header = "খণ্ড নং : 3 অংশৰ নম্বৰ আৰু নাম : 9-যোগ এফ ভি"
+        assert pages.section_of(header)[0] is pages.Section.MAIN
+
+    def test_an_unreadable_header_is_flagged_not_guessed(self):
+        section, recognised = pages.section_of("qqq zzz")
+        assert section is pages.Section.MAIN and not recognised
+
+
 class TestStruckOffEntries:
     """A struck-off elector stays printed, numbered and counted -- and is not an elector.
 
@@ -2246,7 +2288,22 @@ class TestPartialLastPage:
         )
         before, after = pages.recover_partial([good, last])
         assert before is good
-        assert after.kind is pages.PageKind.ELECTOR and after.columns == ((78, 854, 1082),)
+        # All of the part's columns, not only the ones whose edges happened to be inked: which
+        # of them hold an elector is settled by ink, in grid.has_ink.
+        assert after.kind is pages.PageKind.ELECTOR
+        assert after.columns == tuple(self.ESTABLISHED)
+
+    def test_every_column_is_built_even_when_one_edge_was_not_inked(self):
+        """Part 43's page 25 holds five electors and lost serial 663 to a missing edge line."""
+        page25 = [78, 854, 1082, 1108, 1133, 1909, 2137, 2164]
+        good = pages.PageSignature(
+            number=3, kind=pages.PageKind.ELECTOR, h_rules=H_RULES, v_rules=V_RULES
+        )
+        last = pages.PageSignature(
+            number=4, kind=pages.PageKind.SUMMARY, h_rules=H_RULES, v_rules=page25
+        )
+        assert len(grid.columns_present(page25, self.ESTABLISHED)) == 2
+        assert len(pages.recover_partial([good, last])[1].columns) == 3
 
 
 class TestRunnerAcrossConstituencies:

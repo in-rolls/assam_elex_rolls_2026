@@ -24,6 +24,7 @@ produce 30 plausible rows of nonsense.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import List, Optional, Sequence, Tuple
@@ -62,8 +63,16 @@ class Section(str, Enum):
     MODIFICATION = "modification"
 
 
-#: Header words that name a supplement. Matched as substrings because the header is OCR'd:
-#: ``যোগ তালিকা`` survives as ``যোগ`` far more reliably than as the whole phrase.
+#: Header words that name a supplement.
+#:
+#: Matched as **whole words**, not substrings. A supplement's header reads ``যোগ তালিকা 1``, and
+#: matching ``যোগ`` anywhere filed every page of part 38 as an addition list -- because its
+#: polling station is যোগেন্দ্ৰপুৰ, Jogendrapur, and the marker is the first three letters of the
+#: village. 534 rows of a 1,048-row main list were labelled a supplement, and the part then read
+#: 514 against its own printed total.
+#:
+#: ``বাদ`` would have been worse in a way nobody would have noticed: countless place names end
+#: in -abad. That one never fired in AC1 only by luck of which villages are in it.
 SECTION_MARKERS = (
     ("যোগ", Section.ADDITION),
     ("সংযোজন", Section.ADDITION),
@@ -75,6 +84,11 @@ SECTION_MARKERS = (
 )
 
 
+#: Where a main-roll page names its polling station. Everything after this is a place name and
+#: cannot contain a section marker.
+STATION_FIELD = re.compile(r"অংশৰ[^:]{0,24}নাম\s*[:：]")
+
+
 def section_of(header: str) -> Tuple[Section, bool]:
     """``(section, recognised)`` for one page's header band.
 
@@ -84,8 +98,17 @@ def section_of(header: str) -> Tuple[Section, bool]:
     main roll, which is the failure that matters.
     """
     text = " ".join(header.split())
+
+    # The station name is not a section marker. A page of the main roll names its polling
+    # station after ``অংশৰ ... নাম :``; a supplement page has no station field at all, just the
+    # list's own title. So the station name is removed before looking for markers, which is what
+    # separates যোগেন্দ্ৰপুৰ the village from যোগ তালিকা the addition list.
+    searchable = STATION_FIELD.split(text)[0] if STATION_FIELD.search(text) else text
+
     for marker, section in SECTION_MARKERS:
-        if marker in text:
+        # Whole words. A Bengali letter or matra immediately after the marker means it is the
+        # start of a longer word -- যোগ inside যোগেন্দ্ৰপুৰ -- not the marker itself.
+        if re.search(marker + r"(?![\u0980-\u09FF])", searchable):
             return section, True
     recognised = "অংশৰ" in text or "সমষ্টিৰ" in text
     return Section.MAIN, recognised
@@ -171,9 +194,20 @@ def recover_partial(signatures: Sequence[PageSignature]) -> List[PageSignature]:
         if signature.is_elector or signature.kind is PageKind.INFO or not signature.v_rules:
             out.append(signature)
             continue
-        columns = grid.columns_present(signature.v_rules, established)
-        if columns and grid.row_bands(signature.h_rules):
-            signature = replace(signature, kind=PageKind.ELECTOR, columns=tuple(columns))
+        # Two different questions, and conflating them lost electors. Whether *any* of the
+        # part's columns are drawn decides whether this is an elector page at all -- a strict
+        # test, because a ruled table must not be promoted. How many columns to *build* is not
+        # that question: the part draws three, and which of them hold an elector is settled by
+        # ink, not by whether the publisher happened to print a particular edge.
+        #
+        # Part 43's page 25 holds five electors across three columns. Its third column's left
+        # edge was not inked -- only the neighbouring line of the shared border -- so the strict
+        # test called that column absent and serial 663 was dropped from a page whose other two
+        # columns read fine.
+        if grid.columns_present(signature.v_rules, established) and grid.row_bands(
+            signature.h_rules
+        ):
+            signature = replace(signature, kind=PageKind.ELECTOR, columns=tuple(established))
         out.append(signature)
     return out
 

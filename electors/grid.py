@@ -356,10 +356,18 @@ def row_bands(h_rules: Sequence[int]) -> List[Tuple[int, int]]:
             bottom = min(rules, key=lambda r: abs(r - (top + height)))
             if abs(bottom - (top + height)) > snap or bottom <= top:
                 continue
-            # Rows are separated by a real gutter. Without this the *bottom* rule of one row
-            # pairs with the *bottom* of the next -- 568+415 lands within tolerance of 1008 --
-            # and every row after the first is offset by a gutter's width.
-            if out and top - out[-1][1] < gutter * 0.5:
+            # Without this the *bottom* rule of one row pairs with the *bottom* of the next --
+            # 568 + 415 lands within tolerance of 1008 -- and every row after the first is
+            # offset by a gutter's width.
+            #
+            # The test is whether this top *is* the previous bottom, not whether it clears an
+            # estimated gutter. The estimate came from the mode of all short spans, and on a
+            # partial page the header's rules outnumber the one real gutter: part 43's page 25
+            # has a 25px gutter and the mode returned 56, so the page's genuine second row was
+            # rejected and three plainly printed electors -- serials 663, 664, 665 -- were lost.
+            # A page holding two rows cannot vote on its own row spacing; a rule sitting on the
+            # previous bottom can be recognised without a vote.
+            if out and top - out[-1][1] < height * 0.03:
                 continue
             out.append((top, bottom))
         return out[:ROWS]

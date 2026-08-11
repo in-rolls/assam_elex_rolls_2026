@@ -47,7 +47,11 @@ from . import crops, extract, pages, repack, summary, vision, vision_part
 #:
 #: 2.0.0 -- the EPIC and serial are read from their own cells rather than one strip pass, and a
 #:          struck-off entry's status code is recorded.
-STAGE1_VERSION = "2.0.0"
+#: 2.1.0 -- a section marker must be a whole word outside the station-name field, a partial
+#:          page's second row is no longer rejected by a gutter estimated from header rules,
+#:          and all of a part's columns are built with ink deciding which hold an elector.
+#:          Together these recovered 625 rows in AC1 that reconciliation had reported missing.
+STAGE1_VERSION = "2.1.0"
 
 
 @dataclass
