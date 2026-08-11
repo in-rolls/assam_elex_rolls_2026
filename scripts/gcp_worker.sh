@@ -35,6 +35,19 @@ exec > >(tee -a "$LOG") 2>&1
 
 say() { echo "$(date -u +%H:%M:%S) | $*"; }
 
+# One tesseract thread per worker. Tesseract uses OpenMP and will otherwise take about four
+# threads inside each of the 32 worker processes: the first run on this machine sat at a load
+# average of 113 on 32 cores and finished 4 parts in 37 minutes, which extrapolates to 37 hours
+# for a constituency that should take half an hour. The cores are already saturated by having
+# one process per core; the threads only add contention.
+export OMP_THREAD_LIMIT=1
+export OMP_NUM_THREADS=1
+
+# Unbuffered, or Python block-buffers stdout into a pipe and the log shows nothing for the
+# length of the run -- which is indistinguishable from a wedged job at exactly the moment you
+# need to tell the difference.
+export PYTHONUNBUFFERED=1
+
 say "host $(hostname), $(nproc) vCPU, $(free -g | awk '/^Mem:/{print $2}') GB RAM"
 [ "$WORKERS" -eq 0 ] && WORKERS=$(nproc)
 
