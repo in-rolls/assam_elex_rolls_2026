@@ -109,7 +109,10 @@ print(sum(1 for l in gzip.open('$INDEX','rt') if json.loads(l).get('ac_no')==$ac
     say "$name already in the bucket at the right size"
   else
     say "uploading $name ($(echo "$local_size" | awk '{printf "%.1f GB", $1/1e9}'))"
-    if ! gcloud storage cp "$path" "$BUCKET/source/$name" 2>&1 | tail -1; then
+    # Whole output, not the last line. Trimming it to one line is what turned "HTTPError 503
+    # on nineteen component uploads" into a stray fragment of gcloud's help text, and three
+    # separate wrong diagnoses were made from that fragment.
+    if ! gcloud storage cp "$path" "$BUCKET/source/$name" 2>&1; then
       say "  upload failed -- keeping the local copy"
       continue
     fi
