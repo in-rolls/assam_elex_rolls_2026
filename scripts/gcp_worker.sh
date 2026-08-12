@@ -35,6 +35,42 @@ exec > >(tee -a "$LOG") 2>&1
 
 say() { echo "$(date -u +%H:%M:%S) | $*"; }
 
+#: How long a claim may go unrefreshed before another machine may take the constituency. Longer
+#: than the slowest constituency observed (AC11, 402 parts, 118 minutes) with room to spare, so a
+#: working machine is never robbed; short enough that a preempted one does not strand its work.
+STALE=10800
+
+# Claim a constituency, atomically. --if-generation-match=0 creates the object only if it does
+# not exist and returns 412 otherwise, so the winner is decided by Cloud Storage rather than by
+# a check followed by a write, which two machines can both pass.
+claim() {
+  local ac=$1 file=/tmp/claim.$$
+  echo "$(hostname) $(date +%s)" > "$file"
+  if gcloud storage cp --if-generation-match=0 "$file" "$BUCKET/claims/AC$ac.claim" 2>/dev/null; then
+    rm -f "$file"; return 0
+  fi
+  # Held by somebody. Stale only if it has not been refreshed -- a live worker rewrites it.
+  local held age
+  held=$(gcloud storage cat "$BUCKET/claims/AC$ac.claim" 2>/dev/null | awk '{print $2}')
+  age=$(( $(date +%s) - ${held:-0} ))
+  if [ -n "$held" ] && [ "$age" -gt "$STALE" ]; then
+    say "AC$ac claimed ${age}s ago and not refreshed -- taking it over"
+    gcloud storage cp "$file" "$BUCKET/claims/AC$ac.claim" 2>/dev/null && { rm -f "$file"; return 0; }
+  fi
+  rm -f "$file"
+  return 1
+}
+
+# Rewritten while the constituency is being worked, so its claim never looks abandoned.
+heartbeat() {
+  local ac=$1 file=/tmp/beat.$$
+  while true; do
+    sleep 300
+    echo "$(hostname) $(date +%s)" > "$file"
+    gcloud storage cp "$file" "$BUCKET/claims/AC$ac.claim" 2>/dev/null
+  done
+}
+
 # One tesseract thread per worker. Tesseract uses OpenMP and will otherwise take about four
 # threads inside each of the 32 worker processes: the first run on this machine sat at a load
 # average of 113 on 32 cores and finished 4 parts in 37 minutes, which extrapolates to 37 hours
@@ -113,7 +149,9 @@ while true; do
     AC=$(echo "$candidate" | sed -E 's/^AC0*([0-9]+)_.*/\1/')
     # A shard in the bucket is the only record that a constituency is finished, and it is
     # written last, so a half-done AC is picked up again rather than skipped.
-    gsutil -q stat "$BUCKET/shards/AC$(printf %03d "$AC").parquet" 2>/dev/null && continue
+    PADDED=$(printf %03d "$AC")
+    gsutil -q stat "$BUCKET/shards/AC$PADDED.parquet" 2>/dev/null && continue
+    claim "$PADDED" || continue
     NAME=$candidate
     break
   done
@@ -135,6 +173,8 @@ while true; do
   say "fetching $NAME"
   gsutil -q cp "$BUCKET/source/$NAME" "$ROOT/$NAME" || { say "could not fetch $NAME"; sleep 60; continue; }
 
+  heartbeat "$(printf %03d "$AC")" &
+  BEAT=$!
   say "running AC$AC with $WORKERS workers $LIMIT"
   "$ROOT/venv/bin/python" -m electors run "$ROOT/$NAME" \
     --work "$ROOT/stage1" --shards "$ROOT/shards" \
@@ -147,6 +187,11 @@ while true; do
 
   # The archive stays in the bucket; the local copy and the composites are finished with. The
   # composites are ~6 GB an AC and would fill the disk by the fifth constituency.
+  kill $BEAT 2>/dev/null
+  # Released only after the shard is in the bucket, so a machine that dies mid-constituency
+  # leaves its claim to expire rather than handing out work it has not finished.
+  gcloud storage rm "$BUCKET/claims/$(printf AC%03d "$AC").claim" 2>/dev/null
+
   rm -f "$ROOT/$NAME"
   find "$ROOT/stage1" -name 'composite*.png' -delete
   say "AC$AC done; $(df -h "$ROOT" | awk 'NR==2{print $4}') free on the instance"

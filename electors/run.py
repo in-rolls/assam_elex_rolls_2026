@@ -392,6 +392,9 @@ def run_ac(
 
     path = output.write_shard(rows, ac_no, directory=shard_dir)
     run.shard = path.name
+    # Its own file, not a shared manifest: four machines writing one JSON lose each other's
+    # entries with nothing raised. electors status merges them back.
+    output.write_entry(ac_no, path, run.as_manifest_entry(), directory=shard_dir)
     output.update_manifest(ac_no, path, run.as_manifest_entry(), manifest=manifest)
     return run
 

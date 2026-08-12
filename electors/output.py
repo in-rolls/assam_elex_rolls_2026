@@ -94,6 +94,45 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def entry_path(ac_no: int, directory: Path = SHARD_DIR) -> Path:
+    return directory / f"AC{ac_no:03d}.entry.json"
+
+
+def write_entry(
+    ac_no: int, path: Path, reconciliation: Dict[str, Any], directory: Path = SHARD_DIR
+) -> Path:
+    """One constituency's record, in its own file.
+
+    A single manifest is read-modify-write, which is safe for one machine and lossy for four:
+    each worker rsyncs its own copy of the file back to the bucket and the last writer wins,
+    so constituencies disappear from the record without anything failing. Per-AC entries have
+    no shared mutable state, so concurrency cannot lose one.
+
+    :func:`merge_entries` rebuilds the combined manifest from them for publishing.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "file": path.name,
+        "bytes": path.stat().st_size,
+        "sha256": sha256_file(path),
+        **reconciliation,
+    }
+    target = entry_path(ac_no, directory)
+    temporary = target.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(entry, indent=1) + "\n", encoding="utf-8")
+    temporary.replace(target)
+    return target
+
+
+def merge_entries(directory: Path = SHARD_DIR) -> Dict[str, Any]:
+    """Every constituency's record, gathered from the per-AC files."""
+    out: Dict[str, Any] = {}
+    for found in sorted(directory.glob("AC*.entry.json")):
+        ac_no = int(found.name[2:5])
+        out[str(ac_no)] = json.loads(found.read_text(encoding="utf-8"))
+    return dict(sorted(out.items(), key=lambda kv: int(kv[0])))
+
+
 def update_manifest(
     ac_no: int,
     path: Path,
