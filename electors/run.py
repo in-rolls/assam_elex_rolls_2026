@@ -30,7 +30,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from assam_rolls import render
 
-from . import output, pages, stage1, stage2, vision
+from . import crops, output, pages, stage1, stage2, vision
 
 #: Cached rows for one part, so a resumed run re-reads them instead of re-buying them.
 ROWS = "rows.jsonl"
@@ -186,6 +186,11 @@ def read(
     return [row for number in sorted(found) for row in found[number]]
 
 
+def _write(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=1) + "\n", encoding="utf-8")
+
+
 def _write_rows(path: Path, rows: Sequence[Dict[str, Any]]) -> None:
     """Atomically, so a kill mid-write cannot leave a half-part that looks complete."""
     temporary = path.with_suffix(".jsonl.tmp")
@@ -309,6 +314,38 @@ def published_totals(ac_no: int, dataset: Path = Path("dataset/parts.jsonl.gz"))
     return out
 
 
+def verification_bundle(work_dir: Path, rows: Sequence[Dict[str, Any]], published: int) -> Dict:
+    """Everything needed to re-judge a constituency, in a few kilobytes.
+
+    A verdict needs each part's printed closing total and how many boxes stage one found. Those
+    live in ``side.json`` and ``manifest.jsonl``, which together are 412 MB a constituency --
+    fifty gigabytes to check seven hundred megabytes of rows, and all of it in artefacts we
+    intend to delete.
+
+    So the numbers travel with the shard instead. The point is not convenience: it is that the
+    check must still be runnable after the bucket is gone, by somebody who has only what was
+    published.
+    """
+    totals: Dict[int, int] = {}
+    boxes: Dict[int, int] = {}
+    for part_dir in sorted(work_dir.glob("part*")):
+        number = int(part_dir.name.replace("part", ""))
+        side_path = part_dir / "side.json"
+        if side_path.exists():
+            closing = stage1.read_side(side_path)["summary"]
+            if closing is not None:
+                totals[number] = closing.total
+        manifest = part_dir / crops.MANIFEST
+        if manifest.exists():
+            boxes[number] = sum(1 for _ in manifest.open(encoding="utf-8"))
+    return {
+        "published_parts": published,
+        "printed_totals": {str(k): v for k, v in sorted(totals.items())},
+        "boxes_per_part": {str(k): v for k, v in sorted(boxes.items())},
+        "rows": len(rows),
+    }
+
+
 def run_ac(
     zip_path: Path,
     work_dir: Path,
@@ -403,6 +440,10 @@ def run_ac(
 
     path = output.write_shard(rows, ac_no, directory=shard_dir)
     run.shard = path.name
+    _write(
+        shard_dir / f"AC{ac_no:03d}.verify.json",
+        verification_bundle(work_dir, rows, len(published)),
+    )
     # Its own file, not a shared manifest: four machines writing one JSON lose each other's
     # entries with nothing raised. electors status merges them back.
     output.write_entry(ac_no, path, run.as_manifest_entry(), directory=shard_dir)

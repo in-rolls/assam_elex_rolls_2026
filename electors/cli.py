@@ -1038,6 +1038,25 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if all(not r.error for r in runs) else 1
 
 
+def cmd_pull(args: argparse.Namespace) -> int:
+    """Bring finished constituencies home, checked on arrival."""
+    from . import deliver
+
+    home = Path(args.home)
+    words = None if args.no_words else Path(args.words)
+    if args.watch:
+        print(f"watching {args.bucket} every {args.every}s -> {home}")
+        deliver.watch(args.bucket, home, words, every=args.every, say=print)
+        return 0
+    arrivals = deliver.pull(args.bucket, home, words, say=print)
+    if not arrivals:
+        print("nothing new")
+        return 0
+    passed = sum(1 for a in arrivals if a.verdict == "PASS")
+    print(f"\n   {len(arrivals)} constituencies pulled, {passed} pass")
+    return 0 if passed == len(arrivals) else 1
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     """One verdict per constituency, from the shards and the roll's own numbers.
 
@@ -1292,6 +1311,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--prepare-only", action="store_true", help="stage one only -- spend no money"
     )
     p_run.set_defaults(func=cmd_run)
+
+    p_pull = sub.add_parser("pull", help="bring finished constituencies home and re-judge them")
+    p_pull.add_argument("--bucket", default="gs://sawasdee-assam-rolls")
+    p_pull.add_argument("--home", default="data/electors")
+    p_pull.add_argument("--words", default="data/words")
+    p_pull.add_argument("--no-words", action="store_true", help="shards only, no Vision cache")
+    p_pull.add_argument("--watch", action="store_true", help="keep polling as constituencies land")
+    p_pull.add_argument("--every", type=int, default=300)
+    p_pull.set_defaults(func=cmd_pull)
 
     p_status = sub.add_parser("status", help="one verdict per constituency, with its evidence")
     p_status.add_argument("--shards", default=str(output.SHARD_DIR))

@@ -17,6 +17,7 @@ from electors import (
     against,
     bench,
     crops,
+    deliver,
     diagnose,
     escalate,
     evaluate,
@@ -3218,3 +3219,41 @@ class TestReconcileChecks:
 
     def test_an_empty_shard_never_passes(self):
         assert not reconcile.judge(1, [], published_parts=5, totals={}).ok
+
+
+class TestDelivery:
+    """What comes home has to be usable and checkable without the cloud it came from."""
+
+    def test_a_shard_matching_its_sha_is_accepted(self, tmp_path):
+        shard = tmp_path / "AC010.parquet"
+        shard.write_bytes(b"rows")
+        assert deliver.already_here(10, output.sha256_file(shard), tmp_path)
+
+    def test_a_truncated_shard_is_not_accepted(self, tmp_path):
+        """A broken download has the right filename. Only the bytes say otherwise."""
+        shard = tmp_path / "AC010.parquet"
+        shard.write_bytes(b"rows and more rows")
+        sha = output.sha256_file(shard)
+        shard.write_bytes(b"rows")
+        assert not deliver.already_here(10, sha, tmp_path)
+
+    def test_an_absent_shard_is_not_accepted(self, tmp_path):
+        assert not deliver.already_here(10, "abc", tmp_path)
+
+    def test_no_recorded_sha_means_not_accepted(self, tmp_path):
+        """Without a checksum there is nothing to verify, so it is re-fetched rather than kept."""
+        (tmp_path / "AC010.parquet").write_bytes(b"rows")
+        assert not deliver.already_here(10, "", tmp_path)
+
+    def test_a_shard_with_no_bundle_is_unverifiable_not_passing(self, tmp_path):
+        """The distinction that matters: we cannot judge it, which is not the same as fine."""
+        output.write_shard([], 10, directory=tmp_path)
+        assert deliver.judge_local(10, tmp_path).verdict == "UNVERIFIABLE"
+
+    def test_the_index_merges_rather_than_replaces(self, tmp_path):
+        deliver.record([deliver.Arrival(ac_no=10, rows=5, verdict="PASS", reasons=[])], tmp_path)
+        deliver.record([deliver.Arrival(ac_no=11, rows=7, verdict="FAIL", reasons=["x"])], tmp_path)
+        import json
+
+        entries = json.loads((tmp_path / "index.json").read_text(encoding="utf-8"))
+        assert sorted(entries) == ["10", "11"] and entries["10"]["verdict"] == "PASS"
