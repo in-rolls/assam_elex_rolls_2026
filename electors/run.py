@@ -47,6 +47,10 @@ class ACRun:
 
     ac_no: int
     parts: int = 0
+    #: How many parts the info pages say this constituency has. The one number that would have
+    #: caught AC101 shipping 113 of 210 the moment it happened, rather than an hour later when
+    #: somebody noticed a coverage figure of 173%.
+    parts_published: int = 0
     boxes: int = 0
     rows: int = 0
     images_billed: int = 0
@@ -69,6 +73,7 @@ class ACRun:
         return {
             "rows": self.rows,
             "parts": self.parts,
+            "parts_published": self.parts_published,
             "parts_measured": self.parts_measured,
             "parts_matching_roll": self.parts_matching,
             "parts_failed": len(self.failed_parts),
@@ -367,6 +372,18 @@ def run_ac(
         run.error = f"{zip_path.name} is AC{ac_no} but its rows carry {sorted(inside)}"
         return run
 
+    # Against the info pages, which are not this pipeline's work. A constituency short of its
+    # own published part count has lost whole parts, and that is not a quality question to be
+    # noticed later -- it is a failed run.
+    published = published_totals(ac_no)
+    run.parts_published = len(published)
+    if published and run.parts < len(published) * 0.99:
+        run.error = (
+            f"extracted {run.parts} parts of {len(published)} published -- "
+            f"{len(published) - run.parts} are missing"
+        )
+        return run
+
     found = reconcile(work_dir, rows)
     run.parts_measured = found["measured"]
     run.parts_matching = found["matching"]
@@ -395,6 +412,7 @@ def render_report(runs: Sequence[ACRun]) -> str:
     measured = sum(r.parts_measured for r in ok)
     matching = sum(r.parts_matching for r in ok)
 
+    short = [r for r in ok if r.parts_published and r.parts < r.parts_published]
     lines = [
         f"RUN over {len(runs)} constituencies",
         "",
@@ -417,6 +435,9 @@ def render_report(runs: Sequence[ACRun]) -> str:
         )
         if implied and detected < implied * 0.8:
             lines.append("   ^^ the watermark is being missed; those rows publish as live electors")
+
+    for r in short:
+        lines.append(f"   AC{r.ac_no} SHORT: {r.parts} parts of {r.parts_published} published")
 
     residuals = [(r.ac_no, d) for r in ok for d in r.residuals]
     if residuals:
