@@ -172,6 +172,63 @@ def judge_local(
     return arrival
 
 
+#: Everything in a ``stage1`` tree except the two files a verdict is made of. The words are 120 MB
+#: a constituency and the renders more; ``side.json`` and ``manifest.jsonl`` together are under a
+#: megabyte. Pulling the difference is what makes backfilling six constituencies a minute's work
+#: rather than an afternoon's.
+NOT_EVIDENCE = r".*\.words\.json$|.*rows\.jsonl$|.*placements\.json$|.*\.png$"
+
+
+def backfill_bundle(
+    bucket: str, ac_no: int, home: Path = HOME, info: Path = Path("dataset/parts.jsonl.gz")
+) -> Optional[Dict[str, Any]]:
+    """Build the verification bundle for a constituency that finished before bundles existed.
+
+    Six constituencies came home judged ``UNVERIFIABLE``: not failing, but with no evidence to
+    fail against, which is the same thing as unchecked. Their evidence is still in the bucket, so
+    the fix is to fetch the two small files per part and compute the bundle that should have been
+    written at the time -- rather than re-running $25 of Vision to recover numbers we already have.
+
+    Writes the bundle beside the shard **and back to the bucket**, so a later ``pull`` on another
+    machine gets a judgeable constituency too.
+    """
+    import gzip
+    import tempfile
+
+    from . import run as run_module
+
+    shard = home / f"AC{ac_no:03d}.parquet"
+    if not shard.exists():
+        return None
+
+    published = 0
+    if info.exists():
+        with gzip.open(info, "rt", encoding="utf-8") as handle:
+            published = sum(1 for line in handle if json.loads(line).get("ac_no") == ac_no)
+
+    with tempfile.TemporaryDirectory() as scratch:
+        work = Path(scratch)
+        pulled = _run(
+            "gcloud",
+            "storage",
+            "rsync",
+            "-r",
+            "-x",
+            NOT_EVIDENCE,
+            f"{bucket}/stage1/AC{ac_no:03d}",
+            str(work),
+        )
+        if pulled.returncode != 0 or not any(work.glob("part*")):
+            return None
+        rows = output.read_shard(shard)
+        bundle = run_module.verification_bundle(work, rows, published)
+
+    target = home / f"AC{ac_no:03d}.verify.json"
+    target.write_text(json.dumps(bundle, indent=1) + "\n", encoding="utf-8")
+    _run("gcloud", "storage", "cp", str(target), f"{bucket}/shards/{target.name}")
+    return bundle
+
+
 def index_path(home: Path = HOME) -> Path:
     return home / "index.json"
 
@@ -222,6 +279,53 @@ def pull(
     if arrivals:
         record(arrivals, home)
     return arrivals
+
+
+def reapable(home: Path = HOME) -> List[int]:
+    """Constituencies whose source archive is safe to delete.
+
+    Safe means three things at once, and all three are needed:
+
+    - the shard is **here**, and its bytes match the SHA-256 recorded when it was written
+    - the local verdict is **PASS**, judged from the bundle rather than taken on trust
+    - the Vision **words** are here, so a better parser costs CPU rather than $148
+
+    An archive is 3 GB and a day of somebody's uplink; a shard is 5 MB. Deleting the expensive,
+    slow-to-replace thing on the strength of the cheap one having arrived is only reasonable when
+    the cheap one has been checked. AC101 looked finished at 113 of 210 parts.
+
+    Anything short of all three keeps its archive. Re-running stage one needs the PDFs, and two
+    constituencies have already needed exactly that.
+    """
+    index = index_path(home)
+    if not index.exists():
+        return []
+    entries = json.loads(index.read_text(encoding="utf-8"))
+    safe: List[int] = []
+    for key, entry in entries.items():
+        ac_no = int(key)
+        if entry.get("verdict") != "PASS":
+            continue
+        if not (home / f"AC{ac_no:03d}.parquet").exists():
+            continue
+        if not any((WORDS / f"AC{ac_no:03d}").glob("**/*.words.json")):
+            continue
+        safe.append(ac_no)
+    return sorted(safe)
+
+
+def reap(bucket: str, home: Path = HOME, dry_run: bool = True, say: Optional[Any] = None) -> int:
+    """Delete the source archives of constituencies that are provably home and sound."""
+    talk = say or (lambda _message: None)
+    freed = 0
+    for ac_no in reapable(home):
+        found = _run("gcloud", "storage", "ls", f"{bucket}/source/AC{ac_no}_*.zip").stdout.split()
+        for archive in found:
+            talk(f"   {'would delete' if dry_run else 'deleting'} {archive}")
+            if not dry_run:
+                _run("gcloud", "storage", "rm", archive)
+            freed += 1
+    return freed
 
 
 def watch(

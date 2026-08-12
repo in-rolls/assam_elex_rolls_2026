@@ -1038,6 +1038,50 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if all(not r.error for r in runs) else 1
 
 
+def cmd_bundle(args: argparse.Namespace) -> int:
+    """Give the already-finished constituencies something to be judged against."""
+    from . import deliver
+
+    home = Path(args.home)
+    entries = json.loads(deliver.index_path(home).read_text(encoding="utf-8"))
+    arrivals = []
+    for key in sorted(entries, key=int):
+        ac_no = int(key)
+        if (home / f"AC{ac_no:03d}.verify.json").exists():
+            continue
+        print(f"   AC{ac_no}: fetching evidence")
+        bundle = deliver.backfill_bundle(args.bucket, ac_no, home)
+        if bundle is None:
+            print("      no stage1 evidence in the bucket; cannot judge")
+            continue
+        judged = deliver.judge_local(ac_no, home)
+        arrivals.append(judged)
+        print(f"      {judged.rows:,} rows, {judged.verdict}")
+        for reason in judged.reasons:
+            print(f"      ! {reason}")
+    if arrivals:
+        deliver.record(arrivals, home)
+    return 0
+
+
+def cmd_reap(args: argparse.Namespace) -> int:
+    """Free the bucket of archives we can prove we no longer need."""
+    from . import deliver
+
+    home = Path(args.home)
+    safe = deliver.reapable(home)
+    if not safe:
+        print("nothing is safe to delete yet: an archive goes only when its constituency is")
+        print("home, its bytes match, its verdict is PASS, and its Vision words are cached.")
+        return 0
+    print(f"safe to delete: {safe}")
+    count = deliver.reap(args.bucket, home, dry_run=not args.yes, say=print)
+    print(f"\n   {count} archives {'deleted' if args.yes else 'would be deleted'}")
+    if not args.yes:
+        print("   re-run with --yes to actually delete")
+    return 0
+
+
 def cmd_pull(args: argparse.Namespace) -> int:
     """Bring finished constituencies home, checked on arrival."""
     from . import deliver
@@ -1320,6 +1364,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_pull.add_argument("--watch", action="store_true", help="keep polling as constituencies land")
     p_pull.add_argument("--every", type=int, default=300)
     p_pull.set_defaults(func=cmd_pull)
+
+    p_bundle = sub.add_parser(
+        "bundle", help="backfill verification bundles for constituencies that finished without one"
+    )
+    p_bundle.add_argument("--bucket", default="gs://sawasdee-assam-rolls")
+    p_bundle.add_argument("--home", default="data/electors")
+    p_bundle.set_defaults(func=cmd_bundle)
+
+    p_reap = sub.add_parser(
+        "reap", help="delete source archives whose constituency is home, verified and passing"
+    )
+    p_reap.add_argument("--bucket", default="gs://sawasdee-assam-rolls")
+    p_reap.add_argument("--home", default="data/electors")
+    p_reap.add_argument("--yes", action="store_true", help="actually delete; otherwise a dry run")
+    p_reap.set_defaults(func=cmd_reap)
 
     p_status = sub.add_parser("status", help="one verdict per constituency, with its evidence")
     p_status.add_argument("--shards", default=str(output.SHARD_DIR))
