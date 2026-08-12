@@ -51,6 +51,17 @@ for path in $(find "$DIR" -maxdepth 1 -name '*.zip' 2>/dev/null | sort -V); do
   # every shell path that touches it later. Skipped rather than renamed: the original is there.
   case "$name" in *" "*) say "skipping $name -- a duplicate download"; continue;; esac
 
+  # A floor before anything clever. Every archive seen so far is between 1.66 and 3.5 GB, and the
+  # truncated ones were 0.36 to 0.56 -- so anything under a gigabyte is a failed download, whatever
+  # its central directory happens to say. This runs first because it costs a stat, and because the
+  # check below depends on the parts index being present and readable, while this one depends on
+  # nothing.
+  bytes=$(stat -f %z "$path" 2>/dev/null || stat -c %s "$path")
+  if [ "${bytes:-0}" -lt 1000000000 ]; then
+    say "REFUSING $name -- $(echo "$bytes" | awk '{printf "%.2f GB", $1/1e9}'), under the 1 GB floor; incomplete download"
+    continue
+  fi
+
   # Does the archive hold one PDF per part the roll publishes?
   #
   # Comparing the local file to the bucket copy, which is all this script used to do, cannot
