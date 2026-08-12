@@ -22,6 +22,20 @@ KEEP=${3:-}
 
 say() { echo "$(date +%H:%M:%S) | $*"; }
 
+# One stream per archive instead of nineteen, and more patience when the bucket pushes back.
+#
+# By default a file over 150 MB is split into components, uploaded in parallel and recomposed --
+# so a 3 GB archive is about twenty objects plus a compose call. That is a good trade on an idle
+# bucket and a bad one here: seven machines rsync thousands of objects into the same bucket every
+# ninety seconds, and under that request pressure the component uploads came back
+# ``HTTPError 503`` and the transfer made no progress at all.
+#
+# A single resumable stream is a handful of requests for the whole file rather than twenty-odd,
+# which is the difference between competing with the fleet and not. It may be slower on an idle
+# link; it finishes, which the split version was not doing.
+export CLOUDSDK_STORAGE_PARALLEL_COMPOSITE_UPLOAD_THRESHOLD=10GiB
+export CLOUDSDK_STORAGE_MAX_RETRIES=10
+
 # --watch keeps the loop alive so archives can be dropped into the directory while it runs.
 # Downloading 374 GB is days of somebody's attention in batches, and having to remember to
 # restart an uploader between batches is exactly the kind of step that gets forgotten at 2am.
