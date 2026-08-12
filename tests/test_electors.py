@@ -2421,6 +2421,36 @@ class TestRunnerAcrossConstituencies:
         assert found["matching"] == 1 and found["residuals"] == []
 
 
+class TestBoughtSummaryPersists:
+    """A closing total bought from Vision has to survive the process that bought it.
+
+    Reconciliation reads the total from side.json, not from the result object stage two builds.
+    So the first version of the fallback read 37 pages of AC100 correctly, at real cost, and
+    reported 80% of the constituency unmeasured anyway -- the purchase was made and discarded.
+    """
+
+    def test_a_rewrite_keeps_the_version_that_produced_the_output(self, tmp_path):
+        """Stage two rewrites this file, and must not bless stale stage-one output as fresh."""
+        stage1.write_side(tmp_path / "side.json", {"pages": {}, "unknown": [], "summary": None})
+        old = stage1.read_side(tmp_path / "side.json")
+        old["stage1_version"] = "1.9.0"
+        stage1.write_side(tmp_path / "side.json", old)
+        assert json.loads((tmp_path / "side.json").read_text())["stage1_version"] == "1.9.0"
+
+    def test_a_fresh_write_stamps_the_current_version(self, tmp_path):
+        stage1.write_side(tmp_path / "side.json", {"pages": {}, "unknown": [], "summary": None})
+        stamped = json.loads((tmp_path / "side.json").read_text())["stage1_version"]
+        assert stamped == stage1.STAGE1_VERSION
+
+    def test_the_bought_total_is_on_disk_for_reconciliation_to_find(self, tmp_path):
+        side = {"pages": {}, "unknown": [], "summary": None}
+        stage1.write_side(tmp_path / "side.json", side)
+        side = stage1.read_side(tmp_path / "side.json")
+        side["summary"] = summary.RollSummary(male=435, female=477, third=0, total=912, scale=1)
+        stage1.write_side(tmp_path / "side.json", side)
+        assert stage1.read_side(tmp_path / "side.json")["summary"].total == 912
+
+
 class TestStageHandoff:
     """What stage one writes must be exactly what stage two needs -- no re-rendering.
 

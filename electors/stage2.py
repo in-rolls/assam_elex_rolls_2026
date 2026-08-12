@@ -109,6 +109,11 @@ def read_part(
             if bought is not None:
                 side["summary"] = bought
                 result.images_billed += 1
+                # Written back, because reconciliation reads the closing total from side.json
+                # and not from this result. Without this the purchase happened, the number was
+                # correct, and it was thrown away -- AC100 bought 37 readings and still reported
+                # 80% of its parts unmeasured.
+                stage1.write_side(part_dir / "side.json", side)
         if side["summary"] is not None:
             closing = side["summary"]
             result.summary_male = closing.male

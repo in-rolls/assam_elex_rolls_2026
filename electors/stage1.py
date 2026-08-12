@@ -207,7 +207,10 @@ def write_side(path: Path, side: Dict[str, Any]) -> None:
                 }
                 for number, page in side["pages"].items()
             },
-            "stage1_version": STAGE1_VERSION,
+            # Preserved, never re-stamped. Stage two rewrites this file when it buys a closing
+            # total, and stamping the current version there would mark output produced by older
+            # stage-one code as fresh -- the exact failure done() exists to prevent.
+            "stage1_version": side.get("stage1_version") or STAGE1_VERSION,
             "unknown": side["unknown"],
             "summary": (
                 None
