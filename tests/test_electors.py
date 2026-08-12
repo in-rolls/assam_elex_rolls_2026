@@ -3182,8 +3182,34 @@ class TestReconcileChecks:
     def test_a_self_graded_check_never_decides_the_verdict(self):
         """A 99% fill rate is equally consistent with 99% correct and 40% correct."""
         verdict = reconcile.Verdict(ac_no=1)
+        verdict.add("parts complete", True, "3 of 3", external=True)
         verdict.add("fill rates", False, "poor", external=False)
         assert verdict.ok
+
+    def test_a_verdict_with_no_external_evidence_fails(self):
+        """Found by the second-model audit: ok was true for a verdict that checked nothing.
+
+        The failure mode of this whole project in one line -- nothing was checked, so nothing
+        was wrong. Passing has to require evidence, not the absence of complaint.
+        """
+        assert not reconcile.Verdict(ac_no=1).ok
+        only_self = reconcile.Verdict(ac_no=1)
+        only_self.add("fill rates", True, "fine", external=False)
+        assert not only_self.ok
+
+    def test_totals_for_parts_with_no_rows_fail(self):
+        """The audit's reproduction: rows for parts {1,2} against totals for {1,3} passed.
+
+        Counting the two collections agrees; asking whether they describe the same parts does
+        not. Part 2 was never measured and phantom part 3 matched zero rows.
+        """
+        rows = self._rows(parts=(1, 2), per_part=1)
+        assert not reconcile.judge(1, rows, published_parts=2, totals={1: 1, 3: 0}).ok
+        assert not reconcile.measured_coverage(rows, {1: 1, 3: 0}).passed
+        assert not reconcile.rows_against_printed(rows, {1: 1, 3: 0}).passed
+
+    def test_no_totals_at_all_is_not_a_pass(self):
+        assert not reconcile.rows_against_printed(self._rows(), {}).passed
 
     def test_an_external_check_does_decide_it(self):
         verdict = reconcile.Verdict(ac_no=1)

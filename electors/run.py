@@ -390,6 +390,17 @@ def run_ac(
     run.residuals = found["residuals"]
     run.struck_off = struck_off_check(work_dir, rows, published_totals(ac_no))
 
+    # Publishing is not the default outcome. The audit's blunt summary of this layer was that
+    # run_ac "records failed checks but publishes anyway" -- reconciliation was computed, stored,
+    # and then ignored by the line that writes the data. A constituency whose main-list rows do
+    # not match the roll's own printed totals is not a shard with a caveat; it is a failed run.
+    if found["measured"] and found["matching"] < found["measured"]:
+        run.error = (
+            f"{found['measured'] - found['matching']} of {found['measured']} measured parts "
+            f"do not match their printed totals; worst {found['residuals'][:2]}"
+        )
+        return run
+
     path = output.write_shard(rows, ac_no, directory=shard_dir)
     run.shard = path.name
     # Its own file, not a shared manifest: four machines writing one JSON lose each other's

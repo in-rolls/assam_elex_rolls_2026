@@ -64,8 +64,13 @@ class Verdict:
         A self-graded check never decides a verdict: a fill rate of 99% is equally consistent
         with 99% correct and 40% correct, and letting it vote would make the verdict mean less
         than it appears to.
+
+        **A verdict with no external checks fails.** An audit found ``ok`` true for an empty
+        verdict, which is the whole failure mode of this project in one line: nothing was
+        checked, so nothing was wrong. Passing requires evidence, not the absence of complaint.
         """
-        return not [c for c in self.checks if c.external and not c.passed]
+        external = [c for c in self.checks if c.external]
+        return bool(external) and all(c.passed for c in external)
 
     def add(self, name: str, passed: bool, detail: str, external: bool = True) -> None:
         self.checks.append(Check(name, passed, detail, external))
@@ -98,13 +103,19 @@ def rows_against_printed(
     counted: Dict[int, int] = collections.Counter(
         r["part_no"] for r in rows if (r.get("roll_section") or main) == main
     )
+    # Compared as **sets of parts**, not as counts. An audit reproduced rows for parts {1, 2}
+    # against totals for parts {1, 3} passing every check: part 2 was never measured and phantom
+    # part 3 "matched" zero rows. Counting the two collections agrees; asking whether they
+    # describe the same parts does not.
+    have = {r["part_no"] for r in rows}
+    phantom = sorted(set(totals) - have)
     off = [(p, counted.get(p, 0), t) for p, t in sorted(totals.items()) if counted.get(p, 0) != t]
-    return Check(
-        "rows match printed totals",
-        not off,
-        f"{len(totals) - len(off)} of {len(totals)} measured parts match"
-        + (f"; worst {sorted(off, key=lambda x: abs(x[1] - x[2]))[-1]}" if off else ""),
-    )
+    detail = f"{len(totals) - len(off)} of {len(totals)} measured parts match"
+    if phantom:
+        detail += f"; {len(phantom)} totals name parts with no rows: {phantom[:5]}"
+    if off:
+        detail += f"; worst {sorted(off, key=lambda x: abs(x[1] - x[2]))[-1]}"
+    return Check("rows match printed totals", not off and not phantom and bool(totals), detail)
 
 
 def measured_coverage(rows: Sequence[Dict[str, Any]], totals: Dict[int, int]) -> Check:
@@ -113,11 +124,15 @@ def measured_coverage(rows: Sequence[Dict[str, Any]], totals: Dict[int, int]) ->
     Reported apart from the result of that check, because 205 of 205 matching means something
     very different when 205 is every part than when it is four fifths of them.
     """
-    parts = len({r["part_no"] for r in rows})
+    have = {r["part_no"] for r in rows}
+    # Which parts, not how many. Equal counts over different part numbers is the shape the audit
+    # reproduced, and it passed.
+    unmeasured = sorted(have - set(totals))
     return Check(
         "every part measurable",
-        bool(parts) and len(totals) >= parts,
-        f"{len(totals)} of {parts} parts have a printed total",
+        bool(have) and not unmeasured,
+        f"{len(have & set(totals))} of {len(have)} parts have a printed total"
+        + (f"; unmeasured {unmeasured[:5]}" if unmeasured else ""),
     )
 
 

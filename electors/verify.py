@@ -39,7 +39,13 @@ class PartCheck:
 
     @property
     def ok(self) -> bool:
-        return not self.problems
+        """No problems **and** something actually compared.
+
+        An audit pointed a part directory with an empty manifest and ``{}`` placements at this
+        and got "every check passed": nothing was compared, so nothing disagreed. A proof that
+        rests on zero observations is not a proof.
+        """
+        return not self.problems and self.tiles > 0 and self.compared > 0
 
     def note(self, problem: str) -> None:
         self.problems.append(problem)
@@ -206,6 +212,9 @@ def render_report(checks: Sequence[PartCheck]) -> str:
         + (f"  ({identical / compared:.1%})" if compared else ""),
         "",
     ]
+    if not tiles or not compared:
+        lines.append("   NOTHING WAS CHECKED: no tiles, or no pixels compared. This is not a pass.")
+        return "\n".join(lines)
     if not bad:
         lines.append("   every check passed: no tile lost, none placed twice, none overlapping,")
         lines.append("   and every compared crop is the same bytes as its source page.")
