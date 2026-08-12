@@ -263,6 +263,15 @@ def done(out_dir: Path, part_no: int) -> bool:
     part_dir = out_dir / f"part{part_no:04d}"
     if not (part_dir / crops.MANIFEST).exists() or not (part_dir / "placements.json").exists():
         return False
+    # And the composites themselves. They are not synced to the bucket -- they are cheap to
+    # rebuild and would be a terabyte for the state -- so a machine that resumes from the bucket
+    # gets a part's metadata without its images. Every other test passed, this part was skipped
+    # as prepared, and stage two then skipped it again for having nothing to read: AC101 shipped
+    # 113 of its 210 parts and reported no error at all.
+    #
+    # done() and stage2.ready() must not disagree about what a finished part is.
+    if not any(part_dir.glob("composite*.png")):
+        return False
     side = part_dir / "side.json"
     if not side.exists():
         return False

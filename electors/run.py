@@ -141,6 +141,7 @@ def read(
 
     found: Dict[int, List[Dict[str, Any]]] = {}
     errors: List[str] = []
+    unready: List[int] = []
 
     def one(number: int, part_dir: Path) -> None:
         cache = part_dir / ROWS
@@ -149,6 +150,9 @@ def read(
             billed = 0
         else:
             if not stage2.ready(part_dir):
+                # Never silent. A part prepared but unreadable is the shape AC101 took when it
+                # lost 97 parts, and a bare continue is what let it look like success.
+                unready.append(number)
                 return
             result = stage2.read_part(part_dir, api_key)
             if result.error:
@@ -164,6 +168,12 @@ def read(
         for future in as_completed([pool.submit(one, n, d) for n, d in todo]):
             future.result()
 
+    if unready:
+        raise RuntimeError(
+            f"{len(unready)} parts have stage-one metadata but no composites to read: "
+            f"{sorted(unready)[:8]}. They were prepared by a machine whose disk is gone; "
+            f"delete their part directories so they are prepared again."
+        )
     if errors:
         raise RuntimeError("; ".join(errors[:5]))
     # Reassembled in part order. Concurrency decides when a part is read, never where its rows

@@ -2499,12 +2499,48 @@ class TestStageHandoff:
             append=False,
         )
         stage1.write_side(part_dir / "side.json", self._side())
+        (part_dir / "composite000.png").write_bytes(b"x")
         assert stage1.done(tmp_path, 7)
 
         stale = json.loads((part_dir / "side.json").read_text(encoding="utf-8"))
         stale["stage1_version"] = "1.0.0"
         (part_dir / "side.json").write_text(json.dumps(stale), encoding="utf-8")
         assert not stage1.done(tmp_path, 7)
+
+    def test_metadata_without_composites_is_not_done(self, tmp_path):
+        """The shape AC101 took when it shipped 113 of its 210 parts and reported no error.
+
+        Composites are not synced to the bucket -- they are cheap to rebuild and would be a
+        terabyte for the state -- so a machine resuming from the bucket gets a part's metadata
+        without its images. Every other test passed, the part was skipped as prepared, and
+        stage two skipped it again for having nothing to read. done() and stage2.ready() must
+        not disagree about what a finished part is.
+        """
+        part_dir = tmp_path / "part0009"
+        part_dir.mkdir()
+        (part_dir / "placements.json").write_text("{}", encoding="utf-8")
+        crops.write_manifest(
+            [crops.Crop(part=9, page=1, row=0, column=0, path=part_dir / "c.png")],
+            part_dir,
+            append=False,
+        )
+        stage1.write_side(part_dir / "side.json", self._side())
+        assert not stage1.done(tmp_path, 9)
+        (part_dir / "composite000.png").write_bytes(b"x")
+        assert stage1.done(tmp_path, 9)
+
+    def test_an_unreadable_part_stops_the_run_rather_than_being_skipped(self, tmp_path):
+        """A bare continue is what let 97 missing parts look like success."""
+        part_dir = tmp_path / "part0003"
+        part_dir.mkdir()
+        (part_dir / "placements.json").write_text("{}", encoding="utf-8")
+        crops.write_manifest(
+            [crops.Crop(part=3, page=1, row=0, column=0, path=part_dir / "c.png")],
+            part_dir,
+            append=False,
+        )
+        with pytest.raises(RuntimeError, match="no composites to read"):
+            run.read(tmp_path, "")
 
     def test_a_part_with_no_side_read_at_all_is_not_done(self, tmp_path):
         part_dir = tmp_path / "part0008"
