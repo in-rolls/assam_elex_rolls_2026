@@ -1038,6 +1038,65 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if all(not r.error for r in runs) else 1
 
 
+def cmd_status(args: argparse.Namespace) -> int:
+    """One verdict per constituency, from the shards and the roll's own numbers.
+
+    Recomputed from the data rather than read out of a manifest, so it cannot report a pass that
+    the current shards do not support.
+    """
+    import collections
+    import gzip
+
+    from . import reconcile, stage1
+
+    published: Dict[int, int] = collections.Counter()
+    male: Dict[int, int] = collections.Counter()
+    female: Dict[int, int] = collections.Counter()
+    info = Path(args.info)
+    if info.exists():
+        with gzip.open(info, "rt", encoding="utf-8") as handle:
+            for line in handle:
+                row = json.loads(line)
+                published[row["ac_no"]] += 1
+                male[row["ac_no"]] += row.get("electors_male") or 0
+                female[row["ac_no"]] += row.get("electors_female") or 0
+
+    verdicts = []
+    for shard in sorted(Path(args.shards).glob("AC*.parquet")):
+        ac_no = int(shard.stem[2:])
+        rows = output.read_shard(shard)
+        totals: Dict[int, int] = {}
+        boxes: Dict[int, int] = {}
+        work = Path(args.work) / f"AC{ac_no:03d}"
+        for part_dir in sorted(work.glob("part*")):
+            number = int(part_dir.name.replace("part", ""))
+            side_path = part_dir / "side.json"
+            if side_path.exists():
+                closing = stage1.read_side(side_path)["summary"]
+                if closing is not None:
+                    totals[number] = closing.total
+            manifest = part_dir / "manifest.jsonl"
+            if manifest.exists():
+                boxes[number] = sum(1 for _ in manifest.open(encoding="utf-8"))
+        verdicts.append(
+            reconcile.judge(
+                ac_no,
+                rows,
+                published.get(ac_no, 0),
+                totals,
+                male.get(ac_no, 0),
+                female.get(ac_no, 0),
+                boxes or None,
+            )
+        )
+
+    if not verdicts:
+        print(f"no shards under {args.shards}", file=sys.stderr)
+        return 1
+    print(reconcile.render(verdicts))
+    return 0 if all(v.ok for v in verdicts) else 1
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     """Structure first, then pixels. No API calls."""
     from . import verify
@@ -1233,6 +1292,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--prepare-only", action="store_true", help="stage one only -- spend no money"
     )
     p_run.set_defaults(func=cmd_run)
+
+    p_status = sub.add_parser("status", help="one verdict per constituency, with its evidence")
+    p_status.add_argument("--shards", default=str(output.SHARD_DIR))
+    p_status.add_argument("--work", default="out/stage1")
+    p_status.add_argument("--info", default="dataset/parts.jsonl.gz")
+    p_status.set_defaults(func=cmd_status)
 
     p_ver = sub.add_parser(
         "verify", help="prove the repack lost nothing and placed every tile correctly"

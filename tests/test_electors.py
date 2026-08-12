@@ -26,6 +26,7 @@ from electors import (
     output,
     pages,
     quality,
+    reconcile,
     repack,
     replay,
     resolution,
@@ -3117,3 +3118,77 @@ class TestTruthAlignment:
         got = {evaluate.fold(a) for a, _ in pairs}
         want = {evaluate.fold(b) for _, b in pairs}
         assert not (got - want) & (want - got)
+
+
+class TestReconcileChecks:
+    """Every check, shown failing.
+
+    A check nobody has seen fail is a check nobody has tested, and three of the worst defects in
+    this stage were checks quietly reporting success: done() proving a part was prepared but not
+    by what, a bought closing total discarded before reconciliation read it, and an unreadable
+    part skipped without a word.
+    """
+
+    @staticmethod
+    def _rows(parts=(1, 2), per_part=3, sex="M", epic="ABC1234567"):
+        return [
+            {
+                "part_no": p,
+                "roll_section": "main",
+                "sex": sex,
+                "epic_no": epic,
+                "name": "ক",
+                "relation_name": "খ",
+                "age": 30,
+            }
+            for p in parts
+            for _ in range(per_part)
+        ]
+
+    def test_a_missing_part_fails(self):
+        """AC101's failure: 113 parts extracted of 210 published, reported as success."""
+        check = reconcile.parts_complete(self._rows(parts=(1, 2)), published=3)
+        assert not check.passed and "2 of 3" in check.detail
+
+    def test_all_parts_present_passes(self):
+        assert reconcile.parts_complete(self._rows(parts=(1, 2)), published=2).passed
+
+    def test_a_part_short_of_its_printed_total_fails(self):
+        check = reconcile.rows_against_printed(self._rows(per_part=3), {1: 3, 2: 5})
+        assert not check.passed and "1 of 2" in check.detail
+
+    def test_matching_printed_totals_passes(self):
+        assert reconcile.rows_against_printed(self._rows(per_part=3), {1: 3, 2: 3}).passed
+
+    def test_a_part_with_no_printed_total_fails_coverage(self):
+        check = reconcile.measured_coverage(self._rows(parts=(1, 2)), {1: 3})
+        assert not check.passed and "1 of 2" in check.detail
+
+    def test_a_skewed_sex_ratio_fails(self):
+        """The real failure: 44.2% male extracted against a published 50.8%."""
+        check = reconcile.sex_against_published(self._rows(sex="M"), male=50, female=50)
+        assert not check.passed
+
+    def test_a_matching_sex_ratio_passes(self):
+        rows = self._rows(parts=(1,), per_part=1, sex="M") + self._rows(
+            parts=(2,), per_part=1, sex="F"
+        )
+        assert reconcile.sex_against_published(rows, male=50, female=50).passed
+
+    def test_rows_lost_between_the_stages_fails(self):
+        check = reconcile.rows_match_boxes(self._rows(parts=(1, 2), per_part=3), {1: 3, 2: 9})
+        assert not check.passed
+
+    def test_a_self_graded_check_never_decides_the_verdict(self):
+        """A 99% fill rate is equally consistent with 99% correct and 40% correct."""
+        verdict = reconcile.Verdict(ac_no=1)
+        verdict.add("fill rates", False, "poor", external=False)
+        assert verdict.ok
+
+    def test_an_external_check_does_decide_it(self):
+        verdict = reconcile.Verdict(ac_no=1)
+        verdict.add("parts complete", False, "2 of 3", external=True)
+        assert not verdict.ok
+
+    def test_an_empty_shard_never_passes(self):
+        assert not reconcile.judge(1, [], published_parts=5, totals={}).ok
