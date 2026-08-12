@@ -28,7 +28,7 @@ import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 #: Matches ``gcp_worker.sh``'s ``STALE``. A claim older than this is one the workers themselves
 #: will steal, so reporting a different threshold here would describe a fleet that does not exist.
@@ -90,6 +90,16 @@ class Fleet:
     """Everything the bucket knows about the run."""
 
     constituencies: List[Constituency] = field(default_factory=list)
+    #: Constituency to the archives holding it, when there is more than one. Nothing downstream
+    #: can be corrupted by this -- the shard path, the claim and the discovery loop all key on the
+    #: AC number, so a second archive is processed by nobody and overwrites nothing. It is
+    #: reported because it means 3 GB is being stored twice and, worse, that which of two editions
+    #: was actually read is decided silently by ``sort -V``.
+    duplicates: Dict[int, List[str]] = field(default_factory=dict)
+    #: Constituencies in the published index with no archive in the bucket -- what is left to
+    #: download. The bucket is the authoritative list of what is in play; this is its complement,
+    #: and it exists so that "what next" never has to be answered from memory.
+    not_uploaded: List[int] = field(default_factory=list)
 
     def of(self, state: str) -> List[Constituency]:
         return [c for c in self.constituencies if c.state == state]
@@ -188,8 +198,10 @@ def survey(bucket: str, info: Path = Path("dataset/parts.jsonl.gz")) -> Fleet:
     totals = published_parts(info)
 
     found: Dict[int, Constituency] = {}
-    for name, when in archives.items():
+    holding: Dict[int, List[str]] = collections.defaultdict(list)
+    for name, when in sorted(archives.items()):
         ac_no = int(re.sub(r"^AC0*(\d+)_.*", r"\1", name))
+        holding[ac_no].append(name)
         found[ac_no] = Constituency(
             ac_no=ac_no, archive=name, uploaded=when, parts_total=totals.get(ac_no, 0)
         )
@@ -221,7 +233,30 @@ def survey(bucket: str, info: Path = Path("dataset/parts.jsonl.gz")) -> Fleet:
             listed = _run("gcloud", "storage", "ls", f"{bucket}/stage1/AC{entry.ac_no:03d}/")
             entry.parts_done = sum(1 for line in listed.splitlines() if "/part" in line)
 
-    return Fleet(constituencies=[found[k] for k in sorted(found)])
+    return Fleet(
+        constituencies=[found[k] for k in sorted(found)],
+        duplicates={k: v for k, v in sorted(holding.items()) if len(v) > 1},
+        not_uploaded=sorted(set(totals) - set(found)),
+    )
+
+
+def as_ranges(numbers: Sequence[int]) -> str:
+    """``1 2 3 7 9 10`` as ``1-3, 7, 9-10``. Ninety-seven constituency numbers is a wall."""
+    spans: List[str] = []
+    for number in sorted(numbers):
+        if spans and number == _end(spans[-1]) + 1:
+            spans[-1] = f"{_start(spans[-1])}-{number}"
+        else:
+            spans.append(str(number))
+    return ", ".join(spans)
+
+
+def _start(span: str) -> int:
+    return int(span.split("-")[0])
+
+
+def _end(span: str) -> int:
+    return int(span.split("-")[-1])
 
 
 def render(fleet: Fleet, free_gb: Optional[float] = None) -> str:
@@ -277,6 +312,18 @@ def render(fleet: Fleet, free_gb: Optional[float] = None) -> str:
             f"   ! {len(stale)} constituencies held by a machine that stopped reporting; "
             f"another worker may take them after {STALE//3600} h"
         )
+    if fleet.duplicates:
+        lines.append("")
+        for ac_no, names in fleet.duplicates.items():
+            lines.append(f"   ! AC{ac_no} has {len(names)} archives: {', '.join(names)}")
+        lines.append("     no rows can be duplicated -- shard, claim and discovery all key on the")
+        lines.append("     AC number -- but only one is ever read, and which one is arbitrary")
+
+    if fleet.not_uploaded:
+        lines.append("")
+        lines.append(f"   still to download   {len(fleet.not_uploaded)}")
+        lines.append(f"     {as_ranges(fleet.not_uploaded)}")
+
     if free_gb is not None:
         lines.append("")
         lines.append(f"   laptop free space   {free_gb:.0f} GB")
