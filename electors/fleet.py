@@ -240,6 +240,21 @@ def survey(bucket: str, info: Path = Path("dataset/parts.jsonl.gz")) -> Fleet:
     )
 
 
+def on_disk(rolls: Path = Path("data/ac_rolls")) -> Tuple[List[int], int]:
+    """Constituencies downloaded but not yet uploaded, and how many downloads are still running.
+
+    Both belong in "what is left to fetch", and neither is in the bucket. The finished ones can be
+    named. The running ones cannot: a browser calls a partial download ``Unconfirmed
+    72972.crdownload`` and only restores the real filename when it completes, so nineteen
+    constituencies in flight are nineteen unknowns. Counting them is the most that can honestly be
+    said, and saying it is what stops the remaining list from being read as untouched.
+    """
+    if not rolls.exists():
+        return [], 0
+    finished = sorted({int(re.sub(r"^AC0*(\d+)_.*", r"\1", p.name)) for p in rolls.glob("AC*.zip")})
+    return finished, len(list(rolls.glob("*.crdownload")))
+
+
 def as_ranges(numbers: Sequence[int]) -> str:
     """``1 2 3 7 9 10`` as ``1-3, 7, 9-10``. Ninety-seven constituency numbers is a wall."""
     spans: List[str] = []
@@ -320,9 +335,22 @@ def render(fleet: Fleet, free_gb: Optional[float] = None) -> str:
         lines.append("     AC number -- but only one is ever read, and which one is arbitrary")
 
     if fleet.not_uploaded:
+        waiting, running = on_disk()
+        left = [n for n in fleet.not_uploaded if n not in set(waiting)]
         lines.append("")
-        lines.append(f"   still to download   {len(fleet.not_uploaded)}")
-        lines.append(f"     {as_ranges(fleet.not_uploaded)}")
+        if waiting:
+            lines.append(f"   downloaded, not yet uploaded   {len(waiting)}")
+            lines.append(f"     {as_ranges(waiting)}")
+        lines.append(f"   not anywhere yet   {len(left)}")
+        lines.append(f"     {as_ranges(left)}")
+        if running:
+            lines.append(
+                f"     up to {running} of those are downloading now -- a browser hides the AC"
+            )
+            lines.append(
+                f"     number until a download finishes, so about {len(left) - running} are"
+                " genuinely untouched"
+            )
 
     if free_gb is not None:
         lines.append("")
