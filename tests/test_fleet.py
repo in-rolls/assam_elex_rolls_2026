@@ -111,3 +111,20 @@ def test_render_names_the_stale_machine():
     text = fleet.render(state)
     assert "STALE" in text
     assert "box-z" in text
+
+
+def test_stale_matches_the_workers():
+    """The reader's threshold must be the writers'.
+
+    ``fleet`` calls a claim abandoned at one number and the workers steal it at another; if those
+    drift, the status command describes a fleet that does not exist -- reporting work as stranded
+    that nobody will take, or as healthy when it has already been stolen. Both were changed by
+    hand together once, which is exactly when they will not be next time.
+    """
+    import re
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "gcp_worker.sh"
+    match = re.search(r"^STALE=(\d+)", script.read_text(), re.MULTILINE)
+    assert match, "gcp_worker.sh no longer defines STALE"
+    assert int(match.group(1)) == fleet.STALE

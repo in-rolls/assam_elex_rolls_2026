@@ -39,10 +39,20 @@ exec > >(tee -a "$LOG") 2>&1
 
 say() { echo "$(date -u +%H:%M:%S) | $*"; }
 
-#: How long a claim may go unrefreshed before another machine may take the constituency. Longer
-#: than the slowest constituency observed (AC11, 402 parts, 118 minutes) with room to spare, so a
-#: working machine is never robbed; short enough that a preempted one does not strand its work.
-STALE=10800
+#: How long a claim may go unrefreshed before another machine may take the constituency.
+#:
+#: Six missed heartbeats, not a multiple of how long the work takes. The original three hours was
+#: sized against the slowest constituency observed, which confused two different things: a machine
+#: can be slow *and* alive, and the heartbeat is what tells them apart -- it runs on its own timer
+#: and keeps firing however long the work grinds on. So a machine that has gone quiet for thirty
+#: minutes is not busy, it is gone.
+#:
+#: The cost of getting this wrong was measured rather than imagined. assam-rolls-8 was preempted
+#: two hours into AC113 with all 261 parts already synced, and the three-hour threshold would have
+#: left that constituency untouchable for another 1.9 hours while seven idle-capable machines took
+#: newer work. Robbing a live machine is the opposite risk, and six consecutive missed beats makes
+#: it vanishingly unlikely.
+STALE=1800
 
 # Claim a constituency, atomically. --if-generation-match=0 creates the object only if it does
 # not exist and returns 412 otherwise, so the winner is decided by Cloud Storage rather than by

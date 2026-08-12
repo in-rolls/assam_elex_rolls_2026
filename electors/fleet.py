@@ -32,7 +32,9 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 #: Matches ``gcp_worker.sh``'s ``STALE``. A claim older than this is one the workers themselves
 #: will steal, so reporting a different threshold here would describe a fleet that does not exist.
-STALE = 10800
+#: Six missed heartbeats: the beat runs on its own timer, so a quiet machine is gone rather than
+#: busy, and a preempted one strands its constituency for exactly this long.
+STALE = 1800
 
 #: ``gcloud storage ls -l`` prints ``size  timestamp  url``. Parsed rather than asked for as JSON
 #: because the JSON listing of 29 archives is megabytes of metadata to extract two fields from.
