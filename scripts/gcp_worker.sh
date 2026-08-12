@@ -30,6 +30,10 @@ WORKERS=$(curl -sf -H "Metadata-Flavor: Google" \
 
 ROOT=/mnt/work
 LOG=$ROOT/run.log
+# Named for the machine. Four workers sharing one object each overwrote the others every 90
+# seconds, so the only log of a four-machine run was whichever machine synced last -- and it was
+# empty when it mattered. A log that four writers race to clobber is not a log.
+REMOTE_LOG=$BUCKET/logs/$(hostname).log
 mkdir -p "$ROOT"
 exec > >(tee -a "$LOG") 2>&1
 
@@ -43,19 +47,28 @@ STALE=10800
 # Claim a constituency, atomically. --if-generation-match=0 creates the object only if it does
 # not exist and returns 412 otherwise, so the winner is decided by Cloud Storage rather than by
 # a check followed by a write, which two machines can both pass.
+#
+# The file is "host started last-beat". The start time is carried through every heartbeat rather
+# than overwritten, because it is the only record of how long a constituency actually takes: with
+# just a beat time, throughput has to be inferred from the gaps between finished shards, and that
+# inference reads a fleet that grew from one machine to four as a fleet running at a quarter of
+# its real speed. Two extra fields turn an estimate into a measurement.
+CLAIM_START=0
 claim() {
-  local ac=$1 file=/tmp/claim.$$
-  echo "$(hostname) $(date +%s)" > "$file"
+  local ac=$1 file=/tmp/claim.$$ now
+  now=$(date +%s)
+  echo "$(hostname) $now $now" > "$file"
   if gcloud storage cp --if-generation-match=0 "$file" "$BUCKET/claims/AC$ac.claim" 2>/dev/null; then
-    rm -f "$file"; return 0
+    rm -f "$file"; CLAIM_START=$now; return 0
   fi
   # Held by somebody. Stale only if it has not been refreshed -- a live worker rewrites it.
   local held age
-  held=$(gcloud storage cat "$BUCKET/claims/AC$ac.claim" 2>/dev/null | awk '{print $2}')
-  age=$(( $(date +%s) - ${held:-0} ))
+  held=$(gcloud storage cat "$BUCKET/claims/AC$ac.claim" 2>/dev/null | awk '{print $NF}')
+  age=$(( now - ${held:-0} ))
   if [ -n "$held" ] && [ "$age" -gt "$STALE" ]; then
     say "AC$ac claimed ${age}s ago and not refreshed -- taking it over"
-    gcloud storage cp "$file" "$BUCKET/claims/AC$ac.claim" 2>/dev/null && { rm -f "$file"; return 0; }
+    gcloud storage cp "$file" "$BUCKET/claims/AC$ac.claim" 2>/dev/null && {
+      rm -f "$file"; CLAIM_START=$now; return 0; }
   fi
   rm -f "$file"
   return 1
@@ -63,10 +76,10 @@ claim() {
 
 # Rewritten while the constituency is being worked, so its claim never looks abandoned.
 heartbeat() {
-  local ac=$1 file=/tmp/beat.$$
+  local ac=$1 started=$2 file=/tmp/beat.$$
   while true; do
     sleep 300
-    echo "$(hostname) $(date +%s)" > "$file"
+    echo "$(hostname) $started $(date +%s)" > "$file"
     gcloud storage cp "$file" "$BUCKET/claims/AC$ac.claim" 2>/dev/null
   done
 }
@@ -130,7 +143,7 @@ say "resumed with $(find "$ROOT/stage1" -name manifest.jsonl 2>/dev/null | wc -l
     sleep 90
     gsutil -q -m rsync -r -x '.*composite.*\.png$' "$ROOT/stage1" "$BUCKET/stage1" 2>/dev/null
     gsutil -q -m rsync -r "$ROOT/shards" "$BUCKET/shards" 2>/dev/null
-    gsutil -q cp "$LOG" "$BUCKET/run.log" 2>/dev/null
+    gsutil -q cp "$LOG" "$REMOTE_LOG" 2>/dev/null
   done
 ) &
 SYNC=$!
@@ -173,7 +186,7 @@ while true; do
   say "fetching $NAME"
   gsutil -q cp "$BUCKET/source/$NAME" "$ROOT/$NAME" || { say "could not fetch $NAME"; sleep 60; continue; }
 
-  heartbeat "$(printf %03d "$AC")" &
+  heartbeat "$(printf %03d "$AC")" "$CLAIM_START" &
   BEAT=$!
   say "running AC$AC with $WORKERS workers $LIMIT"
   "$ROOT/venv/bin/python" -m electors run "$ROOT/$NAME" \
@@ -201,7 +214,7 @@ kill $SYNC 2>/dev/null
 say "final sync"
 gsutil -q -m rsync -r -x '.*composite.*\.png$' "$ROOT/stage1" "$BUCKET/stage1"
 gsutil -q -m rsync -r "$ROOT/shards" "$BUCKET/shards"
-gsutil -q cp "$LOG" "$BUCKET/run.log"
+gsutil -q cp "$LOG" "$REMOTE_LOG"
 say "done -- results under $BUCKET/shards, composites under $BUCKET/stage1"
 touch "$ROOT/FINISHED"
 gsutil -q cp "$ROOT/FINISHED" "$BUCKET/FINISHED"

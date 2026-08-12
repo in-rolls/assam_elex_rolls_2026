@@ -1038,6 +1038,21 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if all(not r.error for r in runs) else 1
 
 
+def cmd_fleet(args: argparse.Namespace) -> int:
+    """Answer 'is everything I uploaded being worked on' without archaeology."""
+    import shutil
+
+    from . import fleet as fleet_module
+
+    state = fleet_module.survey(args.bucket)
+    if not state.constituencies:
+        print("   nothing in the bucket -- is --bucket right, and is gcloud authenticated?")
+        return 1
+    free_gb = shutil.disk_usage(Path.cwd()).free / 1e9
+    print(fleet_module.render(state, free_gb))
+    return 0
+
+
 def cmd_bundle(args: argparse.Namespace) -> int:
     """Give the already-finished constituencies something to be judged against."""
     from . import deliver
@@ -1364,6 +1379,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_pull.add_argument("--watch", action="store_true", help="keep polling as constituencies land")
     p_pull.add_argument("--every", type=int, default=300)
     p_pull.set_defaults(func=cmd_pull)
+
+    p_fleet = sub.add_parser("fleet", help="where the run is: done, in flight, queued, stalled")
+    p_fleet.add_argument("--bucket", default="gs://sawasdee-assam-rolls")
+    p_fleet.set_defaults(func=cmd_fleet)
 
     p_bundle = sub.add_parser(
         "bundle", help="backfill verification bundles for constituencies that finished without one"
