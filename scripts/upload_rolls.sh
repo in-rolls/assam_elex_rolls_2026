@@ -15,6 +15,9 @@ set -uo pipefail
 
 DIR=${1:-data/ac_rolls}
 BUCKET=${2:-gs://sawasdee-assam-rolls}
+#: The published part count per constituency -- the only number here this pipeline did not
+#: produce, and so the only one that can call a download incomplete.
+INDEX=$(cd "$(dirname "$0")/.." && pwd)/dataset/parts.jsonl.gz
 KEEP=${3:-}
 
 say() { echo "$(date +%H:%M:%S) | $*"; }
@@ -47,6 +50,32 @@ for path in $(find "$DIR" -maxdepth 1 -name '*.zip' 2>/dev/null | sort -V); do
   # Space in a name means a browser's duplicate download, and a space in an object name breaks
   # every shell path that touches it later. Skipped rather than renamed: the original is there.
   case "$name" in *" "*) say "skipping $name -- a duplicate download"; continue;; esac
+
+  # Does the archive hold one PDF per part the roll publishes?
+  #
+  # Comparing the local file to the bucket copy, which is all this script used to do, cannot
+  # answer that: a download truncated to a seventh of its length uploads perfectly and matches
+  # itself perfectly at the far end. Three such archives reached this directory looking finished
+  # -- AC88, AC94 and AC95, at 1.5 MB a part against a normal 9 to 15 -- and only did not reach
+  # the bucket because the uploader is serial and had not got to them.
+  #
+  # The count is the check rather than the size, because size is a guess about a constituency
+  # whose real size is unknown, while the part count is published on the roll's own info pages and
+  # is not something this pipeline produced. `unzip -l` reads the central directory only, so this
+  # costs milliseconds even on three gigabytes.
+  ac=$(echo "$name" | sed -E 's/^AC0*([0-9]+)_.*/\1/')
+  # Resolved from this script's own location, not the working directory: the uploader is run from
+  # wherever it is convenient, and a check that silently finds no index is a check that passes
+  # everything.
+  want=$(python3 -c "
+import gzip, json
+print(sum(1 for l in gzip.open('$INDEX','rt') if json.loads(l).get('ac_no')==$ac))
+" 2>/dev/null || echo 0)
+  got=$(unzip -l "$path" 2>/dev/null | grep -ci '\.pdf$')
+  if [ "${want:-0}" -gt 0 ] && [ "$got" != "$want" ]; then
+    say "REFUSING $name -- $got PDFs for $want published parts; incomplete download, keeping it local"
+    continue
+  fi
 
   local_size=$(stat -f %z "$path" 2>/dev/null || stat -c %s "$path")
   remote_size=$(gcloud storage ls -l "$BUCKET/source/$name" 2>/dev/null | awk 'NR==1{print $1}')
