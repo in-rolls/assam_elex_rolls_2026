@@ -93,10 +93,22 @@ def _either_ra(pattern: str) -> str:
 MATRA = "[া-ৌৗ]?"
 
 AGE_RE = re.compile(r"বয়স\s*[:：]?\s*([0-9০-৯]{1,3})")
+#: The word for "house", in both editions the state publishes. Assamese prints ``ঘৰ নং``; Bengali
+#: prints ``বাড়ী নং``, and knowing only the Assamese form cost the house number on **every row of
+#: all ten Bengali constituencies** -- about 2.2 million of them. The label is on the page and
+#: Vision read it: 282 of 316 boxes on one AC114 page carry ``বাড়ী নং : 01`` or similar. Nothing
+#: matched it, so ``fields()`` never recorded a value and the column shipped empty.
+#:
+#: ``fields.HOUSE_LABELS`` also lists these forms, and that is not where the bug was: the whole
+#: pipeline reads through :func:`vision.elector_from`, which routes to this module deliberately
+#: (labels rather than positions) and never consults that tuple. Two label sets, one of which was
+#: dead code for this path.
+HOUSE_WORD = r"(?:ঘৰ|বাড়ী|বাড়ি)"
+
 #: ``[ \t]*`` rather than ``\s*`` before the suffix: the terse answers are line-delimited, and a
 #: pattern that crossed the newline captured the ``ব`` of the ``বয়স`` on the next line, turning
 #: house 13 into "13\nব".
-HOUSE_RE = re.compile(_either_ra(r"ঘৰ\s*নং\s*[:：]?\s*([0-9০-৯]{1,6}[ \t]*[ক-হ]?)"))
+HOUSE_RE = re.compile(_either_ra(rf"{HOUSE_WORD}\s*নং\s*[:：]?\s*([0-9০-৯]{{1,6}}[ \t]*[ক-হ]?)"))
 SEX_RE = re.compile(r"লিঙ্গ\s*[:：]?\s*(\S+)")
 RELATION_WORDS = _either_ra(r"পিতাৰ|স্বামীৰ|মাতাৰ|মাতৃৰ")
 RELATION_RE = re.compile(
@@ -210,7 +222,7 @@ class Reading:
             for part in (p.strip() for p in re.split(r"\||\n", text)):
                 if not part or part.isdigit():
                     continue
-                if re.search(_either_ra(rf"ঘৰ|বয়স|লিঙ্গ|নাম{MATRA}\s*[:：]|<"), part):
+                if re.search(_either_ra(rf"{HOUSE_WORD}|বয়স|লিঙ্গ|নাম{MATRA}\s*[:：]|<"), part):
                     continue
                 if BARE_NAME.match(part):
                     value = _clean_value(part)
