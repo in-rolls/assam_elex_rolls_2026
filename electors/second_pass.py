@@ -110,6 +110,41 @@ HOUSE_WORD = r"(?:ঘৰ|বাড়ী|বাড়ি)"
 #: house 13 into "13\nব".
 HOUSE_RE = re.compile(_either_ra(rf"{HOUSE_WORD}\s*নং\s*[:：]?\s*([0-9০-৯]{{1,6}}[ \t]*[ক-হ]?)"))
 SEX_RE = re.compile(r"লিঙ্গ\s*[:：]?\s*(\S+)")
+
+#: Any 1-3 digit run, Bengali or Latin numerals.
+NUMBER = re.compile(r"[0-9০-৯]{1,3}")
+
+
+def age_beside_sex(text: str) -> Optional[int]:
+    """The age from a line whose ``বয়স`` label did not survive the scan.
+
+    Age and sex are printed on one line -- ``বয়স : 34 লিঙ্গ : পুৰুষ`` -- and the two labels do not
+    scan equally well. ``fields.SEX_LABEL`` is deliberately loose because ``লিঙ্গ`` comes back as
+    লঙ্গ, ল্গ, লল্গী, ললক; ``AGE_RE`` demands ``বয়স`` exactly, and ``বয়স`` comes back as বৈবলমলস,
+    ়বৈলযস, ৈলৰযস. The tolerance was applied to one label on the line and not the other, so a
+    mangled age label loses the number even though the line was found and read.
+
+    The evidence it was found: AC10 has **2,952 rows with a sex and no age**, 1.5% of the
+    constituency. One of them, p29/pg31/r6c0, reads perfectly by eye.
+
+    Anchored on the sex label rather than taken from any line, because that is what makes "the
+    first number here" an inference instead of a guess. The age line holds a label, a number, a
+    sex label and a sex word; the sex value is not numeric and the house number is on its own
+    line, so the only number on this line is the age. ``fields.SEX_LABEL`` is imported rather than
+    restated -- a second copy of a pattern is how ``HOUSE_LABELS`` came to be patched while the
+    code that actually ran went on failing.
+    """
+    from .fields import SEX_LABEL
+
+    for line in text.splitlines():
+        if not SEX_LABEL.search(line):
+            continue
+        for found in NUMBER.findall(schema.normalize_digits(line)):
+            if MIN_AGE <= int(found) <= MAX_AGE:
+                return int(found)
+    return None
+
+
 RELATION_WORDS = _either_ra(r"পিতাৰ|স্বামীৰ|মাতাৰ|মাতৃৰ")
 RELATION_RE = re.compile(
     rf"(?P<kind>{RELATION_WORDS})\s*নাম{MATRA}\s*[:：]?\s*(?P<value>[^|<\n]{{2,40}})"
@@ -235,6 +270,11 @@ class Reading:
             digits = schema.normalize_digits(age.group(1))
             if digits.isdigit() and MIN_AGE <= int(digits) <= MAX_AGE:
                 found["age"] = int(digits)
+        if "age" not in found:
+            recovered = age_beside_sex(text)
+            if recovered is not None:
+                found["age"] = recovered
+                found["age_unlabelled"] = True
         house = HOUSE_RE.search(text)
         if house:
             value = schema.normalize_digits(house.group(1)).strip()

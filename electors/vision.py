@@ -512,6 +512,11 @@ def elector_from(header: Sequence[str], body: Sequence[str]) -> "Elector":
     elector.relation_type = found.get("relation_type", "")
     elector.house_no = found.get("house_no", "")
     elector.age = found.get("age")
+    # Recovered from a line whose age label did not survive, by anchoring on the sex label beside
+    # it. Marked so its contribution can be counted and, if it ever proves wrong, found again --
+    # an inference that cannot be told apart from a direct reading is one nobody can audit.
+    if found.get("age_unlabelled"):
+        elector.flags.append("age_unlabelled")
     elector.sex = found.get("sex", "")
 
     strip = " ".join(header)
