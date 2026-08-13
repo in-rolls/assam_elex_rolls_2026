@@ -133,10 +133,21 @@ python3 -m venv "$ROOT/venv"
 "$ROOT/venv/bin/pip" -q install -e ".[gcp]"
 
 # Resume, part one: whatever a previous instance got through.
+#
+# Stage one only. Shards are deliberately *not* pulled back, and this is the difference between
+# a machine that publishes its own work and one that republishes everybody's.
+#
+# Pulling every shard at boot and then rsyncing the whole directory back every ninety seconds made
+# each machine a publisher of sixty constituencies it did not produce. Correcting a shard then
+# became impossible: eleven were deleted from the bucket so the workers would redo them with a
+# fixed parser, and all eleven were restored from stale local copies within six minutes. The same
+# shape had already reverted the fix on the laptop twice, from the other direction.
+#
+# A machine needs stage one to resume a half-finished constituency. It has never needed another
+# machine's shards for anything.
 say "pulling any existing state from $BUCKET"
 mkdir -p "$ROOT/stage1" "$ROOT/shards"
 gsutil -q -m rsync -r "$BUCKET/stage1" "$ROOT/stage1" 2>/dev/null || true
-gsutil -q -m rsync -r "$BUCKET/shards" "$ROOT/shards" 2>/dev/null || true
 say "resumed with $(find "$ROOT/stage1" -name manifest.jsonl 2>/dev/null | wc -l) parts already prepared"
 
 # Resume, part two: keep pushing, so the next instance has something to resume from. Started
