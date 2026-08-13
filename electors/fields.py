@@ -125,7 +125,24 @@ def relation_label(line: str) -> Optional[Tuple[int, str]]:
     return None
 
 
-HOUSE_LABELS = ("ঘৰ নং", "ঘৰনং", "ঘর নং", "ঘৰ ন")
+#: House number, in both languages the rolls are printed in: Assamese ``ঘৰ নং``, Bengali
+#: ``বাড়ী নং``. The Bengali forms are named rather than left to the digit fallback below, so the
+#: value is taken from after the label instead of from the first digits anywhere on the line.
+#:
+#: No truncated variants. ``বাড়ী ন`` matches ``বাড়ী নং`` and then returns the
+#: leftover ``ং`` as the house number -- a label that is a prefix of the full
+#: label turns a missing value into a plausible-looking wrong one, which is
+#: worse than returning nothing.
+HOUSE_LABELS = (
+    "ঘৰ নং",
+    "ঘৰনং",
+    "ঘর নং",
+    "ঘৰ ন",
+    "বাড়ী নং",
+    "বাড়ীনং",
+    "বাড়ি নং",
+    "বাড়িনং",
+)
 AGE_LABEL = "বয়স"
 NAME_LABEL = "নাম"
 

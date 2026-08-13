@@ -205,6 +205,48 @@ def fill_rates(rows: Sequence[Dict[str, Any]], fields: Sequence[str]) -> Check:
     return Check("fill rates", True, ", ".join(parts), external=False)
 
 
+#: Fields whose emptiness means the parser did not run. Ordered by how much they matter: name,
+#: age and sex first, then house number and identifier. ``relation_name`` is deliberately absent --
+#: a roll legitimately leaves it blank on some rows, so it cannot carry a floor.
+MUST_BE_POPULATED = ("name", "age", "sex", "house_no", "epic_no")
+
+#: Half the rows. Far below the 95-99% every working constituency shows, because this is a smoke
+#: alarm and not a quality bar: it must never fire on a merely poor read, only on a field nothing
+#: wrote to. Judging quality between this floor and 100% is the hand-read sample's job, and a
+#: check that quietly took it over would make PASS mean something it cannot support.
+POPULATED_FLOOR = 0.5
+
+
+def fields_populated(
+    rows: Sequence[Dict[str, Any]],
+    fields: Sequence[str] = MUST_BE_POPULATED,
+    floor: float = POPULATED_FLOOR,
+) -> Check:
+    """Every field that carries meaning is non-empty on at least half the rows.
+
+    External, and able to fail a verdict, which the reported fill rates deliberately are not. The
+    distinction is real: 99% filled is equally consistent with 99% correct and 40% correct, so a
+    high rate proves nothing and must not vote. **Zero is different.** A field empty on every row
+    is not an uncertain quality signal, it is a parser that did not run, and it is knowable without
+    any external truth at all.
+
+    AC113 is why this exists. It produced 161,750 rows with name, age, sex and house number blank
+    on every one -- the state's only English roll read by a parser that matches Assamese labels --
+    and the verdict was FAIL only because its closing pages happened to be unreadable too. Had
+    those parsed, 161,750 empty rows would have been marked PASS.
+    """
+    empty = []
+    for name in fields:
+        filled = sum(1 for r in rows if r.get(name) not in (None, "", 0)) / len(rows)
+        if filled < floor:
+            empty.append(f"{name} {filled:.1%}")
+    return Check(
+        "fields populated",
+        not empty,
+        f"below {floor:.0%}: {', '.join(empty)}" if empty else f"all above {floor:.0%}",
+    )
+
+
 def judge(
     ac_no: int,
     rows: Sequence[Dict[str, Any]],
@@ -220,6 +262,7 @@ def judge(
         verdict.add("rows present", False, "the shard is empty")
         return verdict
 
+    verdict.checks.append(fields_populated(rows))
     verdict.checks.append(parts_complete(rows, published_parts))
     verdict.checks.append(measured_coverage(rows, totals))
     verdict.checks.append(rows_against_printed(rows, totals))
