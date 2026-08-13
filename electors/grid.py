@@ -455,7 +455,7 @@ def text_bands(image: Image.Image, box: Box) -> List[Tuple[int, int]]:
     ink = (body < INK_LEVEL).sum(axis=1)
     if not ink.size or ink.max() == 0:
         return []
-    found = _bands(ink.tolist(), float(ink.max()) * INK_FRACTION)
+    found = _restore_short(_bands(ink.tolist(), float(ink.max()) * INK_FRACTION))
     height = crop.height
     return [
         (
@@ -464,3 +464,43 @@ def text_bands(image: Image.Image, box: Box) -> List[Tuple[int, int]]:
         )
         for start, end in found
     ]
+
+
+#: A band this much shorter than its siblings was clipped by the threshold, not printed smaller.
+SHORT_BAND = 0.6
+
+
+def _restore_short(found: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    """Grow bands the ink threshold cut short back to the height of their neighbours.
+
+    The threshold is a fraction of the **densest row in the box**, and the densest rows belong to
+    the name and relation lines, which span the full text column. The house-number line does not:
+    ``বাড়ী নং : 01`` is a few characters wide, so its ink per row is a fraction of a full line's
+    and only its densest core clears the bar. It came out 18 pixels tall against 49 for every
+    other line in the box -- a strip through the middle of the text, with the glyph tops and the
+    digits sliced off.
+
+    That is not a subtle loss. Every one of AC114's 184,361 rows shipped with an empty house
+    number, as did all ten Bengali constituencies -- about 2.2 million rows -- because the line
+    handed to OCR was mutilated.
+
+    Lines inside one box are printed at one font size, so a band far shorter than the others is
+    evidence about the threshold rather than about the page. Each short band is grown symmetrically
+    to the median height, stopping short of its neighbours so two lines never merge.
+    """
+    if len(found) < 3:
+        return found
+    heights = sorted(end - start for start, end in found)
+    median = heights[len(heights) // 2]
+    out: List[Tuple[int, int]] = []
+    for index, (start, end) in enumerate(found):
+        if end - start >= median * SHORT_BAND:
+            out.append((start, end))
+            continue
+        grow = (median - (end - start)) // 2
+        # Never past a neighbour: a band that swallows the line above it turns one bad field into
+        # two, and the name line is worth more than the house number.
+        ceiling = found[index - 1][1] if index else 0
+        floor = found[index + 1][0] if index + 1 < len(found) else start + median
+        out.append((max(ceiling, start - grow), min(floor, end + grow)))
+    return out
