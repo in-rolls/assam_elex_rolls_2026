@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from PIL import Image
+
 from electors import stage1, stage2
 
 PLACEMENTS = {
@@ -61,6 +63,25 @@ def test_one_image_missing_its_words_is_not_prepared(tmp_path: Path) -> None:
     (part / "composite001.words.json").unlink()
     assert not stage1.done(tmp_path, 1)
     assert not stage2.ready(part)
+
+
+def test_a_cached_summary_page_is_not_counted_as_bought(tmp_path: Path) -> None:
+    """``images_billed`` is what the run is charged for, so a free read must not appear in it.
+
+    The count decides the reported Vision cost per constituency. Incrementing it on the cached
+    path adds one phantom image per part -- invisible while every part was being read for the
+    first time, and the whole state once the fleet resumes instead of re-rendering.
+    """
+    part = tmp_path / "part0001"
+    part.mkdir()
+    Image.new("L", (40, 20), 255).save(part / "summary_page.png")
+    (part / "summary_page.words.json").write_text("[]", encoding="utf-8")
+
+    def never(_images):
+        raise AssertionError("Vision was called for a page whose words are already cached")
+
+    _, paid = stage2.summary_from_vision(part, "", never)
+    assert paid is False
 
 
 def test_composites_are_named_from_the_record(tmp_path: Path) -> None:

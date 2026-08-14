@@ -110,10 +110,10 @@ def read_part(
         if side["summary"] is None:
             # Bought only where the free reading failed, and only once: the words are cached
             # beside the composites', so a later parser change re-reads them for nothing.
-            bought = summary_from_vision(part_dir, api_key, annotate)
+            bought, paid = summary_from_vision(part_dir, api_key, annotate)
+            result.images_billed += int(paid)
             if bought is not None:
                 side["summary"] = bought
-                result.images_billed += 1
                 # Written back, because reconciliation reads the closing total from side.json
                 # and not from this result. Without this the purchase happened, the number was
                 # correct, and it was thrown away -- AC100 bought 37 readings and still reported
@@ -156,7 +156,7 @@ def read_part(
 
 def summary_from_vision(
     part_dir: Path, api_key: str, annotate: Optional[Callable] = None
-) -> Optional[Any]:
+) -> Tuple[Optional[Any], bool]:
     """The closing totals for a part tesseract could not read, bought from Vision.
 
     About a fifth of parts end up with no printed total, so a fifth of the dataset has **no
@@ -171,16 +171,22 @@ def summary_from_vision(
     The arithmetic still decides. A triple that does not balance is refused here exactly as it is
     on the tesseract path, so a bought reading can no more replace a right answer with a
     plausible wrong one than a free one could.
+
+    Returns the totals and **whether Vision was actually charged for them**. On the cached path
+    nothing is bought, and a caller that counts the read anyway reports a cost that was never
+    incurred -- one phantom image per resumed part, which is the whole state once the fleet
+    starts resuming rather than re-rendering.
     """
     page = part_dir / "summary_page.png"
     if not page.exists():
-        return None
+        return None, False
 
     from PIL import Image
 
     from . import summary as summary_module
 
     cached = cached_words(part_dir, page.name)
+    paid = cached is None
     if cached is None:
         with Image.open(page) as image:
             image.load()
@@ -188,7 +194,7 @@ def summary_from_vision(
                 annotate([image]) if annotate is not None else vision.annotate([image], api_key)
             )
         if not responses:
-            return None
+            return None, False
         cached = vision.words_from(responses[0])
         save_words(part_dir, page.name, cached)
 
@@ -196,9 +202,12 @@ def summary_from_vision(
         text = "\n".join(vision.grouped_lines(cached, 0, image.width))
     found = summary_module.parse(text)
     if not found:
-        return None
+        return None, paid
     male, female, third, total = found
-    return summary_module.RollSummary(male=male, female=female, third=third, total=total, scale=1)
+    return (
+        summary_module.RollSummary(male=male, female=female, third=third, total=total, scale=1),
+        paid,
+    )
 
 
 def words_path(part_dir: Path, image: str) -> Path:
