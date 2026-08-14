@@ -95,7 +95,21 @@ def publish(ac_no: int, rows: List[Dict[str, Any]], home: Path, bucket: str) -> 
     if len(back) != len(rows):
         return f"wrote {len(rows):,} rows and read back {len(back):,}"
 
-    entry = output.write_entry(ac_no, shard, {"rows": len(back)}, directory=home)
+    # Merged, not replaced. Writing a bare {"rows": n} discarded vision_usd, images_billed,
+    # stage1_seconds and every reconciliation count for sixty-three constituencies -- the only
+    # record of what the run cost, gone, and the bucket has no versioning to recover it from.
+    # A re-parse changes the rows; it does not make what the original run spent untrue.
+    previous: Dict[str, Any] = {}
+    existing = output.entry_path(ac_no, home)
+    if existing.exists():
+        try:
+            previous = json.loads(existing.read_text(encoding="utf-8"))
+        except ValueError:
+            previous = {}
+    previous.pop("file", None)
+    previous.pop("bytes", None)
+    previous.pop("sha256", None)
+    entry = output.write_entry(ac_no, shard, {**previous, "rows": len(back)}, directory=home)
     for path in (shard, entry):
         if _run("gcloud", "storage", "cp", str(path), f"{bucket}/shards/{path.name}").returncode:
             return f"could not upload {path.name}"
