@@ -128,3 +128,37 @@ def test_stale_matches_the_workers():
     match = re.search(r"^STALE=(\d+)", script.read_text(), re.MULTILINE)
     assert match, "gcp_worker.sh no longer defines STALE"
     assert int(match.group(1)) == fleet.STALE
+
+
+def test_on_disk_looks_where_the_browser_saves(tmp_path):
+    """An archive in the downloads folder counts as on disk, not as still to download.
+
+    This is the case that failed. Nine complete archives, 29 GB, sat in ~/Downloads while the
+    status command reported those constituencies as missing, and eight were downloaded a second
+    time on the strength of it. Searching one of the two places a file can be is confidently
+    wrong, which is worse than silent.
+    """
+    staging, downloads = tmp_path / "staging", tmp_path / "downloads"
+    staging.mkdir()
+    downloads.mkdir()
+    (downloads / "AC77_ASM.zip").write_bytes(b"x")
+    (staging / "AC12_BEN.zip").write_bytes(b"x")
+
+    assert fleet.on_disk((staging, downloads))[0] == [12, 77]
+    assert fleet.on_disk((staging,))[0] == [12]
+
+
+def test_on_disk_still_reports_nothing_when_there_is_nothing(tmp_path):
+    """The check must be able to fire -- one that never returns empty proves nothing."""
+    assert fleet.on_disk((tmp_path,)) == ([], 0)
+
+
+def test_on_disk_counts_partial_downloads_across_both(tmp_path):
+    """Partials cannot be named -- a browser hides the AC number until a download finishes -- so
+    they are counted, and counted wherever they are."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    (a / "Unconfirmed 111.crdownload").write_bytes(b"x")
+    (b / "Unconfirmed 222.crdownload").write_bytes(b"x")
+    assert fleet.on_disk((a, b))[1] == 2

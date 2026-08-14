@@ -13,7 +13,14 @@
 #   scripts/upload_rolls.sh data/ac_rolls gs://sawasdee-assam-rolls [--keep]
 set -uo pipefail
 
-DIR=${1:-data/ac_rolls}
+#: Where archives are looked for. Two places, because the tool watched one and the browser saves
+#: to the other -- nine complete archives, 29 GB, sat in ~/Downloads doing nothing while the
+#: status command reported those same constituencies as still needing to be downloaded, and eight
+#: of them were fetched a second time on the strength of it.
+#:
+#: Asking a person to save somewhere else is not a fix. The browser's default wins, and a rule
+#: that has to be remembered at 2am is a rule that will not be.
+DIRS=${1:-data/ac_rolls $HOME/Downloads}
 BUCKET=${2:-gs://sawasdee-assam-rolls}
 #: The published part count per constituency -- the only number here this pipeline did not
 #: produce, and so the only one that can call a download incomplete.
@@ -56,7 +63,10 @@ while true; do
 # `models` to the bucket.
 #
 # Version sorted, so AC1 precedes AC10 precedes AC100; plain sort interleaves them.
-for path in $(find "$DIR" -maxdepth 1 -name '*.zip' 2>/dev/null | sort -V); do
+# Unquoted on purpose: DIRS holds a list, and find takes several roots. Every guard below runs
+# per archive, immediately before the only destructive step, and none of them cares which
+# directory the file came from.
+for path in $(find $DIRS -maxdepth 1 -name '*.zip' 2>/dev/null | sort -V); do
   name=$(basename "$path")
   # Delete nothing that is not a roll archive. The name is checked here, immediately before the
   # only destructive step in this script, rather than trusted from however the list was built --

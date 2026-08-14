@@ -242,7 +242,17 @@ def survey(bucket: str, info: Path = Path("dataset/parts.jsonl.gz")) -> Fleet:
     )
 
 
-def on_disk(rolls: Path = Path("data/ac_rolls")) -> Tuple[List[int], int]:
+#: Everywhere an archive plausibly is. The staging directory the uploader drains, and the one a
+#: browser actually saves to.
+#:
+#: Looking only at the first reported nine complete archives -- 29 GB, verified -- as still needing
+#: to be downloaded, because they were sitting in ``~/Downloads``. Eight of them were downloaded a
+#: second time on the strength of that list. A status command that examines one of the two places a
+#: file can be is not slightly wrong; it is confidently wrong, which is worse than silent.
+ROLL_DIRS: Tuple[Path, ...] = (Path("data/ac_rolls"), Path.home() / "Downloads")
+
+
+def on_disk(rolls: Sequence[Path] = ROLL_DIRS) -> Tuple[List[int], int]:
     """Constituencies downloaded but not yet uploaded, and how many downloads are still running.
 
     Both belong in "what is left to fetch", and neither is in the bucket. The finished ones can be
@@ -251,10 +261,18 @@ def on_disk(rolls: Path = Path("data/ac_rolls")) -> Tuple[List[int], int]:
     constituencies in flight are nineteen unknowns. Counting them is the most that can honestly be
     said, and saying it is what stops the remaining list from being read as untouched.
     """
-    if not rolls.exists():
-        return [], 0
-    finished = sorted({int(re.sub(r"^AC0*(\d+)_.*", r"\1", p.name)) for p in rolls.glob("AC*.zip")})
-    return finished, len(list(rolls.glob("*.crdownload")))
+    if isinstance(rolls, Path):  # a single directory, as the old signature took
+        rolls = (rolls,)
+    finished: set = set()
+    running = 0
+    for directory in rolls:
+        if not directory.exists():
+            continue
+        finished |= {
+            int(re.sub(r"^AC0*(\d+)_.*", r"\1", p.name)) for p in directory.glob("AC*.zip")
+        }
+        running += len(list(directory.glob("*.crdownload")))
+    return sorted(finished), running
 
 
 def as_ranges(numbers: Sequence[int]) -> str:
@@ -344,7 +362,11 @@ def render(fleet: Fleet, free_gb: Optional[float] = None) -> str:
             lines.append(f"   downloaded, not yet uploaded   {len(waiting)}")
             lines.append(f"     {as_ranges(waiting)}")
         lines.append(f"   not anywhere yet   {len(left)}")
-        lines.append(f"     {as_ranges(left)}")
+        lines.append(f"     {as_ranges(left) or '-'}")
+        # Named, because the previous version searched one directory and said nothing about it.
+        # A list of missing constituencies that does not say what it examined is how nine archives
+        # came to be reported missing while sitting on the disk.
+        lines.append(f"     (searched {', '.join(str(d) for d in ROLL_DIRS)})")
         if running:
             lines.append(
                 f"     up to {running} of those are downloading now -- a browser hides the AC"
