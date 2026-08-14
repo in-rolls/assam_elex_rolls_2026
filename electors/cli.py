@@ -1038,6 +1038,38 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if all(not r.error for r in runs) else 1
 
 
+#: Constituencies published in Bengali. The editions take different label paths through the
+#: parser, so a single overall rate hides a failure confined to one of them -- which is exactly
+#: how an empty house-number column survived in 2.2 million rows.
+BENGALI = frozenset({114, 115, 116, 117, 118, 119, 120, 122, 123, 125, 126})
+
+
+def cmd_floor(args: argparse.Namespace) -> int:
+    """Count the rows that are wrong on their face, and say what the count does not cover."""
+    from . import floor, output
+
+    home = Path(args.home)
+    shards = sorted(home.glob("AC*.parquet"), key=lambda p: int(p.name[2:5]))
+    if args.ac:
+        shards = [p for p in shards if int(p.name[2:5]) == args.ac]
+    if not shards:
+        print("   no shards; run 'electors pull' first")
+        return 1
+
+    groups: Dict[str, List[Dict[str, Any]]] = {"Assamese": [], "Bengali": []}
+    for shard in shards:
+        edition = "Bengali" if int(shard.name[2:5]) in BENGALI else "Assamese"
+        groups[edition].extend(output.read_shard(shard))
+
+    for edition, rows in groups.items():
+        if rows:
+            print(floor.render(floor.scan(rows), edition))
+            print()
+    print("   a lower bound. A row no detector condemns is unmeasured, not correct --")
+    print("   nothing here can see a name that is plausible and wrong.")
+    return 0
+
+
 def cmd_fleet(args: argparse.Namespace) -> int:
     """Answer 'is everything I uploaded being worked on' without archaeology."""
     import shutil
@@ -1379,6 +1411,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_pull.add_argument("--watch", action="store_true", help="keep polling as constituencies land")
     p_pull.add_argument("--every", type=int, default=300)
     p_pull.set_defaults(func=cmd_pull)
+
+    p_floor = sub.add_parser(
+        "floor", help="how many rows are provably wrong, counted without reading a page"
+    )
+    p_floor.add_argument("--home", default="data/electors")
+    p_floor.add_argument("--ac", type=int, help="one constituency, rather than all of them")
+    p_floor.set_defaults(func=cmd_floor)
 
     p_fleet = sub.add_parser("fleet", help="where the run is: done, in flight, queued, stalled")
     p_fleet.add_argument("--bucket", default="gs://sawasdee-assam-rolls")

@@ -113,11 +113,47 @@ Every FAIL is the same failure — `measured_coverage`, parts whose closing page
 and all are recoverable by re-running stage one, which is CPU only because the Vision words are
 cached. AC101 is what the others should look like.
 
+## The error floor: rows that are wrong on their face
+
+Everything above compares counts. `electors floor` asks a different question — **how many rows are
+provably wrong**, needing no ground truth and no page to be read:
+
+| detector | why it is proof, not suspicion |
+|---|---|
+| Latin characters in a name | the roll prints names in Assamese/Bengali script |
+| `name == relation_name` | one line read into two fields; nobody is their own father |
+| a printed label inside a value | the label/value split failed |
+| EPIC failing `^[A-Z]{3}[0-9]{7}$` | the printed format is fixed |
+| **the same EPIC on two rows of one constituency** | unique by definition, so one of them is wrong |
+| age outside 18–120 | an electoral roll holds no seven-year-olds |
+
+Measured over 13.6M rows:
+
+```
+   Assamese 11,157,300 rows        Bengali 2,442,020 rows
+     malformed EPIC     4.77%        malformed EPIC     2.23%
+     repeated EPIC      1.81%        repeated EPIC      1.58%
+     label in a value   1.17%        label in a value   2.29%
+     name = relation    0.01%        name = relation    0.01%
+     latin in a name    0.00%        impossible age     0.00%
+```
+
+**Reported per edition, because a single number hides a failure confined to one.** The Bengali
+house-number column was empty on every row of ten constituencies — 2.2 million — and showed up in
+an overall rate as a two percent blemish.
+
+This is a **lower bound**, not an error rate. A row no detector condemns is *unmeasured*, not
+correct. It is also independent of the verdict above, and that independence is the point:
+**AC101 — 210 of 210 parts, passing every check on this page, described in this repository as the
+reference standard — has 19.5% of its rows provably wrong.** Completeness and accuracy are
+different questions and this is what the difference looks like.
+
 ## What none of this can see
 
-**Whether a name is right.** No check on this page reads a name. A constituency can pass all of
-them with every name, every relation and every age misread, because every one of those fields is
-scored only against itself.
+**Whether a name is right.** No check on this page reads a name, and the floor above only catches
+names wrong in a way a rule can state. A constituency can pass every check here, and clear every
+detector, with names that are plausible and wrong — which is the failure that matters most to
+anyone using the data.
 
 Of the fields, exactly one has external truth:
 
@@ -143,6 +179,7 @@ not be quoted.
 python -m electors fleet     # where the run is: done, in flight, queued, stalled
 python -m electors pull      # bring finished constituencies home and re-judge them here
 python -m electors status    # the full verdict table with every check's detail
+python -m electors floor     # rows provably wrong, per edition, without reading a page
 python -m electors bundle    # backfill evidence for constituencies that finished without it
 python -m electors reap      # delete source archives, but only for what is home and passing
 ```
