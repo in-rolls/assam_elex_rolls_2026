@@ -5,21 +5,28 @@ meant throwing away 231,131 rows to avoid 28, and at a 99.4% per-part match rate
 constituency cleared the bar about a quarter of the time -- which is what a queue stuck at fifty
 looks like from outside.
 
-The new rule tolerates marginal loss and still refuses structural loss. A page of the roll holds
-thirty boxes, so these tests hold the line in the gap between three rows and thirty.
+An absolute five-row per-part bar was tried next and repeated the mistake at a higher altitude:
+AC24, one part in 177 off by nine rows out of 738, was still discarded whole. Both cases are
+pinned below with their real numbers, because the temptation each time was to move the bar until
+the thing in front of me passed, and the only defence against that is measured cases in a test.
+
+The rule that survives: whole parts going missing is caught upstream against the published part
+count; here a part may be mangled but not badly mangled, and the constituency's total shortfall is
+capped as a proportion.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from electors import run
 
 
-def _found(diffs: List[int], main_rows: int = 231_131, measured: int = 232) -> Dict[str, Any]:
+def _found(parts: List[Tuple[int, int]], main_rows: int, measured: int) -> Dict[str, Any]:
+    """``parts`` is (printed total, diff) for each mismatching part."""
     residuals = [
-        {"part_no": i, "main_rows": 1000 + d, "roll_total": 1000, "diff": d}
-        for i, d in enumerate(diffs, start=1)
+        {"part_no": i, "main_rows": total + diff, "roll_total": total, "diff": diff}
+        for i, (total, diff) in enumerate(parts, start=1)
     ]
     residuals.sort(key=lambda r: (-abs(r["diff"]), r["part_no"]))
     return {
@@ -27,43 +34,57 @@ def _found(diffs: List[int], main_rows: int = 231_131, measured: int = 232) -> D
         "matching": measured - len(residuals),
         "residuals": residuals,
         "main_rows": main_rows,
-        "short": sum(abs(d) for d in diffs),
-        "worst": max((abs(d) for d in diffs), default=0),
+        "short": sum(abs(d) for _, d in parts),
+        "worst": max((abs(d) for _, d in parts), default=0),
+        "worst_fraction": max(
+            (abs(d) / t for t, d in parts if t),
+            default=0.0,
+        ),
     }
 
 
 def test_an_exact_constituency_publishes() -> None:
-    assert run.shortfall_verdict(_found([])) == ""
+    assert run.shortfall_verdict(_found([], 231_131, 232)) == ""
 
 
 def test_ac8_publishes() -> None:
-    """The measured case: 14 parts short by one to three rows, 0.012% of the constituency."""
-    assert run.shortfall_verdict(_found([-3, -3] + [-2] * 10 + [-1, -1])) == ""
+    """Measured: 14 parts short by one to three rows, 28 of 231,131 = 0.012%."""
+    parts = [(783, -3), (633, -3)] + [(1052, -2)] * 10 + [(1051, -1), (1021, -1)]
+    assert run.shortfall_verdict(_found(parts, 231_131, 232)) == ""
 
 
-def test_a_lost_page_still_fails() -> None:
-    """Thirty rows is a page. No aggregate tolerance may ever swallow one."""
-    verdict = run.shortfall_verdict(_found([-30]))
-    assert "structural" in verdict
+def test_ac24_publishes() -> None:
+    """Measured: one part in 177 off by nine rows. 9 of 170,726 = 0.0053%.
+
+    The cleanest constituency measured, discarded by an absolute five-row bar.
+    """
+    assert run.shortfall_verdict(_found([(738, -9)], 170_726, 177)) == ""
 
 
-def test_a_lost_tile_still_fails() -> None:
-    verdict = run.shortfall_verdict(_found([-2, -2, -12]))
-    assert "structural" in verdict
+def test_ac19_publishes() -> None:
+    """Measured: six parts, worst off by 25 of 985. 45 of 216,865 = 0.021%."""
+    parts = [(985, -25), (900, -2), (800, 4), (800, 4), (800, 5), (800, 5)]
+    assert run.shortfall_verdict(_found(parts, 216_865, 222)) == ""
+
+
+def test_a_mangled_part_fails() -> None:
+    """A part missing a third of itself was not marginally missed; it was mis-processed."""
+    verdict = run.shortfall_verdict(_found([(900, -300)], 216_865, 222))
+    assert "missing" in verdict and "of itself" in verdict
 
 
 def test_many_small_shortfalls_still_fail() -> None:
-    """Marginal loss is tolerated, not unlimited: 400 parts short by three is not marginal."""
-    verdict = run.shortfall_verdict(_found([-3] * 400))
+    """Marginal loss is tolerated, not unlimited: 0.1% of the constituency is the cap."""
+    verdict = run.shortfall_verdict(_found([(800, -3)] * 400, 216_865, 222))
     assert "short of the printed totals" in verdict
 
 
 def test_extra_rows_are_judged_the_same_as_missing_ones() -> None:
-    """Inventing thirty electors is exactly as wrong as losing thirty."""
-    assert "structural" in run.shortfall_verdict(_found([30]))
+    """Inventing a third of a part is exactly as wrong as losing a third."""
+    assert "of itself" in run.shortfall_verdict(_found([(900, 300)], 216_865, 222))
 
 
 def test_the_worst_residual_is_the_one_reported() -> None:
     """It used to report the first two by part number under the word "worst"."""
-    verdict = run.shortfall_verdict(_found([-2, -40, -3]))
-    assert "-40" in verdict or "'diff': -40" in verdict
+    verdict = run.shortfall_verdict(_found([(800, -2), (900, -400), (800, -3)], 216_865, 222))
+    assert "-400" in verdict

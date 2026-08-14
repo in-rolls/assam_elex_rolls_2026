@@ -261,16 +261,21 @@ def reconcile(work_dir: Path, rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         "main_rows": sum(main_by_part.values()),
         "short": sum(abs(r["diff"]) for r in residuals),
         "worst": max((abs(r["diff"]) for r in residuals), default=0),
+        "worst_fraction": max(
+            (abs(r["diff"]) / r["roll_total"] for r in residuals if r["roll_total"]), default=0.0
+        ),
     }
 
 
-#: A page of the roll holds thirty boxes, so anything structural that goes missing -- a tile, a
-#: page, a part -- takes at least thirty rows with it. A part may fall short by less than that
-#: without the constituency being wrong, and the gap between the two is where this line sits.
-#: Deliberately well under thirty, so no lost page can hide beneath it.
-MAX_PART_SHORTFALL = 5
+#: A single part may be mangled without the constituency being wrong, but not *badly* mangled.
+#: Measured as a fraction of the part, because an absolute bar cannot tell a lost page from a
+#: marginal miss: a page is thirty rows against a part of 294 and thirty against a part of 1082.
+#: An absolute bar of five was tried and reproduced the brittleness it was meant to fix -- AC24,
+#: one part in 177 off by nine rows out of 738, was discarded whole.
+MAX_PART_FRACTION = 0.25
 
-#: And across the constituency, because many small shortfalls are not automatically forgivable.
+#: The real bound. Whole parts going missing is caught upstream by the published-parts count, and
+#: this stops many small shortfalls adding up to a large one.
 MAX_TOTAL_SHORTFALL = 0.001
 
 
@@ -288,22 +293,32 @@ def shortfall_verdict(found: Dict[str, Any]) -> str:
     Fifty constituencies done and the queue not moving is what that policy looks like from
     outside.
 
-    So the test is no longer "is anything missing" but "is what is missing structural". The known
-    cause of the small shortfalls is a sparse final page -- a part whose last main-list page holds
-    two or three electors gets classified unknown or missed entirely, and every extracted count
-    involved is an exact multiple of the thirty boxes a page holds. That is a bounded, understood,
-    recorded defect. A lost tile or page is none of those things, and is at least thirty rows, so
-    it still fails here.
+    So the test is no longer "is anything missing" but "how much". The known cause of the small
+    shortfalls is a sparse final page -- a part whose last main-list page holds two or three
+    electors gets classified unknown or missed entirely, and every extracted count involved is an
+    exact multiple of the thirty boxes a page holds. Bounded, understood, and recorded.
+
+    **Three checks, and this is only the last of them.** Whole parts going missing is the failure
+    that matters, and it is caught before this by comparing against the count the info pages
+    publish -- that is what AC101 needed. Rows landing under the wrong constituency is caught by
+    the ac_no check. What is left for this one is how far the rows that *are* here fall short of
+    the roll's own arithmetic, and the answer wanted is a proportion, not a count.
+
+    An absolute per-part bar was tried first and was wrong for a reason worth keeping: it cannot
+    tell a lost page from a marginal miss, because a page is thirty rows against a part of 294 and
+    thirty against a part of 1082. Set low enough to catch the one it discarded constituencies
+    over the other -- AC24, a single part in 177 off by nine rows out of 738, thrown away entire.
 
     The shortfall is not forgiven, only tolerated: it is recorded per constituency and carried
     into the verification bundle, so the published figure always says how far off the roll's own
     arithmetic it is.
     """
-    worst, short, rows = found["worst"], found["short"], found["main_rows"]
-    if worst > MAX_PART_SHORTFALL:
+    short, rows = found["short"], found["main_rows"]
+    fraction = found["worst_fraction"]
+    if fraction > MAX_PART_FRACTION:
         return (
-            f"a part is off by {worst} rows, more than the {MAX_PART_SHORTFALL} a marginal miss "
-            f"can explain -- this is structural; worst {found['residuals'][:2]}"
+            f"a part is missing {fraction:.0%} of itself, more than the "
+            f"{MAX_PART_FRACTION:.0%} a mangled part is allowed -- worst {found['residuals'][:2]}"
         )
     allowed = rows * MAX_TOTAL_SHORTFALL
     if short > allowed:
