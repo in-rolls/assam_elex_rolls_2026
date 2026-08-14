@@ -17,6 +17,7 @@ engine rather than adding a fallback.
 from __future__ import annotations
 
 import re
+import string
 import subprocess
 import tempfile
 from pathlib import Path
@@ -216,14 +217,36 @@ EPIC_REGION = (0.55, 0.0, 1.0, 0.19)
 EPIC_PAD = 40
 
 
-def _read(image: Image.Image, rect: Tuple[int, int, int, int], psm: int) -> str:
+def _read(
+    image: Image.Image,
+    rect: Tuple[int, int, int, int],
+    psm: int,
+    whitelist: Optional[str] = None,
+) -> str:
     from assam_rolls import ocr
 
     try:
         engine = ocr.get_engine("tesseract", lang="eng")
-        return " ".join(engine._run(image.crop(rect), "eng", None, 2, psm=psm).split())
+        return " ".join(engine._run(image.crop(rect), "eng", whitelist, 2, psm=psm).split())
     except Exception:
         return ""
+
+
+#: The only characters an EPIC can contain: three uppercase letters and seven digits.
+#:
+#: Unconstrained, tesseract answers with characters the field cannot hold, and one of them costs a
+#: digit. ``FXW1/56134`` is a ten-character read whose fifth character came back as ``/``; the
+#: repair strips non-alphanumerics before matching, so the slash is deleted rather than treated as
+#: the digit position it occupies, and a recoverable value becomes a nine-character one.
+#:
+#: Measured on one part: of 31 malformed EPICs, 28 are explained entirely by an interior artefact,
+#: and in all 30 occurrences that artefact is ``/``. It is also why the defect tracks the box row
+#: -- a rule intrudes into the strip at some row positions and not others, giving 0.0% malformed on
+#: rows 2, 6 and 7 against 7.5-9.4% on row 9, near-identically across eight constituencies.
+#:
+#: The serial cell beside it has been whitelisted to digits since it was written. The EPIC was not,
+#: which is the whole defect: ~250,000 rows of the state.
+EPIC_ALPHABET = string.ascii_uppercase + string.digits
 
 
 def _header_of(image: Image.Image, box: grid.Box) -> Dict[str, str]:
@@ -277,6 +300,7 @@ def _header_of(image: Image.Image, box: grid.Box) -> Dict[str, str]:
             box.top + int(height * bottom),
         ),
         psm=7,
+        whitelist=EPIC_ALPHABET,
     ).replace(" ", "")
 
     # A code only counts when it is a lone letter *followed by* the serial. Anything else in this
