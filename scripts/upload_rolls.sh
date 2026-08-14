@@ -35,6 +35,14 @@ export CLOUDSDK_STORAGE_MAX_RETRIES=32
 export CLOUDSDK_STORAGE_BASE_RETRY_DELAY=2
 export CLOUDSDK_STORAGE_MAX_RETRY_DELAY=60
 
+#: How long one archive may take before the transfer is abandoned and retried on the next pass.
+#:
+#: Real uploads on this link ran 8 to 15 minutes for 1.8 to 4.9 GB. Forty minutes is about two and
+#: a half times the slowest genuine one, so a live transfer is never cut off, while a wedged one --
+#: the failure actually seen, at 5 hours 41 minutes with no bytes moving -- is dropped and the
+#: queue behind it keeps going.
+STALL_AFTER=${STALL_AFTER:-2400}
+
 # --watch keeps the loop alive so archives can be dropped into the directory while it runs.
 # Downloading 374 GB is days of somebody's attention in batches, and having to remember to
 # restart an uploader between batches is exactly the kind of step that gets forgotten at 2am.
@@ -111,7 +119,32 @@ print(sum(1 for l in gzip.open('$INDEX','rt') if json.loads(l).get('ac_no')==$ac
     # Whole output, not the last line. Trimming it to one line is what turned "HTTPError 503
     # on nineteen component uploads" into a stray fragment of gcloud's help text, and three
     # separate wrong diagnoses were made from that fragment.
-    if ! gcloud storage cp "$path" "$BUCKET/source/$name" 2>&1; then
+    #
+    # Backgrounded and polled rather than run in the foreground, because a transfer that stops
+    # transferring does not fail -- it waits. One sat with zero open connections for 5 hours 41
+    # minutes on a 2.7 GB file, and the queue behind it went nowhere until it was killed by hand;
+    # that happened three times in a day. Nothing in gcloud's own retry logic ever gives up.
+    #
+    # There is no timeout(1) on macOS, hence the loop.
+    # Job control off for this one command: bash otherwise prints its own "Killed: 9" line when
+    # the cap fires, which reads like a crash in a log that has already been misdiagnosed twice.
+    set +m
+    gcloud storage cp "$path" "$BUCKET/source/$name" 2>&1 &
+    transfer=$!
+    waited=0
+    while kill -0 "$transfer" 2>/dev/null; do
+      sleep 30
+      waited=$((waited + 30))
+      if [ "$waited" -ge "$STALL_AFTER" ]; then
+        kill -9 "$transfer" 2>/dev/null
+        say "  abandoned after $((STALL_AFTER / 60)) min -- keeping the local copy, will retry"
+        break
+      fi
+    done
+    wait "$transfer"
+    finished=$?
+    set -m
+    if [ "$finished" -ne 0 ]; then
       say "  upload failed -- keeping the local copy"
       continue
     fi
