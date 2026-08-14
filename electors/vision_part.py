@@ -132,10 +132,25 @@ def tiles_for(
     already paid for, because none of them is worth a paid pixel:
 
     - the **EPIC** and the serial, which sit to the right of ``text_right`` in the photo column.
-      Including them would mean submitting the full box width and giving back most of the
-      saving. Read from their own cells with tesseract ``eng``, the EPIC comes back well formed
-      on 96.7% of boxes -- against 62.3% for the single whole-strip pass this replaces, which
-      asked for a boxed serial and an EPIC as though they were one line.
+      Read from their own cells with tesseract ``eng``, the EPIC comes back well formed on 96.7%
+      of boxes -- against 62.3% for the single whole-strip pass this replaces, which asked for a
+      boxed serial and an EPIC as though they were one line.
+
+      **The cost case for this was checked and is thinner than it reads.** Submitting the whole
+      box instead would let Vision read all three, and the side-reads are 60% of stage one -- an
+      hour of CPU a constituency, about $1.00. But a full-box tile is **1.71x** the area of a
+      text-only one once the header strip is included, taking Vision from $1.32 a constituency to
+      $2.25. The saving is $0.07, which is noise.
+
+      **And it would buy no accuracy.** Read both ways over 90 boxes of AC10 part 29, tesseract
+      with its charset constrained and Vision on the whole box each returned 100% well-formed
+      EPICs and **agreed on every one**. The 4.77% malformed rate in the shipped data was
+      tesseract being allowed to answer with characters an EPIC cannot contain, which is one word
+      of configuration, not an architecture.
+
+      What the change would still buy is wall clock -- stage one roughly halves -- and the same
+      hours can be bought by adding machines at the same total cost, without a second vintage in
+      the dataset.
     - the **section header**, which decides whether serials restart.
     - the **closing summary**, which is the number every completeness check is measured against.
     """
