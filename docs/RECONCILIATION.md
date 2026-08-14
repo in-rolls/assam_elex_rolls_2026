@@ -100,18 +100,23 @@ constituency, which is precisely the failure this project keeps producing.
 
 ## Current state
 
+Sixty-four constituencies judged, 13.6M electors: **31 PASS, 33 FAIL**. The failures fall into
+three causes, and none of them means the rows are wrong:
+
 ```
-   AC1    UNVERIFIABLE   no stage 1 in the bucket; predates the sync
-   AC10   FAIL   198,612 rows   205 of 254 parts have a printed total
-   AC11   FAIL   316,702 rows   326 of 402 parts have a printed total
-   AC12   FAIL   246,196 rows   234 of 300 parts have a printed total
-   AC100  FAIL   156,434 rows   146 of 182 parts have a printed total
-   AC101  PASS   177,144 rows   210/210 parts, 210/210 measured, 210/210 matching
+   12  rows match printed totals   a part's count differs from its own closing total
+   12  fields populated            a column empty on most rows -- all Bengali, all house_no
+    9  every part measurable       some closing pages were never read, so nothing to compare
 ```
 
-Every FAIL is the same failure — `measured_coverage`, parts whose closing page was not read —
-and all are recoverable by re-running stage one, which is CPU only because the Vision words are
-cached. AC101 is what the others should look like.
+The twelve `fields populated` failures are one defect: `HOUSE_RE` knew only the Assamese `ঘৰ নং`
+and the Bengali rolls print `বাড়ী নং`. Fixed, and reproducible at 91.6–94.3% recovery from cached
+words.
+
+**Do not read a PASS as "this constituency is good."** AC101 passes every check on this page —
+210 of 210 parts, all measured, all matching — and the floor below finds 19.5% of its rows
+provably wrong. This section says what is *complete*; the next says what is *right*, and they
+disagree.
 
 ## The error floor: rows that are wrong on their face
 
