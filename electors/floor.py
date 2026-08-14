@@ -97,15 +97,31 @@ def name_is_relation(rows: Sequence[Dict[str, Any]]) -> Finding:
     )
 
 
+#: A label counts as leaked only at one end of the value, as a word in its own right.
+#:
+#: Substring matching condemned ordinary names: ``বাইনাম`` contains ``নাম``, ``নংগা`` contains
+#: ``নং``, ``বাড়িয়ৰ মুৰ্ম`` contains ``বাড়ি``. It reported 1.2% of rows where the true figure is
+#: 0.58% -- half of what it flagged were people. A detector that condemns correct rows is worse
+#: than no detector, because a floor is only a floor if everything under it is genuinely wrong.
+#:
+#: ``pages.py`` had already learned this -- it matches section markers as whole words because
+#: ``যোগ`` sits inside the village name ``যোগেন্দ্ৰপুৰ`` -- and the lesson did not travel here.
+#:
+#: At either end, never in the middle. A failed split leaves the label in front of the value or
+#: trailing behind it -- ``ঘৰ নং``, ``নাম লেকশী নাৰ্জাৰী``, ``নাউধা নাম`` -- while a label in the
+#: middle of a name is part of the name. Both ends are checked because the trailing form is rarer
+#: (73 rows against 11,362) but no less wrong.
+_LABELS = "|".join(LABELS)
+LEAKED = re.compile(rf"^\s*(?:{_LABELS})(?![ঀ-৿])|(?<![ঀ-৿])(?:{_LABELS})\s*$")
+
+
 def label_in_value(rows: Sequence[Dict[str, Any]]) -> Finding:
-    """A printed label sitting inside a value, meaning the split failed."""
+    """A printed label at one end of a value, meaning the label/value split failed."""
     return _scan(
         rows,
         "label inside a value",
         "a printed label leaked past the label/value split",
-        lambda r: any(
-            label in (r.get(f) or "") for f in ("name", "relation_name") for label in LABELS
-        ),
+        lambda r: any(LEAKED.search(r.get(f) or "") for f in ("name", "relation_name")),
         lambda r: f"{r.get('name')!r} / {r.get('relation_name')!r}",
     )
 

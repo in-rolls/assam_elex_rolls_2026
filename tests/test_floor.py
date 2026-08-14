@@ -76,3 +76,20 @@ def test_an_empty_field_is_not_condemned():
 def test_render_names_the_failing_detector():
     text = floor.render(floor.scan(rows(name="PROKAS RAI")))
     assert "latin in name" in text
+
+
+def test_a_name_containing_a_label_is_not_a_leak():
+    """Assamese names contain the label strings. Substring matching condemned real people.
+
+    ``বাইনাম`` contains ``নাম``; ``নংগা`` contains ``নং``; ``বাড়িয়ৰ মুৰ্ম`` contains ``বাড়ি``.
+    Three quarters of what the loose test flagged were names. A floor is only a floor if
+    everything beneath it is genuinely wrong.
+    """
+    for name in ("বাইনাম", "নংগা", "বাড়িয়ৰ মুৰ্ম", "লেফিটনংট মূসীদাস"):
+        assert floor.label_in_value(rows(relation_name=name)).condemned == 0, name
+
+
+def test_a_label_at_the_front_is_a_leak():
+    """What a failed split actually leaves behind: the label, or the label and its separator."""
+    for value in ("ঘৰ নং", "নাম লেকশী নাৰ্জাৰী", "বয়স : লিঙ্গ : মহিলা", "লিঙ্গ : কোচ : পুৰুষ"):
+        assert floor.label_in_value(rows(name=value)).condemned == 1, value
