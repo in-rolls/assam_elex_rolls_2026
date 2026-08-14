@@ -73,7 +73,13 @@ class Section(str, Enum):
 #:
 #: ``বাদ`` would have been worse in a way nobody would have noticed: countless place names end
 #: in -abad. That one never fired in AC1 only by luck of which villages are in it.
+#: The English edition writes these out: ``List of Addition 1 ( 27-12-2025 04-02-2026 )``. Matched
+#: without the Bengali-letter boundary below, which cannot apply to Latin words -- the boundary is
+#: there to stop যোগ matching inside যোগেন্দ্ৰপুৰ, and "Addition" has no such neighbour.
 SECTION_MARKERS = (
+    ("List of Addition", Section.ADDITION),
+    ("List of Deletion", Section.DELETION),
+    ("List of Modification", Section.MODIFICATION),
     ("যোগ", Section.ADDITION),
     ("সংযোজন", Section.ADDITION),
     ("বিয়োজন", Section.DELETION),
@@ -110,7 +116,12 @@ def section_of(header: str) -> Tuple[Section, bool]:
         # start of a longer word -- যোগ inside যোগেন্দ্ৰপুৰ -- not the marker itself.
         if re.search(marker + r"(?![\u0980-\u09FF])", searchable):
             return section, True
-    recognised = "অংশৰ" in text or "সমষ্টিৰ" in text
+    # Whether the header was understood at all, in either language. A main-roll page that is not
+    # recognised is counted as an unrecognised header and reported, so leaving the English forms
+    # out would have flagged every one of AC113's pages as unreadable while they parsed fine.
+    recognised = any(mark in text for mark in ("অংশৰ", "সমষ্টিৰ")) or bool(
+        re.search(r"Assembly\s+Constituency|Part\s+number", text, re.IGNORECASE)
+    )
     return Section.MAIN, recognised
 
 

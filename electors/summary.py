@@ -33,9 +33,14 @@ from PIL import Image
 
 from assam_rolls import schema
 
-#: The main-list row. Written ``মূল তালিকা`` and repeated in the row's own prose, so the match
-#: is loose -- it only has to find the line, the numbers decide whether it is right.
-MAIN_ROW = re.compile(r"মূল\s*তালিকা")
+#: The main-list row, in either language the roll is printed in. Assamese calls it ``মূল তালিকা``;
+#: the English edition calls it ``Mother Roll ... Basic Roll of Special Revision``, and both repeat
+#: the label in the row's own prose. The match is loose -- it only has to find the line, and the
+#: arithmetic decides whether it is the right one.
+#:
+#: Without the English form, AC113's closing page was read and then discarded: 0 of 261 parts
+#: carried a printed total, so nothing about that constituency could be checked at all.
+MAIN_ROW = re.compile(r"মূল\s*তালিকা|MOTHER\s*ROLL|BASIC\s*ROLL", re.IGNORECASE)
 
 #: Scale/segmentation pairs tried in order until the arithmetic balances. Scale does most of
 #: the work -- the usual lesson here -- but this page is a wide sparse table rather than a

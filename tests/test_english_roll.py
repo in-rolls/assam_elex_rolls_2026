@@ -93,3 +93,44 @@ def test_a_latin_name_survives_the_foreign_stripper():
     assert fields.strip_foreign("PROKAS RAI")[0] == "PROKAS RAI"
     # and the original behaviour, where there is something for the Latin to be debris of
     assert fields.strip_foreign("ৰমেন দাস 12")[0] == "ৰমেন দাস"
+
+
+def test_the_english_closing_page_yields_the_main_list():
+    """AC113 carried a readable closing page and none of it was used.
+
+    ``MAIN_ROW`` looked only for ``মূল তালিকা``, so 0 of 261 parts had a printed total and nothing
+    about the constituency could be checked. The English edition calls the row ``Mother Roll ...
+    Basic Roll``. The net row must not win: it is a different quantity.
+    """
+    from electors import summary
+
+    page = (
+        "SUMMARY OF ELECTORS\n"
+        "Male Female Third Total\n"
+        "Mother Roll Mother Roll Basic Roll of Special Revision , 361 328 0 689\n"
+        "List of Addition Supplement 1 Special Summary Revision 12 3 0 15\n"
+        "Net Elector in this Roll after this Revision ( I + II - III + IV ) 354 322 0 676"
+    )
+    assert summary.parse(page) == (361, 328, 0, 689)
+
+
+def test_english_supplement_and_main_headers():
+    from electors import pages
+
+    supplement = (
+        "Assembly Constituency No and Name : 113 - HAFLONG List of Addition 1 ( 27-12-2025 )"
+    )
+    assert pages.section_of(supplement)[0] is pages.Section.ADDITION
+
+    main = "Assembly Constituency No and Name : 113 - HAFLONG Part number : 103"
+    section, recognised = pages.section_of(main)
+    assert section is pages.Section.MAIN
+    assert recognised, "an English main-roll header must not count as unrecognised"
+
+
+def test_the_assamese_village_is_still_not_a_section_marker():
+    """যোগ sits inside যোগেন্দ্ৰপুৰ. Adding Latin markers must not loosen that boundary."""
+    from electors import pages
+
+    assert pages.section_of("অংশৰ নাম : যোগেন্দ্ৰপুৰ")[0] is pages.Section.MAIN
+    assert pages.section_of("যোগ তালিকা 1")[0] is pages.Section.ADDITION
