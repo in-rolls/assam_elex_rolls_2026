@@ -30,8 +30,13 @@ from . import crops, extract, repack, stage1, vision, vision_part
 
 
 def composites(part_dir: Path) -> List[Path]:
-    """The images stage one left, in the order it wrote them."""
-    return sorted(part_dir.glob("composite*.png"))
+    """The images stage one wrote, named from its own record of them.
+
+    Named, not necessarily present: a part resumed from the bucket has the words these images were
+    read into but not the images. ``read_part`` opens the file only when the words are missing, so
+    the path is a key here more often than it is a file.
+    """
+    return [part_dir / name for name in stage1.image_names(part_dir)]
 
 
 def placements_of(part_dir: Path) -> Dict[str, List[repack.Placed]]:
@@ -240,5 +245,5 @@ def ready(part_dir: Path) -> bool:
         (part_dir / crops.MANIFEST).exists()
         and (part_dir / "placements.json").exists()
         and (part_dir / "side.json").exists()
-        and bool(composites(part_dir))
+        and stage1.readable(part_dir)
     )

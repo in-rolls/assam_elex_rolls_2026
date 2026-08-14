@@ -2494,7 +2494,7 @@ class TestStageHandoff:
         """
         part_dir = tmp_path / "part0007"
         part_dir.mkdir()
-        (part_dir / "placements.json").write_text("{}", encoding="utf-8")
+        (part_dir / "placements.json").write_text('{"composite000.png": []}', encoding="utf-8")
         crops.write_manifest(
             [crops.Crop(part=7, page=1, row=0, column=0, path=part_dir / "c.png")],
             part_dir,
@@ -2509,7 +2509,7 @@ class TestStageHandoff:
         (part_dir / "side.json").write_text(json.dumps(stale), encoding="utf-8")
         assert not stage1.done(tmp_path, 7)
 
-    def test_metadata_without_composites_is_not_done(self, tmp_path):
+    def test_metadata_with_nothing_readable_is_not_done(self, tmp_path):
         """The shape AC101 took when it shipped 113 of its 210 parts and reported no error.
 
         Composites are not synced to the bucket -- they are cheap to rebuild and would be a
@@ -2517,10 +2517,13 @@ class TestStageHandoff:
         without its images. Every other test passed, the part was skipped as prepared, and
         stage two skipped it again for having nothing to read. done() and stage2.ready() must
         not disagree about what a finished part is.
+
+        What makes a part readable is pixels *or* cached words, and the third state is the common
+        one -- see ``tests/test_resume.py``. Here only the empty-handed case is pinned.
         """
         part_dir = tmp_path / "part0009"
         part_dir.mkdir()
-        (part_dir / "placements.json").write_text("{}", encoding="utf-8")
+        (part_dir / "placements.json").write_text('{"composite000.png": []}', encoding="utf-8")
         crops.write_manifest(
             [crops.Crop(part=9, page=1, row=0, column=0, path=part_dir / "c.png")],
             part_dir,

@@ -248,6 +248,51 @@ def read_side(path: Path) -> Dict[str, Any]:
     }
 
 
+def image_names(part_dir: Path) -> List[str]:
+    """The composites this part is made of, from the record rather than from the disk.
+
+    ``placements.json`` names every image stage one wrote and where each tile landed in it, so it
+    knows the part's shape whether or not the pixels are still here. Listing the directory instead
+    conflates "this part has no images" with "this part's images were deleted", and those need
+    opposite responses.
+    """
+    path = part_dir / "placements.json"
+    if not path.exists():
+        return []
+    try:
+        return sorted(json.loads(path.read_text(encoding="utf-8")))
+    except (ValueError, OSError):
+        return []
+
+
+def readable(part_dir: Path) -> bool:
+    """Whether every composite this part names can still be read -- as pixels or as cached words.
+
+    Composites are not synced to the bucket: they are a terabyte for the state and cheap to
+    rebuild. So a machine resuming from the bucket gets a part's metadata and its *words* without
+    its images, and there are three states here, not two:
+
+    - images present: readable, and re-readable if the parser changes
+    - images gone, words cached: still readable. The words carry their own coordinates; the image
+      was only ever opened to learn how big it was, and ``placements.json`` records that too
+    - neither: not readable, and the part must be prepared again
+
+    Treating the second state as unprepared is what has been happening, and it is expensive in
+    both directions. Calling it *un*readable makes every machine re-render and re-side-read every
+    part of every constituency it resumes -- four machines spent six hours after one reboot
+    redoing work whose results were sitting in the bucket. Calling it readable when the words are
+    *not* there is the older failure: AC101 shipped 113 of its 210 parts and reported no error,
+    because stage one skipped the parts as prepared and stage two skipped them as empty.
+    """
+    names = image_names(part_dir)
+    if not names:
+        return False
+    return all(
+        (part_dir / name).exists() or (part_dir / f"{Path(name).stem}.words.json").exists()
+        for name in names
+    )
+
+
 def done(out_dir: Path, part_no: int) -> bool:
     """Whether this part is already prepared, so a run can be resumed.
 
@@ -263,14 +308,10 @@ def done(out_dir: Path, part_no: int) -> bool:
     part_dir = out_dir / f"part{part_no:04d}"
     if not (part_dir / crops.MANIFEST).exists() or not (part_dir / "placements.json").exists():
         return False
-    # And the composites themselves. They are not synced to the bucket -- they are cheap to
-    # rebuild and would be a terabyte for the state -- so a machine that resumes from the bucket
-    # gets a part's metadata without its images. Every other test passed, this part was skipped
-    # as prepared, and stage two then skipped it again for having nothing to read: AC101 shipped
-    # 113 of its 210 parts and reported no error at all.
-    #
-    # done() and stage2.ready() must not disagree about what a finished part is.
-    if not any(part_dir.glob("composite*.png")):
+    # And something stage two can actually read -- pixels or cached words. done() and
+    # stage2.ready() must not disagree about what a finished part is, so they ask the same
+    # function.
+    if not readable(part_dir):
         return False
     side = part_dir / "side.json"
     if not side.exists():
