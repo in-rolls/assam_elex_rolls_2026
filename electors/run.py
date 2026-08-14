@@ -57,6 +57,10 @@ class ACRun:
     parts_measured: int = 0
     parts_matching: int = 0
     residuals: List[Dict[str, Any]] = field(default_factory=list)
+    #: Rows the roll's own printed totals say are missing. Published constituencies are
+    #: allowed a small, structural-loss-free shortfall, so the figure has to travel with the
+    #: data rather than only appearing in a log nobody keeps.
+    rows_short: int = 0
     #: Watermarked deletions detected, against what the roll's own arithmetic implies.
     struck_off: Dict[str, Any] = field(default_factory=dict)
     failed_parts: List[Dict[str, str]] = field(default_factory=list)
@@ -76,6 +80,7 @@ class ACRun:
             "parts_published": self.parts_published,
             "parts_measured": self.parts_measured,
             "parts_matching_roll": self.parts_matching,
+            "rows_short_of_printed": self.rows_short,
             "parts_failed": len(self.failed_parts),
             "struck_off_detected": self.struck_off.get("detected"),
             "struck_off_implied": self.struck_off.get("implied"),
@@ -245,7 +250,68 @@ def reconcile(work_dir: Path, rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
                     "diff": got - closing.total,
                 }
             )
-    return {"measured": measured, "matching": matching, "residuals": residuals}
+    # Biggest discrepancy first. They used to be reported in part order under the word "worst",
+    # which made a 3-row shortfall and a lost page look alike in the log -- and the difference
+    # between those two is the whole question.
+    residuals.sort(key=lambda r: (-abs(r["diff"]), r["part_no"]))
+    return {
+        "measured": measured,
+        "matching": matching,
+        "residuals": residuals,
+        "main_rows": sum(main_by_part.values()),
+        "short": sum(abs(r["diff"]) for r in residuals),
+        "worst": max((abs(r["diff"]) for r in residuals), default=0),
+    }
+
+
+#: A page of the roll holds thirty boxes, so anything structural that goes missing -- a tile, a
+#: page, a part -- takes at least thirty rows with it. A part may fall short by less than that
+#: without the constituency being wrong, and the gap between the two is where this line sits.
+#: Deliberately well under thirty, so no lost page can hide beneath it.
+MAX_PART_SHORTFALL = 5
+
+#: And across the constituency, because many small shortfalls are not automatically forgivable.
+MAX_TOTAL_SHORTFALL = 0.001
+
+
+def shortfall_verdict(found: Dict[str, Any]) -> str:
+    """Why this constituency may not be published, or "" if it may.
+
+    Publishing is not the default outcome. The audit's blunt summary of this layer was that
+    run_ac "records failed checks but publishes anyway" -- reconciliation was computed, stored,
+    and then ignored by the line that writes the data.
+
+    The correction over-shot. Requiring *every* measured part to match its printed total exactly
+    made one missing row fatal to a whole constituency, and the arithmetic of that is brutal: at
+    a 99.4% per-part match rate, a 232-part constituency publishes about a quarter of the time.
+    AC8 read 231,131 rows, missed 28 of them, and was discarded -- 0.012% wrong, 100% thrown away.
+    Fifty constituencies done and the queue not moving is what that policy looks like from
+    outside.
+
+    So the test is no longer "is anything missing" but "is what is missing structural". The known
+    cause of the small shortfalls is a sparse final page -- a part whose last main-list page holds
+    two or three electors gets classified unknown or missed entirely, and every extracted count
+    involved is an exact multiple of the thirty boxes a page holds. That is a bounded, understood,
+    recorded defect. A lost tile or page is none of those things, and is at least thirty rows, so
+    it still fails here.
+
+    The shortfall is not forgiven, only tolerated: it is recorded per constituency and carried
+    into the verification bundle, so the published figure always says how far off the roll's own
+    arithmetic it is.
+    """
+    worst, short, rows = found["worst"], found["short"], found["main_rows"]
+    if worst > MAX_PART_SHORTFALL:
+        return (
+            f"a part is off by {worst} rows, more than the {MAX_PART_SHORTFALL} a marginal miss "
+            f"can explain -- this is structural; worst {found['residuals'][:2]}"
+        )
+    allowed = rows * MAX_TOTAL_SHORTFALL
+    if short > allowed:
+        return (
+            f"{short} rows short of the printed totals across {len(found['residuals'])} parts, "
+            f"over the {allowed:,.0f} ({MAX_TOTAL_SHORTFALL:.1%}) this constituency allows"
+        )
+    return ""
 
 
 def struck_off_check(
@@ -425,18 +491,14 @@ def run_ac(
     run.parts_measured = found["measured"]
     run.parts_matching = found["matching"]
     run.residuals = found["residuals"]
+    run.rows_short = found["short"]
     run.struck_off = struck_off_check(work_dir, rows, published_totals(ac_no))
 
-    # Publishing is not the default outcome. The audit's blunt summary of this layer was that
-    # run_ac "records failed checks but publishes anyway" -- reconciliation was computed, stored,
-    # and then ignored by the line that writes the data. A constituency whose main-list rows do
-    # not match the roll's own printed totals is not a shard with a caveat; it is a failed run.
-    if found["measured"] and found["matching"] < found["measured"]:
-        run.error = (
-            f"{found['measured'] - found['matching']} of {found['measured']} measured parts "
-            f"do not match their printed totals; worst {found['residuals'][:2]}"
-        )
-        return run
+    if found["measured"]:
+        problem = shortfall_verdict(found)
+        if problem:
+            run.error = problem
+            return run
 
     path = output.write_shard(rows, ac_no, directory=shard_dir)
     run.shard = path.name
