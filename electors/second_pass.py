@@ -100,7 +100,12 @@ MATRA = "[া-ৌৗ]?"
 #: is the house number and the second the age; nine characters separate the label from ৪৪, so a
 #: wider window would confidently record the house number as the age. Refusing that line loses one
 #: age and invents none.
-AGE_RE = re.compile(r"বয়স[^0-9০-৯]{0,6}([0-9০-৯]{1,3})")
+#: Assam prints one constituency in English -- AC113 -- and its labels are Latin words. They are
+#: added to these patterns rather than given a parallel reader: the two scripts cannot collide, so
+#: an alternation costs nothing and a second reader would be a second thing to keep correct. The
+#: house-number bug is the argument: two label sets existed, one was dead code for the path that
+#: ran, and it stayed wrong through 2.2 million rows.
+AGE_RE = re.compile(r"(?:বয়স[^0-9০-৯]{0,6}|AGE[^0-9]{0,6})([0-9০-৯]{1,3})", re.IGNORECASE)
 #: The word for "house", in both editions the state publishes. Assamese prints ``ঘৰ নং``; Bengali
 #: prints ``বাড়ী নং``, and knowing only the Assamese form cost the house number on **every row of
 #: all ten Bengali constituencies** -- about 2.2 million of them. The label is on the page and
@@ -113,25 +118,39 @@ AGE_RE = re.compile(r"বয়স[^0-9০-৯]{0,6}([0-9০-৯]{1,3})")
 #: dead code for this path.
 HOUSE_WORD = r"(?:ঘৰ|বাড়ী|বাড়ি)"
 
+#: ``House No. 1`` on the English roll.
+HOUSE_EN = r"HOUSE\s*N[O0]\.?"
+
 #: ``[ \t]*`` rather than ``\s*`` before the suffix: the terse answers are line-delimited, and a
 #: pattern that crossed the newline captured the ``ব`` of the ``বয়স`` on the next line, turning
 #: house 13 into "13\nব".
-HOUSE_RE = re.compile(_either_ra(rf"{HOUSE_WORD}\s*নং\s*[:：]?\s*([0-9০-৯]{{1,6}}[ \t]*[ক-হ]?)"))
-SEX_RE = re.compile(r"লিঙ্গ\s*[:：]?\s*(\S+)")
+HOUSE_RE = re.compile(
+    _either_ra(rf"(?:{HOUSE_WORD}\s*নং|{HOUSE_EN})\s*[:：.]?\s*([0-9০-৯]{{1,6}}[ \t]*[ক-হ]?)"),
+    re.IGNORECASE,
+)
+SEX_RE = re.compile(r"(?:লিঙ্গ|GENDER)\s*[:：.]?\s*(\S+)", re.IGNORECASE)
 
-RELATION_WORDS = _either_ra(r"পিতাৰ|স্বামীৰ|মাতাৰ|মাতৃৰ")
+RELATION_WORDS = _either_ra(r"পিতাৰ|স্বামীৰ|মাতাৰ|মাতৃৰ|FATHER'?S|MOTHER'?S|HUSBAND'?S")
 RELATION_RE = re.compile(
-    rf"(?P<kind>{RELATION_WORDS})\s*নাম{MATRA}\s*[:：]?\s*(?P<value>[^|<\n]{{2,40}})"
+    rf"(?P<kind>{RELATION_WORDS})\s*(?:নাম{MATRA}|NAME)\s*[:：.]?\s*(?P<value>[^|<\n]{{2,40}})",
+    re.IGNORECASE,
 )
 
 #: The elector's own name is the ``নাম`` label with no relation word in front of it. Written as
 #: an optional prefix rather than as a negative lookbehind: the lookbehinds it replaces had to be
 #: fixed width, so they could not have tolerated :data:`MATRA` on the relation words too.
 NAME_RE = re.compile(
-    rf"(?P<kind>{RELATION_WORDS})?\s*নাম{MATRA}\s*[:：]\s*(?P<value>[^|<\n]{{2,40}})"
+    rf"(?P<kind>{RELATION_WORDS})?\s*(?:নাম{MATRA}|NAME)\s*[:：.]?\s*(?P<value>[^|<\n]{{2,40}})",
+    re.IGNORECASE,
 )
 
 RELATION_KIND = {
+    "fathers": "father",
+    "father's": "father",
+    "mothers": "mother",
+    "mother's": "mother",
+    "husbands": "husband",
+    "husband's": "husband",
     "পিতাৰ": "father",
     "স্বামীৰ": "husband",
     "মাতাৰ": "mother",
@@ -141,7 +160,19 @@ RELATION_KIND = {
 #: Assamese text long enough to be a name, used when the model omits the ``নাম :`` label.
 BARE_NAME = re.compile(r"^[^|<>\n]*[ঀ-৿]{3,}[^|<>\n]*$")
 
-SEX_WORDS = (("পুৰুষ", "M"), ("পুরুষ", "M"), ("মহিলা", "F"), ("তৃতীয়", "T"))
+#: Matched by substring, so **order matters**: ``MALE`` is inside ``FEMALE``, and listed first it
+#: reads every woman on the English roll as a man. The Assamese pair has no such overlap, which is
+#: why the hazard only appeared when English was added. Longest and most specific first.
+SEX_WORDS = (
+    ("FEMALE", "F"),
+    ("MALE", "M"),
+    ("THIRD", "T"),
+    ("OTHER", "T"),
+    ("পুৰুষ", "M"),
+    ("পুরুষ", "M"),
+    ("মহিলা", "F"),
+    ("তৃতীয়", "T"),
+)
 
 MIN_AGE, MAX_AGE = 18, 120
 
@@ -216,8 +247,10 @@ class Reading:
             value = _clean_value(relation.group("value"))
             if value:
                 found["relation_name"] = value
-                # The label may have arrived with either RA, so normalise before looking it up.
-                kind = relation.group("kind").replace("র", "ৰ")
+                # The label may have arrived with either RA, so normalise before looking it
+                # up -- and lowercased, because the English labels are matched case-insensitively
+                # and arrive as printed ("Fathers"), which no key would match.
+                kind = relation.group("kind").replace("র", "ৰ").lower()
                 found["relation_type"] = RELATION_KIND.get(kind, "")
 
         name = next((m for m in NAME_RE.finditer(text) if not m.group("kind")), None)
@@ -251,8 +284,9 @@ class Reading:
                 found["house_no"] = value
         sex = SEX_RE.search(text)
         if sex:
+            value = sex.group(1).upper()
             for word, code in SEX_WORDS:
-                if word in sex.group(1):
+                if word.upper() in value:
                     found["sex"] = code
                     break
         return found

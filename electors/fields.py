@@ -266,6 +266,13 @@ def strip_foreign(text: str) -> Tuple[str, bool]:
     if not FOREIGN.search(text):
         return text, False
 
+    # A value with no Assamese in it at all is not an Assamese name carrying Latin debris -- it is
+    # Latin text, and stripping it empties the field. AC113 is printed in English: every name on it
+    # is Latin, so this function would have returned "" for all 161,750 rows. The debris rule needs
+    # something to be debris *of*.
+    if not ASSAMESE.search(text):
+        return _clean(text), False
+
     uncertain = False
     for found in FOREIGN.finditer(text):
         before = text[found.start() - 1] if found.start() else ""
