@@ -228,7 +228,11 @@ while true; do
   STATUS=$?
   say "AC$AC finished with status $STATUS"
   if [ "$STATUS" -ne 0 ]; then
-    : | gsutil -q cp - "$BUCKET/failed/AC$(printf %03d "$AC").$COMMIT" 2>/dev/null
+    # A real file, not a pipe: gsutil cp does not read stdin, so "cp -" failed silently
+    # into 2>/dev/null and every failed constituency went straight back into the queue.
+    echo "$COMMIT" > "$ROOT/failed.marker"
+    gsutil -q cp "$ROOT/failed.marker" \
+      "$BUCKET/failed/AC$(printf %03d "$AC").$COMMIT" 2>/dev/null
   fi
 
   # Push this AC's results before touching anything, so a machine lost now loses no money.
