@@ -53,7 +53,10 @@ from . import crops, extract, pages, repack, summary, vision, vision_part
 #:          Together these recovered 625 rows in AC1 that reconciliation had reported missing.
 #: 2.2.0 -- a status code must be one of the five the roll defines in its own legend.
 #: 2.3.0 -- a closing page tesseract could not read is kept, so stage two can spend on it.
-STAGE1_VERSION = "2.3.0"
+#: 2.4.0 -- the Bengali genitive section titles (সংযোজনের তালিকা) classify as supplements, and the
+#:          Bengali র is accepted where only the Assamese ৰ was. AC126's sections were written by
+#:          the older classifier and are exactly the stale output this gate exists to invalidate.
+STAGE1_VERSION = "2.4.0"
 
 
 @dataclass
