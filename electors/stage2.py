@@ -201,7 +201,11 @@ def summary_from_vision(
 
 #: Re-asks for one image whose answer came back empty or errored. Separate from the transport
 #: retries inside ``vision.annotate``: those cover the connection, these cover the *answer*.
-IMAGE_ATTEMPTS = 3
+#:
+#: Five, not three. AC43 died on "Backend deadline exceeded." outlasting three attempts over six
+#: seconds -- a backend having a bad minute needs to be waited out in minutes, and the exponential
+#: backoff makes the extra attempts nearly free when the answer comes sooner.
+IMAGE_ATTEMPTS = 5
 
 
 def _buy_words(
