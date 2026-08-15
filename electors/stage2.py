@@ -256,10 +256,14 @@ def cached_words(part_dir: Path, image: str) -> Optional[List[vision.Word]]:
     path = words_path(part_dir, image)
     if not path.exists():
         return None
-    found = [
-        vision.Word(text, left, top, right, bottom)
-        for text, left, top, right, bottom in json.loads(path.read_text(encoding="utf-8"))
-    ]
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        # A file that will not parse is a read that did not finish. AC20 part 24 holds a
+        # zero-length one, and raising here killed the constituency from inside the branch whose
+        # job is to decide whether the image needs reading again.
+        return None
+    found = [vision.Word(text, left, top, right, bottom) for text, left, top, right, bottom in raw]
     return found or None
 
 

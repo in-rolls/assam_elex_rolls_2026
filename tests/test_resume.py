@@ -207,3 +207,15 @@ def test_an_empty_read_is_not_written_down(tmp_path: Path) -> None:
 def test_an_empty_words_file_already_written_reads_as_absent(tmp_path: Path) -> None:
     stage2.words_path(tmp_path, "composite000.png").write_text("[]", encoding="utf-8")
     assert stage2.cached_words(tmp_path, "composite000.png") is None
+
+
+def test_a_words_file_that_will_not_parse_reads_as_absent(tmp_path: Path) -> None:
+    """AC20 part 24: a zero-length words file, and the constituency died on json.loads.
+
+    It died inside the branch whose only job is to decide whether the image needs reading again,
+    which is the one place that must never raise.
+    """
+    path = stage2.words_path(tmp_path, "composite000.png")
+    path.write_bytes(b"")
+    assert stage2.cached_words(tmp_path, "composite000.png") is None
+    assert not stage1._has_words(path)
