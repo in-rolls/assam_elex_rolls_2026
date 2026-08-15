@@ -219,3 +219,74 @@ def test_a_words_file_that_will_not_parse_reads_as_absent(tmp_path: Path) -> Non
     path.write_bytes(b"")
     assert stage2.cached_words(tmp_path, "composite000.png") is None
     assert not stage1._has_words(path)
+
+
+def _one_pixel(tmp_path: Path) -> Path:
+    path = tmp_path / "composite000.png"
+    Image.new("L", (10, 10), 255).save(path)
+    return path
+
+
+def test_a_per_image_vision_error_is_not_a_blank_image(tmp_path: Path, monkeypatch) -> None:
+    """The batch endpoint reports per-image failure inside an HTTP 200.
+
+    One night of treating that as "no words" cost twenty-two constituencies: parts came up
+    hundreds of rows short, were correctly refused at the gate, and were parked as failed. The
+    rows were never wrong; the reads had failed and nothing said so.
+    """
+    monkeypatch.setattr(stage2.time, "sleep", lambda _s: None)
+    path = _one_pixel(tmp_path)
+    calls = []
+
+    def erroring(_images):
+        calls.append(1)
+        return [{"error": {"code": 8, "message": "RESOURCE_EXHAUSTED"}}]
+
+    try:
+        stage2._buy_words(tmp_path, path, "", erroring)
+        raise AssertionError("a per-image error must not read as an empty image")
+    except RuntimeError as exc:
+        assert "RESOURCE_EXHAUSTED" in str(exc)
+    assert len(calls) == stage2.IMAGE_ATTEMPTS
+    assert stage2.cached_words(tmp_path, path.name) is None
+
+
+def test_a_transient_error_recovers_on_retry(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(stage2.time, "sleep", lambda _s: None)
+    path = _one_pixel(tmp_path)
+    answers = [
+        [{"error": {"message": "internal error"}}],
+        [
+            {
+                "fullTextAnnotation": {
+                    "pages": [
+                        {
+                            "blocks": [
+                                {
+                                    "paragraphs": [
+                                        {
+                                            "words": [
+                                                {
+                                                    "symbols": [{"text": "ক"}],
+                                                    "boundingBox": {
+                                                        "vertices": [
+                                                            {"x": 0, "y": 0},
+                                                            {"x": 5, "y": 5},
+                                                        ]
+                                                    },
+                                                }
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        ],
+    ]
+
+    found = stage2._buy_words(tmp_path, path, "", lambda _i: answers.pop(0))
+    assert [w.text for w in found] == ["ক"]
+    assert stage2.cached_words(tmp_path, path.name) is not None

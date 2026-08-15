@@ -21,6 +21,7 @@ page, and on the first five parts of AC1 all 2,964 were byte-identical.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -91,8 +92,6 @@ def read_part(
     ``annotate`` is injectable so the mapping can be tested without spending anything: the join
     is the part that can be wrong, and it should not take an API key to check it.
     """
-    from PIL import Image
-
     who = identity(part_dir)
     meta = schema.parse_source_filename(who["source_pdf"]) or {}
     result = extract.PartResult(
@@ -134,17 +133,7 @@ def read_part(
                 raise ValueError(f"{path.name} has no placements -- cannot attribute its words")
             found = cached_words(part_dir, path.name)
             if found is None:
-                with Image.open(path) as image:
-                    image.load()
-                    responses = (
-                        annotate([image])
-                        if annotate is not None
-                        else vision.annotate([image], api_key=api_key)
-                    )
-                if not responses:
-                    raise RuntimeError(f"no response for {path.name}")
-                found = vision.words_from(responses[0])
-                save_words(part_dir, path.name, found)
+                found = _buy_words(part_dir, path, api_key, annotate)
                 result.images_billed += 1
             words.update(repack.words_for(placed, found))
 
@@ -208,6 +197,57 @@ def summary_from_vision(
         summary_module.RollSummary(male=male, female=female, third=third, total=total, scale=1),
         paid,
     )
+
+
+#: Re-asks for one image whose answer came back empty or errored. Separate from the transport
+#: retries inside ``vision.annotate``: those cover the connection, these cover the *answer*.
+IMAGE_ATTEMPTS = 3
+
+
+def _buy_words(
+    part_dir: Path, path: Path, api_key: str, annotate: Optional[Callable]
+) -> List[vision.Word]:
+    """One composite through Vision, insisting on an actual answer.
+
+    The batch endpoint reports per-image failure inside an HTTP 200: the response carries an
+    ``error`` object and no annotation. ``annotate`` does not raise for it, ``words_from`` finds
+    nothing to walk, and the failure used to come out indistinguishable from a blank image --
+    which a composite cannot be, since it is a stack of text lines cut from elector boxes.
+
+    One night of that cost twenty-two constituencies: each had parts come up hundreds of rows
+    short, each was correctly refused at the gate, and each was parked as failed. The rows were
+    never wrong; the reads had failed and nothing said so.
+
+    So an errored or empty answer is retried with backoff -- the plausible causes are transient,
+    rate limits and internal errors -- and if it still will not answer, the part fails loudly and
+    takes its constituency to a retry, rather than publishing short.
+    """
+    from PIL import Image
+
+    last = ""
+    for attempt in range(1, IMAGE_ATTEMPTS + 1):
+        with Image.open(path) as image:
+            image.load()
+            responses = (
+                annotate([image])
+                if annotate is not None
+                else vision.annotate([image], api_key=api_key)
+            )
+        if not responses:
+            last = "no response"
+        else:
+            problem = responses[0].get("error")
+            if problem:
+                last = f"per-image error: {problem.get('message', problem)}"
+            else:
+                found = vision.words_from(responses[0])
+                if found:
+                    save_words(part_dir, path.name, found)
+                    return found
+                last = "no words in a non-blank composite"
+        if attempt < IMAGE_ATTEMPTS:
+            time.sleep(2**attempt)
+    raise RuntimeError(f"vision gave no usable answer for {path.name} ({last})")
 
 
 def words_path(part_dir: Path, image: str) -> Path:
