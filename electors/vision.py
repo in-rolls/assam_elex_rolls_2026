@@ -81,7 +81,15 @@ PAGES_PER_IMAGE = 32
 #: Pages within a part vary -- a supplement page renders taller than a main-roll one -- and the
 #: stacking factor is chosen from the first pages seen. Filling the ceiling exactly would then
 #: have a later, larger page tip a stack over it and lose the part.
-PIXEL_MARGIN = 0.9
+#:
+#: 0.6, down from 0.9, and not for the reason above. ``MAX_PIXELS`` is the size at which the API
+#: *rejects* an image; the OCR backend's own deadline caps what it can *process*, and that line is
+#: lower and undocumented. A 67.0-megapixel composite -- accepted, just under the 0.9 budget --
+#: came back "Backend deadline exceeded." on every attempt across separate runs an hour apart:
+#: deterministic, not weather. 45 megapixels leaves headroom below the failure actually observed,
+#: for about one extra image in three -- roughly $12 across the remaining state against a failure
+#: class that parked a constituency per occurrence.
+PIXEL_MARGIN = 0.6
 
 
 def pages_that_fit(

@@ -290,3 +290,30 @@ def test_a_transient_error_recovers_on_retry(tmp_path: Path, monkeypatch) -> Non
     found = stage2._buy_words(tmp_path, path, "", lambda _i: answers.pop(0))
     assert [w.text for w in found] == ["ক"]
     assert stage2.cached_words(tmp_path, path.name) is not None
+
+
+def test_a_re_prepared_part_loses_its_stale_caches(tmp_path: Path) -> None:
+    """Words are keyed by image name and a re-render owes the old layout nothing.
+
+    Stale words attributed to a new layout shuffle fields between electors silently -- counts
+    match, reconciliation balances, and every name is somebody else's. Only 17.2% of tiles keep
+    identical geometry between runs, so this is the norm after a re-render, not the exception.
+    """
+    (tmp_path / "composite000.words.json").write_text('[["x",0,0,1,1]]', encoding="utf-8")
+    (tmp_path / "composite001.words.json").write_text('[["y",0,0,1,1]]', encoding="utf-8")
+    (tmp_path / "rows.jsonl").write_text('{"name": "old"}\n', encoding="utf-8")
+    (tmp_path / "summary_page.words.json").write_text('[["z",0,0,1,1]]', encoding="utf-8")
+
+    stage1.clear_stale(tmp_path)
+
+    assert not list(tmp_path.glob("composite*.words.json"))
+    assert not (tmp_path / "rows.jsonl").exists()
+    # The summary page is rendered from the PDF, not repacked; its read stays valid.
+    assert (tmp_path / "summary_page.words.json").exists()
+
+
+def test_the_pixel_budget_stays_below_the_observed_deadline() -> None:
+    """A 67.0 MP composite deadline-exceeded on every attempt; the budget must stay under it."""
+    from electors import vision
+
+    assert vision.MAX_PIXELS * vision.PIXEL_MARGIN <= 50_000_000
