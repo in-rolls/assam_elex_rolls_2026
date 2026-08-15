@@ -190,3 +190,21 @@ class TestGeometryAsASecondOpinion:
         rows = [{"part_no": 1, "roll_section": "main"} for _ in range(2)]
         found = run.reconcile(tmp_path, rows)
         assert found["measured"] == 1 and found["summary_unusable"] == []
+
+
+def test_ac110_publishes() -> None:
+    """Measured: 75 parts short by one to six rows, 191 of 186,712 = 0.1023%.
+
+    Four rows over the old 0.1% aggregate cap, with a distribution in which nothing structural
+    can hide -- a page is thirty rows and the worst part here is six short. The cap moved to 0.2%
+    for this case; the per-part fraction still refuses mangled parts.
+    """
+    parts = (
+        [(800, -1)] * 20
+        + [(800, -2)] * 15
+        + [(800, -3)] * 28
+        + [(800, -4)] * 6
+        + [(800, -5)] * 3
+        + [(800, -6)] * 3
+    )
+    assert run.shortfall_verdict(_found(parts, 186_712, 237)) == ""
