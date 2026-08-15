@@ -70,7 +70,7 @@ def test_ac19_publishes() -> None:
 def test_a_mangled_part_fails() -> None:
     """A part missing a third of itself was not marginally missed; it was mis-processed."""
     verdict = run.shortfall_verdict(_found([(900, -300)], 216_865, 222))
-    assert "missing" in verdict and "of itself" in verdict
+    assert "off by" in verdict and "of its printed total" in verdict
 
 
 def test_many_small_shortfalls_still_fail() -> None:
@@ -81,10 +81,27 @@ def test_many_small_shortfalls_still_fail() -> None:
 
 def test_extra_rows_are_judged_the_same_as_missing_ones() -> None:
     """Inventing a third of a part is exactly as wrong as losing a third."""
-    assert "of itself" in run.shortfall_verdict(_found([(900, 300)], 216_865, 222))
+    assert "off by" in run.shortfall_verdict(_found([(900, 300)], 216_865, 222))
 
 
 def test_the_worst_residual_is_the_one_reported() -> None:
     """It used to report the first two by part number under the word "worst"."""
     verdict = run.shortfall_verdict(_found([(800, -2), (900, -400), (800, -3)], 216_865, 222))
     assert "-400" in verdict
+
+
+def test_an_impossible_serial_is_refused_rather_than_written() -> None:
+    """AC24's crash: one OCR'd serial overflowed int32 and discarded 170,726 rows.
+
+    None rather than a truncation to four digits -- this field exists only as an independent
+    check on the derived row order, and a check that invents a plausible answer is worse than
+    one that abstains.
+    """
+    from electors import vision_part
+
+    assert vision_part.plausible_serial("32") == 32
+    assert vision_part.plausible_serial("3801114767") is None
+    assert vision_part.plausible_serial("") is None
+    assert vision_part.plausible_serial("0") is None
+    # Bengali digits are what the roll prints, and int() reads them.
+    assert vision_part.plausible_serial("১২") == 12

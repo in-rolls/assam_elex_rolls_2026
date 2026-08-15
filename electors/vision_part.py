@@ -263,6 +263,31 @@ def _read(
 #: which is the whole defect: ~250,000 rows of the state.
 EPIC_ALPHABET = string.ascii_uppercase + string.digits
 
+#: A serial number is an elector's position within a part, and no part of this roll holds more
+#: than about twelve hundred electors. A longer number is not a serial read badly; it is the OCR
+#: of a cell that held something else.
+MAX_SERIAL = 9999
+
+
+def plausible_serial(text: str) -> Optional[int]:
+    """The serial the cell claims, or None where the number cannot be one.
+
+    Accepted unbounded, it reached the Parquet schema's int32 and took a whole constituency with
+    it. AC24 part 95 held a box whose name was the printed placeholder ``ফটো উপলব্ধ`` -- "photo
+    available", not a person -- and whose serial cell read 3,801,114,767. One value, and the write
+    of all 170,726 rows raised ``ArrowInvalid`` and the constituency was re-claimed and re-failed
+    by every machine that picked it up.
+
+    None rather than a truncation. Keeping the first four digits would have turned that read into
+    a confident 3801, and this field exists only to be an independent check on the derived row
+    order -- a check that invents a plausible answer is worse than one that abstains.
+    """
+    digits = text.strip()
+    if not digits.isdigit():
+        return None
+    value = int(digits)
+    return value if 0 < value <= MAX_SERIAL else None
+
 
 def _header_of(image: Image.Image, box: grid.Box) -> Dict[str, str]:
     """The serial, the EPIC and the status code, each read from its own cell.
@@ -493,8 +518,7 @@ def _fill_repacked(
             # words: a status code means this entry is no longer a live elector.
             elector.status_code = side_read.get("code", "")
             elector.deleted = bool(elector.status_code)
-            if side_read.get("serial", "").isdigit():
-                elector.serial_no_ocr = int(side_read["serial"])
+            elector.serial_no_ocr = plausible_serial(side_read.get("serial", ""))
             if elector.is_empty:
                 elector.flags.append("unreadable")
             serial += 1

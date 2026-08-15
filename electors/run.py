@@ -30,7 +30,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from assam_rolls import render
 
-from . import crops, output, pages, stage1, stage2, vision
+from . import crops, output, pages, stage1, stage2, vision, vision_part
 
 #: Cached rows for one part, so a resumed run re-reads them instead of re-buying them.
 ROWS = "rows.jsonl"
@@ -157,6 +157,15 @@ def read(
         cache = part_dir / ROWS
         if cache.exists():
             rows = [json.loads(line) for line in cache.read_text(encoding="utf-8").splitlines()]
+            # Cached rows are a previous parse's output, so a fix at the reader does not reach
+            # them -- and one unreadable serial in a cache written before the bound existed still
+            # overflows the schema and discards the constituency. Scrubbed on the way out rather
+            # than by invalidating the cache, because the cache is what stage two costs money to
+            # avoid rebuilding.
+            for row in rows:
+                serial = row.get("serial_no_ocr")
+                if serial is not None and not 0 < serial <= vision_part.MAX_SERIAL:
+                    row["serial_no_ocr"] = None
             billed = 0
         else:
             if not stage2.ready(part_dir):
@@ -317,7 +326,7 @@ def shortfall_verdict(found: Dict[str, Any]) -> str:
     fraction = found["worst_fraction"]
     if fraction > MAX_PART_FRACTION:
         return (
-            f"a part is missing {fraction:.0%} of itself, more than the "
+            f"a part is off by {fraction:.0%} of its printed total, more than the "
             f"{MAX_PART_FRACTION:.0%} a mangled part is allowed -- worst {found['residuals'][:2]}"
         )
     allowed = rows * MAX_TOTAL_SHORTFALL

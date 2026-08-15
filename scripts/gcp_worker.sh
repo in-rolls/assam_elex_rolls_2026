@@ -127,7 +127,8 @@ rm -rf "$ROOT/repo"
 git clone -q https://github.com/in-rolls/assam_elex_rolls_2026.git "$ROOT/repo" || {
   say "clone failed -- refusing to run stale code"; exit 1; }
 cd "$ROOT/repo"
-say "at commit $(git rev-parse --short HEAD)"
+COMMIT=$(git rev-parse --short HEAD)
+say "at commit $COMMIT"
 python3 -m venv "$ROOT/venv"
 "$ROOT/venv/bin/pip" -q install --upgrade pip
 "$ROOT/venv/bin/pip" -q install -e ".[gcp]"
@@ -191,6 +192,11 @@ while true; do
     # written last, so a half-done AC is picked up again rather than skipped.
     PADDED=$(printf %03d "$AC")
     gsutil -q stat "$BUCKET/shards/AC$PADDED.parquet" 2>/dev/null && continue
+    # A constituency this build already failed. Without this the picker takes the lowest
+    # unfinished number every time, so one that fails in eleven seconds -- everything cached,
+    # refused at the gate -- is re-claimed by every machine forever and the queue behind it
+    # never moves. Keyed by commit, so fixing the cause and redeploying retries it by itself.
+    gsutil -q stat "$BUCKET/failed/AC$PADDED.$COMMIT" 2>/dev/null && continue
     claim "$PADDED" || continue
     NAME=$candidate
     break
@@ -219,7 +225,11 @@ while true; do
   "$ROOT/venv/bin/python" -m electors run "$ROOT/$NAME" \
     --work "$ROOT/stage1" --shards "$ROOT/shards" \
     --manifest "$ROOT/shards/manifest.json" --workers "$WORKERS" $LIMIT
-  say "AC$AC finished with status $?"
+  STATUS=$?
+  say "AC$AC finished with status $STATUS"
+  if [ "$STATUS" -ne 0 ]; then
+    : | gsutil -q cp - "$BUCKET/failed/AC$(printf %03d "$AC").$COMMIT" 2>/dev/null
+  fi
 
   # Push this AC's results before touching anything, so a machine lost now loses no money.
   gsutil -q -m rsync -r -x '.*composite.*\.png$' "$ROOT/stage1" "$BUCKET/stage1" 2>/dev/null
