@@ -88,3 +88,26 @@ def test_composites_are_named_from_the_record(tmp_path: Path) -> None:
     """Both images are named even with nothing on disk, or stage two reads half the part."""
     part = _part(tmp_path, images=False, words=True)
     assert [p.name for p in stage2.composites(part)] == sorted(PLACEMENTS)
+
+
+def test_a_corrupt_rows_cache_is_treated_as_absent(tmp_path: Path) -> None:
+    """AC20 died on one unreadable cache file out of 242 parts.
+
+    The words the rows were parsed from are still there, so nothing is lost by parsing again --
+    and a whole constituency is lost by refusing to.
+    """
+    from electors import run
+
+    cache = tmp_path / "rows.jsonl"
+    cache.write_text("\x00 not json at all\n", encoding="utf-8")
+    assert run._cached_rows(cache) is None
+    assert not cache.exists()
+
+
+def test_a_good_rows_cache_is_read(tmp_path: Path) -> None:
+    from electors import run
+
+    cache = tmp_path / "rows.jsonl"
+    cache.write_text('{"name": "a"}\n\n{"name": "b"}\n', encoding="utf-8")
+    assert run._cached_rows(cache) == [{"name": "a"}, {"name": "b"}]
+    assert cache.exists()

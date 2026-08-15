@@ -155,8 +155,9 @@ def read(
 
     def one(number: int, part_dir: Path) -> None:
         cache = part_dir / ROWS
-        if cache.exists():
-            rows = [json.loads(line) for line in cache.read_text(encoding="utf-8").splitlines()]
+        cached = _cached_rows(cache)
+        if cached is not None:
+            rows = cached
             # Cached rows are a previous parse's output, so a fix at the reader does not reach
             # them -- and one unreadable serial in a cache written before the bound existed still
             # overflows the schema and discards the constituency. Scrubbed on the way out rather
@@ -203,6 +204,26 @@ def read(
 def _write(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=1) + "\n", encoding="utf-8")
+
+
+def _cached_rows(cache: Path) -> Optional[List[Dict[str, Any]]]:
+    """A part's previously parsed rows, or None where there are none to be had.
+
+    A cache that will not parse is treated as absent rather than fatal, and deleted so the part is
+    read again from words already paid for. AC20 died on ``part 24: JSONDecodeError: Expecting
+    value: line 1 column 1`` -- one unreadable file out of 242, and the constituency was discarded
+    and then re-claimed and re-discarded by every machine that reached it.
+
+    Deleting rather than working around it, because the file is a cache of a parse and the words
+    it was parsed from are still here. Nothing is lost but the CPU to do it again.
+    """
+    if not cache.exists():
+        return None
+    try:
+        return [json.loads(line) for line in cache.read_text(encoding="utf-8").splitlines() if line]
+    except (ValueError, OSError):
+        cache.unlink(missing_ok=True)
+        return None
 
 
 def _write_rows(path: Path, rows: Sequence[Dict[str, Any]]) -> None:
