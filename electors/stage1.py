@@ -288,9 +288,27 @@ def readable(part_dir: Path) -> bool:
     if not names:
         return False
     return all(
-        (part_dir / name).exists() or (part_dir / f"{Path(name).stem}.words.json").exists()
+        (part_dir / name).exists() or _has_words(part_dir / f"{Path(name).stem}.words.json")
         for name in names
     )
+
+
+#: ``[]`` and nothing else. A words file this small holds no words, and a composite with no words
+#: on it does not exist -- it is a read that failed and was written down anyway.
+EMPTY_WORDS = 2
+
+
+def _has_words(path: Path) -> bool:
+    """Whether a cached read actually found anything.
+
+    Existence is not enough. AC33 kept 214 empty words files, and a part standing on those has
+    the paperwork of a finished read with none of the result: no image to go back to, nothing to
+    parse, and no error raised by either.
+    """
+    try:
+        return path.stat().st_size > EMPTY_WORDS
+    except OSError:
+        return False
 
 
 def done(out_dir: Path, part_no: int) -> bool:

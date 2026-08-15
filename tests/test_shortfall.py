@@ -105,3 +105,88 @@ def test_an_impossible_serial_is_refused_rather_than_written() -> None:
     assert vision_part.plausible_serial("0") is None
     # Bengali digits are what the roll prints, and int() reads them.
     assert vision_part.plausible_serial("১২") == 12
+
+
+class TestGeometryAsASecondOpinion:
+    """Stage one counts the boxes it cuts. Nothing used to compare anything against that.
+
+    The count comes from the page geometry and is written before Vision is called, so it is
+    independent of both the parse and the OCR of the closing page -- which makes it the only
+    thing on hand able to catch a cached parse that covers half a part, or a printed total that
+    was misread in a way that still adds up.
+    """
+
+    def _part(self, tmp_path, boxes_per_page, pages_count, total, rows_cached=None):
+        from electors import pages as pages_mod
+        from electors import stage1, summary
+
+        part = tmp_path / "part0001"
+        part.mkdir(exist_ok=True)
+        stage1.write_side(
+            part / "side.json",
+            {
+                "pages": {
+                    3
+                    + i: {
+                        "section": pages_mod.Section.MAIN,
+                        "recognised": True,
+                        "boxes": {(3 + i, r, 0): "" for r in range(boxes_per_page)},
+                    }
+                    for i in range(pages_count)
+                },
+                "unknown": [],
+                "summary": summary.RollSummary(
+                    male=total // 2, female=total - total // 2, third=0, total=total, scale=400
+                ),
+            },
+        )
+        if rows_cached is not None:
+            (part / "rows.jsonl").write_text(
+                "".join('{"part_no": 1, "roll_section": "main"}\n' for _ in range(rows_cached)),
+                encoding="utf-8",
+            )
+        return part
+
+    def test_boxes_are_counted_from_the_pages(self, tmp_path):
+        part = self._part(tmp_path, boxes_per_page=30, pages_count=29, total=870)
+        assert run.boxes_cut(part) == 870
+        assert run.boxes_cut(part, main_only=True) == 870
+
+    def test_a_total_matching_the_geometry_is_measured(self, tmp_path):
+        self._part(tmp_path, boxes_per_page=30, pages_count=29, total=870)
+        rows = [{"part_no": 1, "roll_section": "main"} for _ in range(870)]
+        found = run.reconcile(tmp_path, rows)
+        assert found["measured"] == 1 and found["matching"] == 1
+        assert found["summary_unusable"] == []
+
+    def test_ac22_part_103_the_total_that_lost_a_digit(self, tmp_path):
+        """Printed male 424, female 417, total 841; read as 424, 17, 441.
+
+        Both cells dropped the same leading digit so the triple still balanced. The part is
+        correctly extracted -- 841 rows against 841 boxes -- and the printed total is the thing
+        that is wrong, so it is unmeasured rather than 400 rows over-extracted.
+        """
+        self._part(tmp_path, boxes_per_page=29, pages_count=29, total=441)
+        rows = [{"part_no": 1, "roll_section": "main"} for _ in range(841)]
+        found = run.reconcile(tmp_path, rows)
+        assert found["summary_unusable"] == [1]
+        assert found["measured"] == 0 and found["residuals"] == []
+        assert run.shortfall_verdict(found) == "" if found["measured"] else True
+
+    def test_a_part_with_no_geometry_is_still_measured(self, tmp_path):
+        """Silence is not evidence against the printed total."""
+        from electors import stage1, summary
+
+        part = tmp_path / "part0001"
+        part.mkdir()
+        stage1.write_side(
+            part / "side.json",
+            {
+                "pages": {},
+                "unknown": [],
+                "summary": summary.RollSummary(male=1, female=1, third=0, total=2, scale=400),
+            },
+        )
+        rows = [{"part_no": 1, "roll_section": "main"} for _ in range(2)]
+        found = run.reconcile(tmp_path, rows)
+        assert found["measured"] == 1 and found["summary_unusable"] == []

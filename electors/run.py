@@ -156,6 +156,18 @@ def read(
     def one(number: int, part_dir: Path) -> None:
         cache = part_dir / ROWS
         cached = _cached_rows(cache)
+        # A cache that covers only part of the part. Stage two used to list the composites on
+        # disk, so a run that found three of a part's five images read three and cached the
+        # result as though it were the whole part -- and every later run served it from that
+        # cache without ever going back to the words. AC33 carries 110 such parts, 55,359 rows
+        # short, every one of them recoverable from words already bought.
+        #
+        # Only where the part can actually be read again, so a part whose words are gone keeps
+        # what it has and answers to reconciliation for it.
+        if cached is not None and cache_is_partial(part_dir, len(cached)):
+            if stage2.ready(part_dir):
+                cache.unlink(missing_ok=True)
+                cached = None
         if cached is not None:
             rows = cached
             # Cached rows are a previous parse's output, so a fix at the reader does not reach
@@ -236,6 +248,42 @@ def _write_rows(path: Path, rows: Sequence[Dict[str, Any]]) -> None:
     temporary.replace(path)
 
 
+#: How far a cached parse may fall short of the boxes stage one cut before it is not a parse of
+#: those boxes at all. Measured: on a healthy constituency the two are *equal* -- AC8's 296 parts
+#: every one of them, no slack, because a box is cut only where an elector is and every box yields
+#: a row even when it is unreadable. A part that is short is short by hundreds: AC33 part 96 cached
+#: 12 rows against 1,170 boxes. Nothing observed lands between three and nine hundred.
+PARTIAL_CACHE = 10
+
+#: A printed total this far from the boxes on the part's main pages is not a total this pipeline
+#: can reconcile against. Same measurement: the gap is exactly zero on 704 of 705 measured parts
+#: across three constituencies, and -3 at worst on AC8. One page is thirty.
+SUMMARY_DISAGREES = 30
+
+
+def boxes_cut(part_dir: Path, main_only: bool = False) -> int:
+    """How many elector boxes stage one cut from this part.
+
+    Stage one's own count, from the geometry, written before Vision was ever called. That makes it
+    an independent second opinion on two things that had none: whether a cached parse covers the
+    part it claims to, and whether the closing total the roll prints was read correctly.
+    """
+    try:
+        side = stage1.read_side(part_dir / "side.json")
+    except (ValueError, OSError, KeyError):
+        return 0
+    return sum(
+        len(page["boxes"])
+        for page in side["pages"].values()
+        if not main_only or page["section"] == pages.Section.MAIN
+    )
+
+
+def cache_is_partial(part_dir: Path, cached: int) -> bool:
+    """Whether a cached parse is missing boxes that stage one cut from this part."""
+    return boxes_cut(part_dir) - cached > PARTIAL_CACHE
+
+
 def images_billed(work_dir: Path) -> int:
     """What this constituency actually cost, counted from the composites on disk.
 
@@ -251,6 +299,18 @@ def reconcile(work_dir: Path, rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     Main list only. A part's supplements are counted separately on the closing page, so scoring
     every row against that total makes a part with a supplement look over-extracted -- part 4
     read 511 boxes against a printed 483 and the 28 were its supplement, correctly found.
+
+    **The printed total is itself a reading, and it can be misread in ways that pass its own
+    arithmetic.** AC22 part 103 printed male 424, female 417, total 841; it was read as male 424,
+    female 17, total 441. Two cells each lost the same leading digit, so the triple still balanced
+    and ``summary.parse`` accepted it -- and then a correctly extracted part looked 400 rows
+    over-extracted and took its whole constituency down with it.
+
+    So the total is checked against the boxes stage one cut from the main pages, which is a number
+    from the geometry rather than from any OCR of that page. They agree exactly on 704 of 705
+    measured parts. Where they disagree by more than a page the summary is not usable, and the
+    part is counted **unmeasured** rather than mismatching: what is not known to be right is not
+    thereby known to be wrong.
     """
     main_by_part: Dict[int, int] = {}
     for row in rows:
@@ -259,6 +319,8 @@ def reconcile(work_dir: Path, rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
 
     measured = matching = 0
     residuals: List[Dict[str, Any]] = []
+    # Parts whose printed total contradicts the geometry, so it cannot serve as a reference.
+    unusable: List[int] = []
     for part_dir in sorted(work_dir.glob("part*")):
         side_path = part_dir / "side.json"
         if not side_path.exists():
@@ -266,6 +328,12 @@ def reconcile(work_dir: Path, rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         number = int(part_dir.name.replace("part", ""))
         closing = stage1.read_side(side_path)["summary"]
         if closing is None:
+            continue
+        # Only where there is geometry to disagree with. A part with no pages recorded offers no
+        # second opinion, and silence is not evidence against the printed total.
+        main_boxes = boxes_cut(part_dir, main_only=True)
+        if main_boxes and abs(main_boxes - closing.total) > SUMMARY_DISAGREES:
+            unusable.append(number)
             continue
         measured += 1
         got = main_by_part.get(number, 0)
@@ -291,6 +359,7 @@ def reconcile(work_dir: Path, rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         "main_rows": sum(main_by_part.values()),
         "short": sum(abs(r["diff"]) for r in residuals),
         "worst": max((abs(r["diff"]) for r in residuals), default=0),
+        "summary_unusable": unusable,
         "worst_fraction": max(
             (abs(r["diff"]) / r["roll_total"] for r in residuals if r["roll_total"]), default=0.0
         ),

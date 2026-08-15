@@ -225,7 +225,16 @@ def save_words(part_dir: Path, image: str, found: Sequence[vision.Word]) -> None
 
     About 6,000 words a composite, which is a megabyte or so -- next to nothing beside the
     composite itself, and a tiny fraction of what re-reading it would cost.
+
+    **An empty answer is not saved.** A composite is a stack of text lines cut from elector boxes;
+    there is no such thing as one with no words on it, so an empty result is a failed read rather
+    than a finding. Cached, it becomes permanent: AC33 holds 214 of them across 110 parts, and
+    every subsequent run served those parts from a "successful" read of nothing. It lost 55,359
+    rows and each retry reproduced the loss exactly, because the failure had been written down as
+    the answer.
     """
+    if not found:
+        return
     temporary = words_path(part_dir, image).with_suffix(".json.tmp")
     temporary.write_text(
         json.dumps(
@@ -238,14 +247,20 @@ def save_words(part_dir: Path, image: str, found: Sequence[vision.Word]) -> None
 
 
 def cached_words(part_dir: Path, image: str) -> Optional[List[vision.Word]]:
-    """What Vision said last time, or None if this image has never been read."""
+    """What Vision said last time, or None if this image has never been usefully read.
+
+    An empty file counts as never read, which is what heals the ones already written. They cannot
+    be a real answer -- see :func:`save_words` -- and leaving them in place makes the loss
+    permanent and invisible, since a part reading zero words reports no error at all.
+    """
     path = words_path(part_dir, image)
     if not path.exists():
         return None
-    return [
+    found = [
         vision.Word(text, left, top, right, bottom)
         for text, left, top, right, bottom in json.loads(path.read_text(encoding="utf-8"))
     ]
+    return found or None
 
 
 def ready(part_dir: Path) -> bool:
