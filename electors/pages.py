@@ -82,6 +82,15 @@ SECTION_MARKERS = (
     ("List of Modification", Section.MODIFICATION),
     ("যোগ", Section.ADDITION),
     ("সংযোজন", Section.ADDITION),
+    # The Bengali genitive. AC126 titles its supplement সংযোজনের তালিকা -- "list of additions",
+    # the possessive -ের on the same word -- and the whole-word boundary below rightly refuses to
+    # see সংযোজন inside it. The inflected forms are still whole words, so they are markers of
+    # their own rather than a loosened boundary: relaxing the boundary is what once let যোগ match
+    # inside a village name. One wording missed here cost 5,602 supplement electors their section,
+    # every one filed into the main roll, and the constituency its reconciliation.
+    ("সংযোজনের", Section.ADDITION),
+    ("বিয়োজনের", Section.DELETION),
+    ("সংশোধনের", Section.MODIFICATION),
     ("বিয়োজন", Section.DELETION),
     ("লোপ", Section.DELETION),
     ("বাদ", Section.DELETION),
@@ -119,7 +128,9 @@ def section_of(header: str) -> Tuple[Section, bool]:
     # Whether the header was understood at all, in either language. A main-roll page that is not
     # recognised is counted as an unrecognised header and reported, so leaving the English forms
     # out would have flagged every one of AC113's pages as unreadable while they parsed fine.
-    recognised = any(mark in text for mark in ("অংশৰ", "সমষ্টিৰ")) or bool(
+    # Both ra's: Assamese ৰ and Bengali র. AC126 writes সমষ্টির and every one of its 2,328 pages
+    # was reported unreadable while parsing fine.
+    recognised = any(mark in text for mark in ("অংশৰ", "সমষ্টিৰ", "অংশের", "সমষ্টির")) or bool(
         re.search(r"Assembly\s+Constituency|Part\s+number", text, re.IGNORECASE)
     )
     return Section.MAIN, recognised

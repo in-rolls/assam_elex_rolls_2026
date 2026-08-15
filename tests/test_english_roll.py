@@ -8,7 +8,7 @@ because the labels now live in shared patterns.
 
 import pytest
 
-from electors import fields, vision
+from electors import fields, pages, vision
 
 ENGLISH = [
     "Name : PROKAS RAI",
@@ -134,3 +134,29 @@ def test_the_assamese_village_is_still_not_a_section_marker():
 
     assert pages.section_of("অংশৰ নাম : যোগেন্দ্ৰপুৰ")[0] is pages.Section.MAIN
     assert pages.section_of("যোগ তালিকা 1")[0] is pages.Section.ADDITION
+
+
+class TestBengaliGenitiveHeaders:
+    """AC126's real headers, transcribed from a rendered page of its part 1.
+
+    The supplement title uses the genitive -- সংযোজনের তালিকা, "list of additions" -- and the
+    whole-word boundary rightly refuses to see সংযোজন inside it, so the inflected form must be a
+    marker in its own right. Every one of 5,602 supplement electors was filed into the main roll,
+    and every one of 2,328 pages was reported unreadable because the main-page tokens knew only
+    the Assamese ৰ and this roll writes the Bengali র.
+    """
+
+    def test_the_genitive_supplement_title_is_an_addition(self):
+        section, recognised = pages.section_of("সংযোজনের তালিকা 1 (27-12-2025 04-02-2026 )")
+        assert section is pages.Section.ADDITION
+        assert recognised
+
+    def test_the_bengali_main_header_is_recognised(self):
+        section, recognised = pages.section_of("বিধানসভা সমষ্টির নম্বর এবং নাম : 126-রাম কৃষ্ণ নগর")
+        assert section is pages.Section.MAIN
+        assert recognised
+
+    def test_the_village_name_still_does_not_become_a_section(self):
+        """The boundary that caused this stays: যোগ inside a village name is not an addition."""
+        section, _ = pages.section_of("অংশৰ নাম : যোগেন্দ্ৰপুৰ")
+        assert section is pages.Section.MAIN
