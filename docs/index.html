@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Assam Rolls 2026</title>
+<style>
+  :root {
+    --paper: #FAF9F5; --ink: #1E2630; --muted: #5A6472; --line: #D9D6CC;
+    --accent: #3D5A99; --ok: #3E7A54; --warn: #A5652A; --card: #F1EFE8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #14181F; --ink: #E6E4DD; --muted: #97A0AD; --line: #313945;
+      --accent: #84A3DE; --ok: #7DB894; --warn: #D19A66; --card: #1C222B;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #14181F; --ink: #E6E4DD; --muted: #97A0AD; --line: #313945;
+    --accent: #84A3DE; --ok: #7DB894; --warn: #D19A66; --card: #1C222B;
+  }
+  body {
+    background: var(--paper); color: var(--ink); margin: 0;
+    font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+    font-size: 17px; line-height: 1.6;
+  }
+  main { max-width: 46rem; margin: 0 auto; padding: 3.5rem 1.25rem 5rem; }
+  h1 { font-size: 2.1rem; line-height: 1.15; margin: 0 0 .4rem; text-wrap: balance; font-weight: 600; }
+  .sub { color: var(--muted); margin: 0 0 2.2rem; font-size: 1.02rem; }
+  .eyebrow {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .72rem;
+    letter-spacing: .14em; text-transform: uppercase; color: var(--accent);
+    margin: 2.8rem 0 .5rem; font-weight: 600;
+  }
+  h2 { font-size: 1.35rem; margin: 0 0 .7rem; font-weight: 600; text-wrap: balance; }
+  p { margin: .7rem 0; max-width: 66ch; }
+  .figures {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr));
+    gap: 1px; background: var(--line); border: 1px solid var(--line); margin: 1.8rem 0;
+  }
+  .figures > div { background: var(--card); padding: .85rem 1rem; }
+  .figures .n {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-variant-numeric: tabular-nums;
+    font-size: 1.32rem; display: block; font-weight: 600;
+  }
+  .figures .l { color: var(--muted); font-size: .8rem; }
+  .tablewrap { overflow-x: auto; margin: 1rem 0; }
+  table {
+    border-collapse: collapse; font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: .82rem; font-variant-numeric: tabular-nums; min-width: 30rem;
+  }
+  th, td { text-align: right; padding: .35rem .9rem .35rem 0; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 600; letter-spacing: .04em; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); }
+  code, .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .85em; }
+  pre {
+    background: var(--card); border: 1px solid var(--line); padding: .9rem 1.1rem;
+    overflow-x: auto; font-size: .8rem; line-height: 1.5;
+  }
+  ol { padding-left: 1.3rem; } li { margin: .5rem 0; }
+  .note { border-left: 3px solid var(--accent); padding: .1rem 0 .1rem 1rem; color: var(--muted); }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Assam Rolls 2026</h1>
+  <p class="sub">Extraction report · all 126 assembly constituencies of the Assam 2026 final
+  electoral roll, read from the published scanned PDFs into one Parquet dataset. Every figure on
+  this page was computed from the shipped files on 15&nbsp;August&nbsp;2026.</p>
+
+  <div class="figures">
+    <div><span class="n">26,043,942</span><span class="l">elector rows extracted</span></div>
+    <div><span class="n">126 / 126</span><span class="l">constituencies published</span></div>
+    <div><span class="n">97.0%</span><span class="l">parts matching their printed totals exactly</span></div>
+    <div><span class="n">0.0056%</span><span class="l">recorded shortfall vs the roll's own totals</span></div>
+  </div>
+
+  <p class="eyebrow">Where the data is</p>
+  <h2>One Parquet file per constituency</h2>
+  <p>The authoritative copy is <code>gs://sawasdee-assam-rolls/shards/</code> —
+  <code>AC001.parquet … AC126.parquet</code>, 611&nbsp;MB, each beside an
+  <code>entry.json</code> (counts, reconciliation, cost) and a <code>verify.json</code>. A
+  byte-verified local copy sits in the repo at <code>data/electors/</code>.</p>
+  <pre>import pandas as pd, glob
+df = pd.concat(pd.read_parquet(f) for f in sorted(glob.glob("data/electors/AC*.parquet")))</pre>
+  <p>One row is one printed elector box: <code>name</code>, <code>relation_name</code>,
+  <code>relation_type</code>, <code>age</code>, <code>sex</code>, <code>house_no</code>,
+  <code>epic_no</code>, <code>roll_section</code> (main / addition / deletion),
+  <code>deleted</code> (the roll's own struck-off marking), and provenance to the page:
+  <code>ac_no</code>, <code>part_no</code>, <code>page_no</code>, <code>box_row</code>,
+  <code>box_col</code>, <code>source_pdf</code>, <code>pdf_sha256</code>.</p>
+
+  <p class="eyebrow">Completeness</p>
+  <h2>More than the net roll, on purpose</h2>
+  <div class="tablewrap"><table>
+    <tr><th>Slice</th><th>Rows</th></tr>
+    <tr><td>Assamese (114 ACs)</td><td>23,440,172</td></tr>
+    <tr><td>Bengali (11 ACs)</td><td>2,442,020</td></tr>
+    <tr><td>English (1 AC)</td><td>161,750</td></tr>
+    <tr><td>— main list</td><td>25,253,806</td></tr>
+    <tr><td>— additions</td><td>775,025</td></tr>
+    <tr><td>— deletions</td><td>15,111</td></tr>
+    <tr><td>— marked struck-off</td><td>1,008,591</td></tr>
+    <tr><td>State's published net figure</td><td>24,958,139</td></tr>
+  </table></div>
+  <p>The extraction exceeds the published net figure because it keeps what that figure removes:
+  supplement entries and electors the roll itself marks deleted. Filtering
+  <code>roll_section == "main"</code> and <code>deleted == False</code> approximates the net roll.</p>
+  <p>Every part of the roll prints its own closing total — a number this pipeline did not
+  produce. Of 20,092 extracted parts, 19,259 could be measured against it and
+  <span class="ok">18,688 (97.0%) match exactly</span>; 46 constituencies match on every measured
+  part. All recorded disagreement sums to <span class="ok">1,450 rows — 0.0056%</span> — with the
+  worst constituency at 0.100%, and each constituency's figure travels in its
+  <code>entry.json</code>.</p>
+
+  <p class="eyebrow">Accuracy</p>
+  <h2>What is proven wrong, and what is unmeasured</h2>
+  <p>Two claims, kept separate. The first is a <em>lower bound</em>: rows provably wrong from the
+  data alone — an identifier repeated though unique by definition, a printed label leaked into a
+  name, a name in the wrong script.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Detector</th><th>Assamese</th><th>Bengali</th><th>English</th></tr>
+    <tr><td>malformed EPIC</td><td class="warn">3.009%</td><td class="warn">2.292%</td><td>1.312%</td></tr>
+    <tr><td>repeated EPIC</td><td class="warn">1.480%</td><td>1.299%</td><td>0.790%</td></tr>
+    <tr><td>label inside a value</td><td>0.678%</td><td>0.729%</td><td>0.000%</td></tr>
+    <tr><td>name equals relation</td><td>0.011%</td><td>0.008%</td><td>0.000%</td></tr>
+    <tr><td>latin in name</td><td>0.002%</td><td>0.000%</td><td>0.000%</td></tr>
+    <tr><td>impossible age</td><td class="ok">0.000%</td><td class="ok">0.000%</td><td class="ok">0.000%</td></tr>
+  </table></div>
+  <p>The EPIC rates are the dataset's weakest point and are concentrated by history: a charset
+  defect fixed mid-run left ~46 early constituencies at the old ~4.8% malformed rate, while
+  constituencies processed after the fix run near zero. Re-reading the affected constituencies
+  costs ~$150 of compute and was deliberately deferred.</p>
+  <p class="note">The second claim is not yet made: accuracy against ground truth. A row no
+  detector condemns is unmeasured, not correct — only human marking catches a plausible wrong
+  name. The instrument exists (a 150-crop review sheet) and is waiting to be marked.</p>
+
+  <p class="eyebrow">Known defects</p>
+  <h2>Each with its bound</h2>
+  <div class="tablewrap"><table>
+    <tr><th>Defect</th><th>Bound</th><th>Where recorded</th></tr>
+    <tr><td>Sparse final pages lost to classification</td><td>≤0.1% per AC; ~1,450 rows total</td><td>entry.json per AC</td></tr>
+    <tr><td>EPIC quality split by processing era</td><td>~4.8% → ~0% at the fix</td><td>floor sweep, above</td></tr>
+    <tr><td>Printed label leaked into a value</td><td>~0.68% of rows</td><td>detectable per row</td></tr>
+    <tr><td>Cost metadata lost for 63 early entries</td><td>recorded Vision spend undercounts</td><td>—</td></tr>
+  </table></div>
+
+  <p class="eyebrow">Cost &amp; failures</p>
+  <h2>What it took</h2>
+  <p>Compute: four 32-core machines, roughly $450–500 all-in, of which about $200 was idle time
+  before utilisation was fixed. OCR: Google Cloud Vision, ~$130–150 true (a repacking design cut
+  billed images ~9×; $103 of it survives on record). The failures that changed the design:</p>
+  <ol>
+    <li>Resume treated a part with cached OCR words but no image as unprepared — every reboot
+    re-rendered the whole backlog. Cached words now suffice.</li>
+    <li>An exact-match publish gate discarded whole constituencies over marginal shortfalls;
+    measured distributions replaced it with structural-loss rules, pinned as tests.</li>
+    <li>One OCR'd serial — <span class="mono">3801114767</span>, from a "photo available"
+    placeholder box — overflowed int32 and discarded 179k rows.</li>
+    <li>Vision's batch API reports per-image failure inside HTTP&nbsp;200; treated as a blank
+    image, one night of it parked 22 constituencies. Empty answers are now failed reads.</li>
+    <li>A 67-megapixel composite, accepted by the API, deterministically exceeded the OCR
+    backend's deadline. The pixel budget now targets what the backend can process.</li>
+    <li>The Barak-valley Bengali rolls title their supplements in the genitive —
+    <span lang="bn">সংযোজনের তালিকা</span> — which the whole-word section matcher rejected; three
+    constituencies filed every supplement elector into the main roll before the inflected forms
+    became markers. All three republished exact.</li>
+  </ol>
+
+  <p class="eyebrow">Operations</p>
+  <h2>Shut down, restartable</h2>
+  <p>All four VMs are <code>TERMINATED</code> — kept, not deleted, by decision (their disks cost
+  ~$32/month and hold nothing unique; every input and output lives in the bucket). A worker is
+  recreated by starting an instance with the repo's worker script as startup metadata; it claims
+  work from the bucket, resumes from cached state, and publishes shards. Because OCR words are
+  cached beside each part, a parser improvement re-reaches all 26M rows for CPU cost only.</p>
+</main>
+</body>
+</html>
