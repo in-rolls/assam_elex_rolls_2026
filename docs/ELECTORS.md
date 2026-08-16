@@ -10,7 +10,8 @@ python -m electors report out/electors/AC001.parquet    # reconcile against the 
 
 Output is one Parquet shard per constituency, zstd-compressed and gitignored; the committed
 manifest carries each shard's row count and SHA-256. Rows join to the info-page tables on
-`(ac_no, part_no)`, which is parsed from the source filename — the same key on both sides.
+elector `(ac_no, part_no)` = info-page `(ac_no_file, part_no_file)`. These keys come from the
+source filenames; the OCR-read info-page `ac_no` and `part_no` are validation fields.
 
 ## Running one, and what it costs
 
@@ -341,8 +342,9 @@ error would have collapsed all four fields together, and the other three sit at 
 
 Three things stay on the CPU because none is worth a paid pixel -- the **EPIC**, which sits
 outside the text column and would cost most of the saving to include; the **section header**,
-which decides whether serials restart; and the **closing summary**, which completeness is
-measured against. Tesseract reads all three, and its English model gets the EPIC at 96.6%.
+which distinguishes the main roll from supplements; and the **closing summary**, which
+completeness is measured against. Tesseract reads all three, and its English model gets the EPIC
+at 96.6%.
 
 #### What resolution to feed it
 

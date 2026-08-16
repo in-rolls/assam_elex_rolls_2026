@@ -24,9 +24,20 @@ than transliterated, so they can be filtered on directly.
 
 import re
 import unicodedata
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 # --------------------------------------------------------------------------- filename
+
+
+def source_file_key(row: Mapping[str, Any]) -> Tuple[int, int]:
+    """The authoritative AC/part key encoded in an info-page source filename.
+
+    ``ac_no`` and ``part_no`` are OCR outputs kept to measure extraction accuracy. Joining on
+    them makes an OCR error change record identity, so consumers must use the independently
+    known ``*_file`` fields instead.
+    """
+    return int(row["ac_no_file"]), int(row["part_no_file"])
+
 
 # 2026-EROLLGEN-S03-100-FinalRoll-Revision1-ASM-45-WI_INFO.pdf
 #                   ^AC                          ^part

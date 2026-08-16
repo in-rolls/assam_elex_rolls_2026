@@ -108,7 +108,9 @@ def cached_parts(root: Path = CACHE_DIR, ac: int = 1) -> List[int]:
     return sorted(found)
 
 
-def parse_box(box: BoxLines, serial: int, ac: int = 0, part: int = 0) -> Dict[str, Any]:
+def parse_box(
+    box: BoxLines, serial: int, ac: int = 0, part: int = 0, lang: str = "asm"
+) -> Dict[str, Any]:
     """One elector, parsed from cached text by whatever the field code says today.
 
     Calls :func:`fields.assemble` -- the pipeline's own assembler -- rather than
@@ -134,14 +136,14 @@ def parse_box(box: BoxLines, serial: int, ac: int = 0, part: int = 0) -> Dict[st
         "box_row": box.row,
         "page_no": box.page,
         "roll_section": box.section,
-        "lang": "asm",
+        "lang": lang.upper(),
     }
 
 
 def replay(captured: PartLines) -> List[Dict[str, Any]]:
     """Every elector in a part, re-parsed from cached text."""
     return [
-        parse_box(box, serial, captured.ac, captured.part)
+        parse_box(box, serial, captured.ac, captured.part, captured.lang)
         for serial, box in enumerate(captured.boxes, start=1)
     ]
 

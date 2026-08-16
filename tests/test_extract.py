@@ -98,14 +98,14 @@ class TestParseResponse:
 class TestExtractPage:
     def test_returns_parsed_payload(self):
         client = types.SimpleNamespace(
-            messages=types.SimpleNamespace(create=lambda **kw: fake_message(PARSED))
+            messages=types.SimpleNamespace(create=lambda **_kwargs: fake_message(PARSED))
         )
         assert extract.extract_page(client, b"png")["ac_name"] == "গোসাইগাঁও"
 
     def test_refusal_raises(self):
         client = types.SimpleNamespace(
             messages=types.SimpleNamespace(
-                create=lambda **kw: fake_message(PARSED, stop_reason="refusal")
+                create=lambda **_kwargs: fake_message(PARSED, stop_reason="refusal")
             )
         )
         with pytest.raises(extract.ExtractionError, match="declined"):
@@ -114,7 +114,7 @@ class TestExtractPage:
     def test_truncation_raises_rather_than_returning_partial_data(self):
         client = types.SimpleNamespace(
             messages=types.SimpleNamespace(
-                create=lambda **kw: fake_message(PARSED, stop_reason="max_tokens")
+                create=lambda **_kwargs: fake_message(PARSED, stop_reason="max_tokens")
             )
         )
         with pytest.raises(extract.ExtractionError, match="max_tokens"):

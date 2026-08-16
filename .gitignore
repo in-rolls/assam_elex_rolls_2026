@@ -19,3 +19,4 @@ dataset/lines/
 
 # Converted OCR model weights: half a gigabyte, regenerable with one mlx_vlm command.
 models/
+logs_upload.txt

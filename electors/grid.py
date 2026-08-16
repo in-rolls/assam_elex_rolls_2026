@@ -139,6 +139,22 @@ def _evenly_spread(edges: Sequence[Tuple[int, int]]) -> bool:
     return max(widths) / min(widths) <= COLUMN_WIDTH_RATIO
 
 
+def balanced_columns(columns: Sequence[Tuple[int, int, int]]) -> bool:
+    """Whether all three boxes and their text cells have the template's repeated width.
+
+    An extra vertical rule can make :func:`column_triples` return three syntactically valid
+    columns whose dividers are actually unrelated rules. AC24 part 95 page 4 produced text
+    widths 856, 137 and 228 pixels: nine real electors became empty crops and most of a second
+    column contained only the photo placeholder. Repeated widths are independent evidence that
+    both the box edges and the internal dividers describe the printed template.
+    """
+    return (
+        len(columns) == COLUMNS
+        and _evenly_spread([(left, right) for left, _, right in columns])
+        and _evenly_spread([(left, divider) for left, divider, _ in columns])
+    )
+
+
 #: How far a rule may sit from where the part's full pages put a column edge and still be that
 #: edge. Twelve pixels at 400 dpi is under a third of a millimetre of print.
 EDGE_MATCH = 12
@@ -341,6 +357,13 @@ def row_bands(h_rules: Sequence[int]) -> List[Tuple[int, int]]:
     and is self-validating in a way counting never is.
     """
     rules = sorted(set(h_rules))
+    # A one-row page has exactly its top and bottom rules, so it cannot vote on a repeated
+    # pitch. At the pipeline's 400 dpi the publisher's elector row is about 415 px high;
+    # keeping this interval tight excludes headings and the shallow rows in closing tables.
+    # The part-level column check in ``pages.recover_partial`` is the second half of the test:
+    # neither the height nor a few vertical rules can promote a page on its own.
+    if len(rules) == 2 and 300 <= rules[1] - rules[0] <= 500:
+        return [(rules[0], rules[1])]
     if len(rules) < 3:
         return []
     spans = [b - a for a, b in zip(rules, rules[1:]) if b - a > 0]

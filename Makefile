@@ -1,4 +1,4 @@
-.PHONY: install lint fmt test ci ci-docker render extract validate review clean
+.PHONY: install lint fmt test ci ci-docker render extract validate review elector-release clean
 
 PY := .venv/bin/python
 PIP := uv pip install --python .venv/bin/python
@@ -44,6 +44,9 @@ validate:
 
 review:
 	$(PY) -m assam_rolls.cli review --parts out/parts.csv --pages out/pages --out out/review.html
+
+elector-release:
+	$(PY) -m electors release
 
 clean:
 	rm -rf out .pytest_cache

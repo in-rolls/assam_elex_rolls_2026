@@ -118,14 +118,17 @@ AGE_RE = re.compile(r"(?:বয়স[^0-9০-৯]{0,6}|AGE[^0-9]{0,6})([0-9০-
 #: dead code for this path.
 HOUSE_WORD = r"(?:ঘৰ|বাড়ী|বাড়ি)"
 
-#: ``House No. 1`` on the English roll.
-HOUSE_EN = r"HOUSE\s*N[O0]\.?"
+#: ``House No. 1`` on the English roll. Vision often separates punctuation into its own token,
+#: yielding ``House No .: 1``; whitespace before the period is formatting, not a missing label.
+HOUSE_EN = r"HOUSE\s*N[O0]\s*\.?"
 
 #: ``[ \t]*`` rather than ``\s*`` before the suffix: the terse answers are line-delimited, and a
 #: pattern that crossed the newline captured the ``ব`` of the ``বয়স`` on the next line, turning
 #: house 13 into "13\nব".
 HOUSE_RE = re.compile(
-    _either_ra(rf"(?:{HOUSE_WORD}\s*নং|{HOUSE_EN})\s*[:：.]?\s*([0-9০-৯]{{1,6}}[ \t]*[ক-হ]?)"),
+    _either_ra(
+        rf"(?:{HOUSE_WORD}\s*নং|{HOUSE_EN})\s*[:：.]?\s*" rf"([0-9০-৯]{{1,6}}[ \t]*[ক-হA-Z]?)"
+    ),
     re.IGNORECASE,
 )
 SEX_RE = re.compile(r"(?:লিঙ্গ|GENDER)\s*[:：.]?\s*(\S+)", re.IGNORECASE)

@@ -1,22 +1,20 @@
-# Assam 2026 Electoral Roll — Part-Level Info Pages
+# Assam 2026 Electoral Rolls
 
-Extracts the per-part **info pages** of the Assam 2026 Final Electoral Roll into a
-tidy, part-level dataset: polling station, locality, and elector counts for every part
-in every assembly constituency.
+Extracts the Assam 2026 Final Electoral Roll from scanned PDFs into two linked datasets:
 
-Each part's roll opens with a two-page cover sheet describing the polling station, and this
-dataset is that cover sheet, parsed for every part.
+- a part-level dataset of polling stations, localities, and published elector counts; and
+- a statewide Parquet file containing one row per printed elector box, with source-page
+  provenance.
 
-The elector lists behind those cover sheets are handled by a second stage, `electors`, which
-is **in progress and has no published dataset yet** — see [docs/ELECTORS.md](docs/ELECTORS.md)
-for how it reads the grid, what is measured, and what is not. Its rows join to the tables here
-on `(ac_no, part_no)`.
+The elector rows join to the authoritative info-page records with
+`electors.(ac_no, part_no) = parts.(ac_no_file, part_no_file)`. The filename-derived keys on the
+right are deliberate: OCR-read `ac_no` and `part_no` are validation fields, not join keys.
 
 ## Get the data
 
-The built dataset is in [`dataset/`](dataset/) — **31,486 parts, all 126 constituencies,
-24,958,139 electors**. Gzipped, ~12 MB total; every archive is verified to decompress
-byte-identical to what the pipeline wrote.
+The part-level dataset is in [`dataset/`](dataset/) — **31,486 parts, all 126 constituencies,
+24,958,139 published net electors**. Gzipped, it is about 12 MB total; every archive is verified
+to decompress byte-identical to what the pipeline wrote.
 
 | file | rows | what it is |
 |---|--:|---|
@@ -26,6 +24,20 @@ byte-identical to what the pipeline wrote.
 | `transliteration.csv.gz` | 46,644 | native → romanized lookup for all seven name fields, anchored to India Post where possible ([details](docs/ROMANIZATION.md)) |
 | `report.json` | — | accuracy, overall and per language |
 | `SHA256SUMS` | — | check a download |
+
+The verified elector-level release artifact is staged for publication:
+
+| file | what it is |
+|---|---|
+| `assam_electoral_rolls_2026.parquet` | all 126 constituency shards assembled in source order |
+| `assam_electoral_rolls_2026.sha256` | SHA-256 checksum |
+
+The permanent download location will be added when `v2026.2` is tagged. The release report records
+the artifact's exact byte size and checksum independently of its eventual host.
+
+See the [extraction report](docs/EXTRACTION_REPORT.md) for measured completeness, known error
+bounds, and the exact release checks. The per-constituency pipeline and schema are documented in
+[docs/ELECTORS.md](docs/ELECTORS.md).
 
 No decompression step needed:
 
@@ -158,7 +170,7 @@ make install                        # uv venv + editable install with dev extras
 
 No API key is required.
 
-## Run
+## Run the part-level extraction
 
 ```bash
 assam-rolls calibrate     # derive the Bengali and English label tables (once)
@@ -175,8 +187,10 @@ part whose cached result still matches its source PDF's hash, so an interrupted 
 resumes where it stopped, and a re-issued PDF is re-extracted automatically. Pass
 `--overwrite` to force a clean run, and `--log-file` for a durable record.
 
-**No API key is needed.** The Claude path in `extract.py` is retained but not wired into
-the default flow — see [why it was abandoned](docs/ANALYSIS.md#8-why-the-claude-api-path-was-measured-and-then-abandoned).
+**No API key is needed for this part-level flow.** The elector pipeline uses Google Cloud Vision
+for the text inside elector boxes; downloading either published dataset requires no credentials.
+The Claude path in `extract.py` is retained but not wired into the default flow — see
+[why it was abandoned](docs/ANALYSIS.md#8-why-the-claude-api-path-was-measured-and-then-abandoned).
 
 ## Development
 

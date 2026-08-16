@@ -7,8 +7,10 @@ because the labels now live in shared patterns.
 """
 
 import pytest
+from PIL import Image
 
-from electors import fields, pages, vision
+from assam_rolls import ocr
+from electors import extract, fields, grid, pages, vision, vision_part
 
 ENGLISH = [
     "Name : PROKAS RAI",
@@ -30,12 +32,169 @@ BENGALI = [
 ]
 
 
+class TestLanguageAwareSideReads:
+    class Engine:
+        def __init__(self, answer="List of Addition 1"):
+            self.answer = answer
+            self.calls = []
+
+        def _run(self, image, lang, _config, scale, *, psm):
+            self.calls.append((lang, scale, psm))
+            return self.answer
+
+    def test_english_header_uses_the_english_model(self, monkeypatch):
+        engine = self.Engine()
+        requested = []
+        monkeypatch.setattr(
+            ocr,
+            "get_engine",
+            lambda name, lang: requested.append((name, lang)) or engine,
+        )
+        box = grid.Box(0, 0, 10, 50, 90, 100, 70)
+
+        text = vision_part._header_strip_text(Image.new("L", (100, 120)), [box], "ENG")
+
+        assert text == "List of Addition 1"
+        assert requested == [("tesseract", "eng")]
+        assert engine.calls == [("eng", 1, 6)]
+
+    def test_english_summary_uses_the_english_model(self, monkeypatch):
+        engine = self.Engine("Mother Roll Basic Roll 361 328 0 689")
+        requested = []
+        monkeypatch.setattr(
+            ocr,
+            "get_engine",
+            lambda name, lang: requested.append((name, lang)) or engine,
+        )
+
+        found = vision_part._summary_from(Image.new("L", (100, 120)), "ENG")
+
+        assert found is not None and found.total == 689
+        assert requested == [("tesseract", "eng")]
+        assert engine.calls == [("eng", 1, 6)]
+
+
 def test_an_english_box_yields_every_field():
     e = vision.elector_from(["FXW1756134"], ENGLISH)
     assert e.name == "PROKAS RAI"
     assert e.relation_name == "RAJ BAHADUR RAI"
     assert e.relation_type == "father"
     assert (e.age, e.sex, e.house_no) == (45, "M", "1")
+
+
+def test_an_english_house_label_tolerates_ocr_separated_punctuation():
+    lines = [
+        "Name : ARINGLE NRIAME",
+        "Fathers Name : GIARIAYING NRIAME",
+        "House No .: 220A",
+        "Age : 27 Gender : Female",
+    ]
+
+    assert vision.elector_from(["ABC1234567"], lines).house_no == "220A"
+
+
+def test_an_english_repacked_box_reaches_the_field_reader():
+    """Stage one's composites contain only body lines, so stage two must not strip them again."""
+
+    words = []
+    for row, line in enumerate(ENGLISH):
+        left = 0
+        for token in line.split():
+            right = left + max(8, len(token) * 8)
+            words.append(vision.Word(token, left, row * 30, right, row * 30 + 20))
+            left = right + 5
+
+    result = extract.PartResult(
+        ac_no=113,
+        part_no=1,
+        lang="ENG",
+        source_zip="AC113_ENG.zip",
+        source_pdf="2026-EROLLGEN-S03-113-FinalRoll-Revision1-ENG-1-WI.pdf",
+        pdf_sha256="a" * 64,
+    )
+    side = {
+        "pages": {
+            3: {
+                "recognised": True,
+                "section": pages.Section.MAIN,
+                "boxes": {(3, 0, 0): {"epic": "FXW1756134", "serial": "1", "code": ""}},
+            }
+        },
+        "unknown": [],
+        "summary": None,
+    }
+    meta = {"year": 2026, "roll_type": "FinalRoll", "revision": 1, "lang": "ENG"}
+
+    vision_part._fill_repacked(result, side, {(3, 0, 0): words}, meta)
+
+    row = result.electors[0]
+    assert row["name"] == "PROKAS RAI"
+    assert row["relation_name"] == "RAJ BAHADUR RAI"
+    assert row["relation_type"] == "father"
+    assert (row["age"], row["sex"], row["house_no"]) == (45, "M", "1")
+    assert row["lang"] == "ENG"
+    assert row["engine"] == extract.MIXED_ENGINE
+
+
+def test_the_all_vision_reader_skips_an_explicit_summary_and_records_its_engine(monkeypatch):
+    image = Image.new("L", (400, 500), "white")
+    box = grid.Box(0, 0, 10, 100, 390, 500, 300)
+    signature = pages.PageSignature(1, pages.PageKind.ELECTOR, (), ())
+    monkeypatch.setattr(pages, "classify", lambda _image, _number: signature)
+    monkeypatch.setattr(grid, "build", lambda *_args, **_kwargs: [box])
+
+    summary_words = [
+        vision.Word("SUMMARY", 10, 10, 80, 30),
+        vision.Word("OF", 90, 10, 110, 30),
+        vision.Word("ELECTORS", 120, 10, 200, 30),
+        vision.Word("নাম", 10, 150, 50, 175),
+    ]
+    result = extract.PartResult(1, 1, "ASM", "AC1.zip", "part1.pdf", "a" * 64)
+
+    vision_part._fill(result, [image], [summary_words], {})
+
+    assert not result.electors
+
+    ordinary_words = [
+        vision.Word("ABC1234567", 10, 110, 100, 130),
+        vision.Word("নাম", 10, 150, 50, 175),
+        vision.Word("ৰমেন", 60, 150, 120, 175),
+    ]
+    result = extract.PartResult(1, 1, "ASM", "AC1.zip", "part1.pdf", "a" * 64)
+    vision_part._fill(result, [image], [ordinary_words], {})
+
+    assert result.electors[0]["engine"] == extract.VISION_ENGINE
+
+
+def test_repacked_serials_continue_through_supplements():
+    """The printed serial is one cumulative part sequence, independently confirmed by OCR."""
+    word = vision.Word("Name", 0, 0, 40, 20)
+    result = extract.PartResult(1, 1, "ASM", "AC1.zip", "part1.pdf", "a" * 64)
+    side = {
+        "pages": {
+            3: {
+                "recognised": True,
+                "section": pages.Section.MAIN,
+                "boxes": {(3, 0, 0): {"epic": "A", "serial": "1", "code": ""}},
+            },
+            4: {
+                "recognised": True,
+                "section": pages.Section.ADDITION,
+                "boxes": {(4, 0, 0): {"epic": "B", "serial": "2", "code": ""}},
+            },
+            5: {
+                "recognised": True,
+                "section": pages.Section.MAIN,
+                "boxes": {(5, 0, 0): {"epic": "C", "serial": "3", "code": ""}},
+            },
+        }
+    }
+    words = {(page, 0, 0): [word] for page in (3, 4, 5)}
+
+    vision_part._fill_repacked(result, side, words, {})
+
+    assert [row["serial_no"] for row in result.electors] == [1, 2, 3]
+    assert [row["roll_section"] for row in result.electors] == ["main", "addition", "addition"]
 
 
 @pytest.mark.parametrize(

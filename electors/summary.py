@@ -42,6 +42,18 @@ from assam_rolls import schema
 #: carried a printed total, so nothing about that constituency could be checked at all.
 MAIN_ROW = re.compile(r"মূল\s*তালিকা|MOTHER\s*ROLL|BASIC\s*ROLL", re.IGNORECASE)
 
+#: A closing table can accidentally form the same three-column grid as elector boxes. Its title
+#: is unambiguous and is read from the header band before any of those cells are emitted as rows.
+SUMMARY_TITLE = re.compile(
+    r"SUMMARY\s+OF\s+ELECTORS|ভোটাৰৰ\s+সংখ্যা|ভোটারের\s+সংখ্যা", re.IGNORECASE
+)
+
+
+def is_summary(text: str) -> bool:
+    """Whether a page header explicitly identifies the closing elector table."""
+    return bool(SUMMARY_TITLE.search(" ".join(text.split())))
+
+
 #: Scale/segmentation pairs tried in order until the arithmetic balances. Scale does most of
 #: the work -- the usual lesson here -- but this page is a wide sparse table rather than a
 #: block of prose, so a couple of segmentation modes are worth trying once scale is exhausted.
@@ -120,6 +132,7 @@ def parse(text: str) -> Optional[Tuple[int, int, int, int]]:
 def read(
     engine,
     image: Image.Image,
+    lang: str = "asm",
     attempts: Sequence[Tuple[int, int]] = ATTEMPTS,
 ) -> Optional[RollSummary]:
     """Read the closing page, retrying until the arithmetic holds.
@@ -129,7 +142,7 @@ def read(
     reported as unmeasured rather than scored against a different quantity.
     """
     for scale, psm in attempts:
-        found = parse(engine._run(image, "asm", None, scale, psm=psm))
+        found = parse(engine._run(image, lang, None, scale, psm=psm))
         if found:
             male, female, third, total = found
             summary = RollSummary(male=male, female=female, third=third, total=total, scale=scale)

@@ -286,10 +286,9 @@ MANIFEST = "manifest.jsonl"
 def write_manifest(written: Sequence[Crop], out_dir: Path, append: bool = True) -> Path:
     """One row per crop, written beside the crops by whoever cut them.
 
-    The filename carries the join key, but not the rectangle, the section or the source sha --
-    and a reading cannot be put in the right row without the section, because serials restart at
-    1 in every supplement. A manifest generated separately from the images is a manifest that can
-    disagree with them, so this is called from the same loop that writes the PNGs.
+    The filename carries the join key, but not the rectangle, the section or the source sha. A
+    manifest generated separately from the images can disagree with them, so this is called from
+    the same loop that writes the PNGs.
     """
     import json
 

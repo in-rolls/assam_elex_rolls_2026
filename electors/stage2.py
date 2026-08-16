@@ -166,19 +166,19 @@ def summary_from_vision(
     incurred -- one phantom image per resumed part, which is the whole state once the fleet
     starts resuming rather than re-rendering.
     """
-    page = part_dir / "summary_page.png"
-    if not page.exists():
-        return None, False
-
-    from PIL import Image
-
     from . import summary as summary_module
 
+    page = part_dir / "summary_page.png"
     cached = cached_words(part_dir, page.name)
     paid = cached is None
     if cached is None:
+        if not page.exists():
+            return None, False
+        from PIL import Image
+
         with Image.open(page) as image:
             image.load()
+            width = image.width
             responses = (
                 annotate([image]) if annotate is not None else vision.annotate([image], api_key)
             )
@@ -186,9 +186,10 @@ def summary_from_vision(
             return None, False
         cached = vision.words_from(responses[0])
         save_words(part_dir, page.name, cached)
+    else:
+        width = max((word.right for word in cached), default=0) + 1
 
-    with Image.open(page) as image:
-        text = "\n".join(vision.grouped_lines(cached, 0, image.width))
+    text = "\n".join(vision.grouped_lines(cached, 0, width))
     found = summary_module.parse(text)
     if not found:
         return None, paid

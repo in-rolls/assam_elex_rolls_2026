@@ -21,7 +21,9 @@ from electors import (
     diagnose,
     escalate,
     evaluate,
+    extract,
     fields,
+    fleet,
     gemini,
     grid,
     output,
@@ -791,6 +793,19 @@ class TestReplay:
         assert len(rows) == 1
         assert rows[0]["name"] and rows[0]["box_col"] == 1
         assert replay.cached_parts(tmp_path) == [13]
+
+    def test_replayed_rows_keep_the_capture_language(self):
+        captured = replay.PartLines(
+            part=13,
+            ac=113,
+            capture_version=replay.CAPTURE_VERSION,
+            scale=2,
+            psm=7,
+            lang="eng",
+            boxes=[self._box()],
+        )
+
+        assert replay.replay(captured)[0]["lang"] == "ENG"
 
 
 class TestEscalation:
@@ -1749,7 +1764,7 @@ class TestVisionPageMapping:
 
         captured = {"images": []}
 
-        def fake_annotate(images, api_key, **kw):
+        def fake_annotate(images, api_key, **_kwargs):
             captured["images"] += list(images)
             return [self._response(words) for _ in images]
 
@@ -1792,7 +1807,7 @@ class TestVisionPageMapping:
 
         seen = {"images": 0}
 
-        def fake_annotate(images, api_key, **kw):
+        def fake_annotate(images, api_key, **_kwargs):
             seen["images"] += len(images)
             return [self._response([("এক", 10)]) for _ in images]
 
@@ -2116,6 +2131,19 @@ class TestSectionMarkersAreWords:
         header = "সমষ্টিৰ নাম : 1-ক অংশৰ নম্বৰ আৰু নাম : 5-আহমদাবাদ এফ ভি"
         assert pages.section_of(header)[0] is pages.Section.MAIN
 
+    def test_a_bengali_station_ending_in_abad_is_not_a_deletion_list(self):
+        header = "সমষ্টির নাম : 1-ক অংশের নম্বর এবং নাম : 5-ইসলামাবাদ"
+        assert pages.section_of(header)[0] is pages.Section.MAIN
+
+    def test_a_sparse_page_after_an_addition_keeps_the_addition_section(self):
+        assert (
+            pages.section_after(pages.Section.ADDITION, pages.Section.MAIN)
+            is pages.Section.ADDITION
+        )
+
+    def test_the_main_list_can_resume_after_a_short_deletion_sheet(self):
+        assert pages.section_after(pages.Section.DELETION, pages.Section.MAIN) is pages.Section.MAIN
+
     def test_a_deletion_list_is_still_found(self):
         assert pages.section_of("খণ্ড নং : 7 বিয়োজন তালিকা 1")[0] is pages.Section.DELETION
 
@@ -2211,6 +2239,14 @@ class TestStruckOffEntries:
         assert found["implied"] == 24 and found["detected"] == 0
         assert found["per_part"][0]["diff"] == -24
 
+    def test_a_deletion_sheet_does_not_count_as_an_addition(self):
+        rows = [{"part_no": 1, "roll_section": "main", "deleted": False} for _ in range(100)]
+        rows += [{"part_no": 1, "roll_section": "deletion", "deleted": False} for _ in range(4)]
+
+        found = run.struck_off_check(Path("."), rows, {1: 100})
+
+        assert found["implied"] == 0
+
 
 class TestPartialLastPage:
     """The last page of a part holds whatever is left, and it used to be thrown away.
@@ -2240,6 +2276,10 @@ class TestPartialLastPage:
 
     #: Part 5 page 16: the real closing summary.
     REAL_SUMMARY = [67, 3236]
+
+    #: AC24 part 95 page 4 has one extra vertical rule. Read consecutively, the clusters make
+    #: text cells 856, 137 and 228 pixels wide even though all three printed columns are equal.
+    STRAY_DIVIDER = [78, 934, 1162, 1189, 1326, 2009, 2237, 2264, 2289, 2971, 3199, 3225]
 
     def test_a_page_of_one_box_is_read_against_the_parts_geometry(self):
         found = grid.columns_present(self.ONE_COLUMN, self.ESTABLISHED)
@@ -2324,6 +2364,22 @@ class TestPartialLastPage:
         assert after.kind is pages.PageKind.ELECTOR
         assert after.columns == tuple(self.ESTABLISHED)
 
+    def test_an_elector_page_with_impossible_column_widths_uses_part_geometry(self):
+        bad = pages.PageSignature(
+            number=4,
+            kind=pages.PageKind.ELECTOR,
+            h_rules=H_RULES,
+            v_rules=self.STRAY_DIVIDER,
+        )
+        good = pages.PageSignature(
+            number=3, kind=pages.PageKind.ELECTOR, h_rules=H_RULES, v_rules=V_RULES
+        )
+
+        recovered = pages.recover_partial([good, bad])[1]
+
+        assert not grid.balanced_columns(grid.column_triples(self.STRAY_DIVIDER))
+        assert recovered.columns == tuple(self.ESTABLISHED)
+
     def test_every_column_is_built_even_when_one_edge_was_not_inked(self):
         """Part 43's page 25 holds five electors and lost serial 663 to a missing edge line."""
         page25 = [78, 854, 1082, 1108, 1133, 1909, 2137, 2164]
@@ -2335,6 +2391,68 @@ class TestPartialLastPage:
         )
         assert len(grid.columns_present(page25, self.ESTABLISHED)) == 2
         assert len(pages.recover_partial([good, last])[1].columns) == 3
+
+    def test_one_row_page_is_recovered_from_its_part_geometry(self):
+        """Two horizontal rules are a complete one-row page, not insufficient evidence."""
+        good = pages.PageSignature(
+            number=3, kind=pages.PageKind.ELECTOR, h_rules=H_RULES, v_rules=V_RULES
+        )
+        sparse = pages.PageSignature(
+            number=18,
+            kind=pages.PageKind.SUMMARY,
+            h_rules=(153, 568),
+            v_rules=self.ONE_COLUMN,
+        )
+
+        recovered = pages.recover_partial([good, sparse])[1]
+
+        assert recovered.kind is pages.PageKind.ELECTOR
+        assert grid.build(recovered.h_rules, recovered.v_rules, recovered.columns)
+
+
+def test_an_explicit_english_summary_title_is_not_an_elector_page():
+    assert summary.is_summary("SUMMARY OF ELECTORS A) NUMBER OF ELECTORS")
+    assert not summary.is_summary("Assembly Constituency No and Name: 113 - HAFLONG")
+
+
+def test_the_direct_tesseract_reader_does_not_emit_an_explicit_summary(tmp_path, monkeypatch):
+    class Engine:
+        def _run(self, _image, _lang, _config, _scale, *, psm):
+            assert psm == 6
+            return "SUMMARY OF ELECTORS A) NUMBER OF ELECTORS"
+
+    def rendered(_pdf, workdir, dpi=extract.DPI):
+        from PIL import Image
+
+        page = workdir / "page-1.png"
+        Image.new("L", (400, 500), "white").save(page)
+        return [page]
+
+    signature = pages.PageSignature(1, pages.PageKind.ELECTOR, (), ())
+    box = grid.Box(0, 0, 10, 100, 390, 500, 300)
+    monkeypatch.setattr(extract.render, "read_pdf_bytes", lambda *_args: b"pdf")
+    monkeypatch.setattr(extract, "_render_pages", rendered)
+    monkeypatch.setattr(pages, "classify", lambda _image, _number: signature)
+    monkeypatch.setattr(grid, "build", lambda *_args, **_kwargs: [box])
+    monkeypatch.setattr(
+        summary,
+        "read",
+        lambda *_args: summary.RollSummary(male=10, female=10, third=0, total=20, scale=1),
+    )
+    monkeypatch.setattr(
+        fields,
+        "read_page",
+        lambda *_args: pytest.fail("a closing summary must not reach the elector reader"),
+    )
+
+    result = extract.read_part(
+        tmp_path / "AC113_ENG.zip",
+        "2026-EROLLGEN-S03-113-FinalRoll-Revision1-ENG-1-WI.pdf",
+        engine=Engine(),
+    )
+
+    assert not result.electors
+    assert result.summary_total == 20
 
 
 class TestRunnerAcrossConstituencies:
@@ -2381,7 +2499,15 @@ class TestRunnerAcrossConstituencies:
         part_dir = tmp_path / "part0003"
         part_dir.mkdir()
         (part_dir / run.ROWS).write_text(
-            json.dumps({"part_no": 3, "ac_no": 1, "roll_section": "main"}) + "\n",
+            json.dumps(
+                {
+                    "part_no": 3,
+                    "ac_no": 1,
+                    "roll_section": "main",
+                    "pipeline_version": extract.PIPELINE_VERSION,
+                }
+            )
+            + "\n",
             encoding="utf-8",
         )
         billed = []
@@ -2455,6 +2581,121 @@ class TestBoughtSummaryPersists:
         stage1.write_side(tmp_path / "side.json", side)
         assert stage1.read_side(tmp_path / "side.json")["summary"].total == 912
 
+    def test_cached_summary_words_do_not_need_the_old_image(self, tmp_path):
+        """The reparse tool keeps paid words and omits the image they already describe."""
+        lines = [
+            "Mother Roll Basic Roll 361 328 0 689",
+            "Net Elector in this Roll 354 322 0 676",
+        ]
+        words = []
+        for row, line in enumerate(lines):
+            left = 0
+            for token in line.split():
+                right = left + len(token) * 10
+                words.append(vision.Word(token, left, row * 40, right, row * 40 + 20))
+                left = right + 8
+        stage2.save_words(tmp_path, "summary_page.png", words)
+
+        found, paid = stage2.summary_from_vision(tmp_path, "")
+
+        assert found is not None and found.total == 689
+        assert not paid
+
+
+class TestStageOneSideReadReuse:
+    def test_only_identical_source_bytes_reuse_box_headers(self, tmp_path, monkeypatch):
+        (tmp_path / "side.json").write_text("{}")
+        key = (3, 0, 0)
+        read = {"epic": "ABC1234567", "header_geometry": [[10, 20, 30, 40]]}
+        monkeypatch.setattr(
+            crops,
+            "read_manifest",
+            lambda _part: {
+                "box": {
+                    "pdf_sha256": "same",
+                    "page_no": key[0],
+                    "box_row": key[1],
+                    "box_col": key[2],
+                }
+            },
+        )
+        monkeypatch.setattr(
+            stage1,
+            "read_side",
+            lambda _path: {
+                "header_reader_version": vision_part.HEADER_READER_VERSION,
+                "pages": {3: {"boxes": {key: read}}},
+            },
+        )
+
+        assert stage1._prior_box_reads(tmp_path, "same") == {key: read}
+        assert stage1._prior_box_reads(tmp_path, "different") == {}
+
+    def test_a_different_header_reader_version_forces_fresh_reads(self, tmp_path, monkeypatch):
+        (tmp_path / "side.json").write_text("{}")
+        key = (3, 0, 0)
+        monkeypatch.setattr(
+            crops,
+            "read_manifest",
+            lambda _part: {"box": {"pdf_sha256": "same"}},
+        )
+        monkeypatch.setattr(
+            stage1,
+            "read_side",
+            lambda _path: {
+                "header_reader_version": "older",
+                "pages": {3: {"boxes": {key: {"epic": "stale"}}}},
+            },
+        )
+
+        assert stage1._prior_box_reads(tmp_path, "same") == {}
+
+    def test_a_changed_rectangle_forces_a_fresh_header_read(self, monkeypatch):
+        key = (3, 0, 0)
+        monkeypatch.setattr(vision_part, "_header_of", lambda _image, _box: {"epic": "fresh"})
+        monkeypatch.setattr(
+            vision_part, "_header_geometry", lambda _image, _box: [[10, 20, 31, 40]]
+        )
+
+        found = vision_part._box_header(
+            object(),
+            object(),
+            key,
+            {key: {"epic": "stale", "header_geometry": [[10, 20, 30, 40]]}},
+        )
+
+        assert found == {"epic": "fresh"}
+
+    def test_an_identical_rectangle_reuses_the_header_read(self, monkeypatch):
+        key = (3, 0, 0)
+        geometry = [[10, 20, 30, 40]]
+        monkeypatch.setattr(vision_part, "_header_geometry", lambda _image, _box: geometry)
+        monkeypatch.setattr(
+            vision_part,
+            "_header_of",
+            lambda _image, _box: pytest.fail("identical geometry must use its cached read"),
+        )
+
+        found = vision_part._box_header(
+            object(),
+            object(),
+            key,
+            {key: {"epic": "cached", "header_geometry": geometry}},
+        )
+
+        assert found == {"epic": "cached", "header_geometry": geometry}
+
+    def test_header_geometry_changes_when_only_the_outer_box_changes(self):
+        from PIL import Image
+
+        image = Image.new("L", (4000, 5000), "white")
+        first = grid.Box(0, 0, 100, 200, 1100, 600, 850)
+        wider = grid.Box(0, 0, 100, 200, 1200, 600, 850)
+
+        assert vision_part._header_geometry(image, first) != vision_part._header_geometry(
+            image, wider
+        )
+
 
 class TestStageHandoff:
     """What stage one writes must be exactly what stage two needs -- no re-rendering.
@@ -2466,6 +2707,7 @@ class TestStageHandoff:
 
     def _side(self):
         return {
+            "header_reader_version": vision_part.HEADER_READER_VERSION,
             "pages": {
                 3: {
                     "section": pages.Section.MAIN,
@@ -2810,8 +3052,7 @@ class TestCropExport:
         assert crops.band_window(bands, 1, box)[1] <= box.bottom
 
     def test_the_manifest_round_trips_and_carries_what_the_filename_cannot(self, tmp_path):
-        """A reading cannot be put in the right row from the filename alone: serials restart at
-        1 in every supplement, so the section has to travel with the crop."""
+        """A filename identifies a box but does not say which roll section contains it."""
         crop = crops.Crop(
             part=13,
             page=4,
@@ -3225,6 +3466,65 @@ class TestReconcileChecks:
 
     def test_an_empty_shard_never_passes(self):
         assert not reconcile.judge(1, [], published_parts=5, totals={}).ok
+
+
+class TestPublishedPartIdentity:
+    def test_info_page_totals_use_filename_keys_not_ocr_keys(self, tmp_path):
+        import gzip
+
+        path = tmp_path / "parts.jsonl.gz"
+        record = {
+            "ac_no": 999,
+            "part_no": 777,
+            "ac_no_file": 12,
+            "part_no_file": 34,
+            "electors_total": 500,
+        }
+        with gzip.open(path, "wt", encoding="utf-8") as handle:
+            handle.write(json.dumps(record) + "\n")
+
+        assert run.published_totals(12, path) == {34: 500}
+
+    def test_every_info_page_consumer_uses_filename_keys(self, tmp_path):
+        import gzip
+
+        path = tmp_path / "parts.jsonl.gz"
+        record = {
+            "ac_no": 999,
+            "part_no": 777,
+            "ac_no_file": 12,
+            "part_no_file": 34,
+            "electors_total": 500,
+            "electors_male": 260,
+            "electors_female": 240,
+        }
+        with gzip.open(path, "wt", encoding="utf-8") as handle:
+            handle.write(json.dumps(record) + "\n")
+
+        assert validate.load_part_totals(path) == {
+            (12, 34): {"total": 500, "male": 260, "female": 240, "third": None}
+        }
+        assert fleet.published_parts(path) == {12: 1}
+
+    def test_a_stale_row_cache_is_reparsed(self, tmp_path, monkeypatch):
+        part = tmp_path / "part1"
+        part.mkdir()
+        stale = {"pipeline_version": "1.8.0", "serial_no_ocr": 1}
+        (part / run.ROWS).write_text(json.dumps(stale) + "\n")
+        fresh = {"pipeline_version": extract.PIPELINE_VERSION, "serial_no_ocr": 1}
+
+        monkeypatch.setattr(stage2, "ready", lambda _part: True)
+        monkeypatch.setattr(
+            stage2,
+            "read_part",
+            lambda _part, _key: extract.PartResult(1, 1, "ASM", "zip", "pdf", "0" * 64, [fresh]),
+        )
+
+        assert run.read(tmp_path, "", workers=1) == [fresh]
+        assert (
+            json.loads((part / run.ROWS).read_text())["pipeline_version"]
+            == extract.PIPELINE_VERSION
+        )
 
 
 class TestDelivery:

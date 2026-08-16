@@ -186,4 +186,4 @@ class TestResamplingFilter:
             small.putpixel((10, y), 0)
         big = small.resize((40, 40), render.RESAMPLING)
         # every pixel is either the original ink or the original paper, nothing between
-        assert set(big.getdata()) <= {0, 255}
+        assert set(big.tobytes()) <= {0, 255}

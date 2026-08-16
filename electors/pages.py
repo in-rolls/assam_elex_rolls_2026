@@ -121,9 +121,10 @@ def section_of(header: str) -> Tuple[Section, bool]:
     searchable = STATION_FIELD.split(text)[0] if STATION_FIELD.search(text) else text
 
     for marker, section in SECTION_MARKERS:
-        # Whole words. A Bengali letter or matra immediately after the marker means it is the
-        # start of a longer word -- যোগ inside যোগেন্দ্ৰপুৰ -- not the marker itself.
-        if re.search(marker + r"(?![\u0980-\u09FF])", searchable):
+        # Whole words. Bengali letters or matras on either side make this part of a longer word:
+        # যোগ inside যোগেন্দ্ৰপুৰ, or বাদ at the end of ইসলামাবাদ. The missing left boundary
+        # labeled 15,102 main-list rows as deletions in place names ending in -abad.
+        if re.search(r"(?<![\u0980-\u09FF])" + marker + r"(?![\u0980-\u09FF])", searchable):
             return section, True
     # Whether the header was understood at all, in either language. A main-roll page that is not
     # recognised is counted as an unrecognised header and reported, so leaving the English forms
@@ -134,6 +135,19 @@ def section_of(header: str) -> Tuple[Section, bool]:
         re.search(r"Assembly\s+Constituency|Part\s+number", text, re.IGNORECASE)
     )
     return Section.MAIN, recognised
+
+
+def section_after(previous: Section, found: Section) -> Section:
+    """Carry an addition onto sparse continuation pages whose title could not be read.
+
+    Main-list pages do not resume after the addition list starts. The last addition page is
+    often sparse and its header OCR falls back to the generic main-page form; carrying the
+    section forward is independently confirmed by the printed main total. Deletion sheets are
+    different in this corpus: short ones can be inserted before the main list resumes.
+    """
+    if previous is Section.ADDITION and found is Section.MAIN:
+        return previous
+    return found
 
 
 @dataclass(frozen=True)
@@ -213,7 +227,18 @@ def recover_partial(signatures: Sequence[PageSignature]) -> List[PageSignature]:
 
     out: List[PageSignature] = []
     for signature in signatures:
-        if signature.is_elector or signature.kind is PageKind.INFO or not signature.v_rules:
+        if signature.is_elector:
+            # A page may resolve to three columns only because an extra vertical rule was
+            # mistaken for a photo divider. When their repeated widths disagree, use the
+            # geometry established by the rest of this same part. Keeping the bad page-local
+            # triples produces plausible rows from photo placeholders, so row counts cannot
+            # detect the damage downstream.
+            own = grid.column_triples(signature.v_rules)
+            if established and not grid.balanced_columns(own):
+                signature = replace(signature, columns=tuple(established))
+            out.append(signature)
+            continue
+        if signature.kind is PageKind.INFO or not signature.v_rules:
             out.append(signature)
             continue
         # Two different questions, and conflating them lost electors. Whether *any* of the

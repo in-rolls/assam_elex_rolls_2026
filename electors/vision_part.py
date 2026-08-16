@@ -25,7 +25,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tupl
 
 from PIL import Image
 
-from assam_rolls import render, schema
+from assam_rolls import languages, render, schema
 
 from . import extract, grid, pages, repack
 from . import summary as summary_page
@@ -33,6 +33,7 @@ from . import vision
 
 #: One page of a stack, and everything Vision said about it.
 PageWords = Tuple[int, Image.Image, List[vision.Word]]
+PriorBoxReads = Dict[Tuple[int, int, int], Dict[str, Any]]
 
 
 def _chunks(items: Sequence[Any], size: int) -> Iterator[Sequence[Any]]:
@@ -123,8 +124,41 @@ def _page_text(words: Sequence[vision.Word], image: Image.Image) -> str:
     return "\n".join(vision.grouped_lines(words, 0, image.width))
 
 
+def _record_summary(
+    result: extract.PartResult, words: Sequence[vision.Word], image: Image.Image
+) -> None:
+    """Keep a Vision closing total only when its three components balance."""
+    if result.summary_total is not None:
+        return
+    found = summary_page.parse(_page_text(words, image))
+    if not found:
+        return
+    male, female, third, total = found
+    closing = summary_page.RollSummary(male=male, female=female, third=third, total=total, scale=1)
+    if closing.balances:
+        result.summary_male = male
+        result.summary_female = female
+        result.summary_third = third
+        result.summary_total = total
+
+
+def _box_header(
+    image: Image.Image,
+    box: grid.Box,
+    key: Tuple[int, int, int],
+    prior_box_reads: Optional[PriorBoxReads],
+) -> Dict[str, Any]:
+    """Reuse a header read only when both OCR crops describe the identical source pixels."""
+    cached = (prior_box_reads or {}).get(key)
+    if cached is not None and cached.get("header_geometry") == _header_geometry(image, box):
+        return dict(cached)
+    return _header_of(image, box)
+
+
 def tiles_for(
     images: Sequence[Image.Image],
+    lang: str,
+    prior_box_reads: Optional[PriorBoxReads] = None,
 ) -> Tuple[List[Tuple[Image.Image, Tuple[int, int, int, int], Tuple[int, int, int]]], Dict]:
     """Every box's text lines as a tile, plus what the CPU needs to read for itself.
 
@@ -151,13 +185,19 @@ def tiles_for(
       What the change would still buy is wall clock -- stage one roughly halves -- and the same
       hours can be bought by adding machines at the same total cost, without a second vintage in
       the dataset.
-    - the **section header**, which decides whether serials restart.
+    - the **section header**, which distinguishes the main roll from its supplements.
     - the **closing summary**, which is the number every completeness check is measured against.
     """
     from . import crops as crop_module
 
     entries: List[Tuple[Image.Image, Tuple[int, int, int, int], Tuple[int, int, int]]] = []
-    side: Dict[str, Any] = {"pages": {}, "unknown": [], "summary": None, "unread_summary": None}
+    side: Dict[str, Any] = {
+        "pages": {},
+        "unknown": [],
+        "summary": None,
+        "unread_summary": None,
+        "header_reader_version": HEADER_READER_VERSION,
+    }
 
     # Classify every page first, then reconsider the ones that came out as anything but elector
     # pages. A part's last page can hold a single elector, and one page's rules cannot tell that
@@ -167,13 +207,14 @@ def tiles_for(
         [pages.classify(image, n) for n, image in enumerate(images, start=1)]
     )
 
+    current_section = pages.Section.MAIN
     for signature, image in zip(signatures, images):
         index = signature.number
         if signature.kind is pages.PageKind.UNKNOWN:
             side["unknown"].append(index)
             continue
         if signature.kind is pages.PageKind.SUMMARY and side["summary"] is None:
-            side["summary"] = _summary_from(image)
+            side["summary"] = _summary_from(image, lang)
             # Keep the page tesseract could not read, so stage two can spend on it. The closing
             # row wraps across four lines because its description cell is tall, and the parser
             # wants a balancing triple on one line -- so about a fifth of parts end up with no
@@ -191,7 +232,17 @@ def tiles_for(
             side["unknown"].append(index)
             continue
 
-        section, recognised = pages.section_of(_header_strip_text(image, boxes))
+        header = _header_strip_text(image, boxes, lang)
+        if summary_page.is_summary(header):
+            if side["summary"] is None:
+                side["summary"] = _summary_from(image, lang)
+                if side["summary"] is None:
+                    side["unread_summary"] = image.copy()
+            continue
+
+        section, recognised = pages.section_of(header)
+        section = pages.section_after(current_section, section)
+        current_section = section
         side["pages"][index] = {
             "section": section,
             "recognised": recognised,
@@ -207,7 +258,7 @@ def tiles_for(
             bottom = crop_module.band_window(bands, len(bands) - 1, box)[1]
             key = (index, box.row, box.column)
             entries.append((image, (box.left, top, box.text_right, bottom), key))
-            side["pages"][index]["boxes"][key] = _header_of(image, box)
+            side["pages"][index]["boxes"][key] = _box_header(image, box, key, prior_box_reads)
     return entries, side
 
 
@@ -215,6 +266,11 @@ def tiles_for(
 #: own legend: E dead, S shifted, R duplicate, M missing, Q ineligible. A closed set, so anything
 #: else in that cell is a misread digit rather than a marking.
 STATUS_CODES = "ESRMQ"
+
+#: Compatibility key for cached serial, EPIC, and status reads. Geometry and source-byte checks
+#: protect against changed inputs; this key protects against changed OCR or parsing code when the
+#: same rectangles are deliberately re-read differently.
+HEADER_READER_VERSION = "1.0.0"
 
 
 #: The serial cell's own ruled borders, as fractions of the box. Measured off the rules rather
@@ -289,7 +345,29 @@ def plausible_serial(text: str) -> Optional[int]:
     return value if 0 < value <= MAX_SERIAL else None
 
 
-def _header_of(image: Image.Image, box: grid.Box) -> Dict[str, str]:
+def _header_geometry(image: Image.Image, box: grid.Box) -> List[List[int]]:
+    """The exact serial/status and EPIC rectangles consumed by Tesseract."""
+    width = box.right - box.left
+    height = box.bottom - box.top
+    serial_left, serial_top, serial_right, serial_bottom = SERIAL_CELL
+    epic_left, epic_top, epic_right, epic_bottom = EPIC_REGION
+    return [
+        [
+            box.left + int(width * serial_left),
+            box.top + int(height * serial_top),
+            box.left + int(width * serial_right),
+            box.top + int(height * serial_bottom),
+        ],
+        [
+            box.left + int(width * epic_left),
+            box.top + int(height * epic_top),
+            min(image.width, box.left + int(width * epic_right) + EPIC_PAD),
+            box.top + int(height * epic_bottom),
+        ],
+    ]
+
+
+def _header_of(image: Image.Image, box: grid.Box) -> Dict[str, Any]:
     """The serial, the EPIC and the status code, each read from its own cell.
 
     Read with the English model: ``asm`` renders ``HHK0001471`` as ``1414140001471``, being
@@ -315,30 +393,11 @@ def _header_of(image: Image.Image, box: grid.Box) -> Dict[str, str]:
     This is the signal because the watermark is not. Vision returns five Latin fragments from a
     whole 67 MP composite -- 'D', 'ED', 'RIZED' -- so reading the stamp itself finds nothing.
     """
-    width = box.right - box.left
-    height = box.bottom - box.top
-
-    left, top, right, bottom = SERIAL_CELL
-    cell = _read(
-        image,
-        (
-            box.left + int(width * left),
-            box.top + int(height * top),
-            box.left + int(width * right),
-            box.top + int(height * bottom),
-        ),
-        psm=7,
-    )
-
-    left, top, right, bottom = EPIC_REGION
+    geometry = _header_geometry(image, box)
+    cell = _read(image, tuple(geometry[0]), psm=7)
     epic = _read(
         image,
-        (
-            box.left + int(width * left),
-            box.top + int(height * top),
-            min(image.width, box.left + int(width * right) + EPIC_PAD),
-            box.top + int(height * bottom),
-        ),
+        tuple(geometry[1]),
         psm=7,
         whitelist=EPIC_ALPHABET,
     ).replace(" ", "")
@@ -350,29 +409,32 @@ def _header_of(image: Image.Image, box: grid.Box) -> Dict[str, str]:
         "serial": re.sub(r"\D", "", cell),
         "epic": epic,
         "code": found.group(1).upper() if found else "",
+        "header_geometry": geometry,
     }
 
 
-def _header_strip_text(image: Image.Image, boxes: Sequence[grid.Box]) -> str:
+def _header_strip_text(image: Image.Image, boxes: Sequence[grid.Box], lang: str) -> str:
     top = min(boxes[0].top, int(image.height * 0.09))
     if top <= 0:
         return ""
     from assam_rolls import ocr
 
     try:
-        engine = ocr.get_engine("tesseract", lang="asm")
-        return engine._run(image.crop((0, 0, image.width, top)), "asm", None, 1, psm=6)
+        tesseract_lang = languages.profile_for(lang).tesseract_lang
+        engine = ocr.get_engine("tesseract", lang=tesseract_lang)
+        return engine._run(image.crop((0, 0, image.width, top)), tesseract_lang, None, 1, psm=6)
     except Exception:
         return ""
 
 
-def _summary_from(image: Image.Image):
+def _summary_from(image: Image.Image, lang: str):
     """The closing totals, read on the CPU and only kept if the arithmetic balances."""
     from assam_rolls import ocr
 
     try:
-        engine = ocr.get_engine("tesseract", lang="asm")
-        return summary_page.read(engine, image)
+        tesseract_lang = languages.profile_for(lang).tesseract_lang
+        engine = ocr.get_engine("tesseract", lang=tesseract_lang)
+        return summary_page.read(engine, image, tesseract_lang)
     except Exception:
         return None
 
@@ -453,7 +515,7 @@ def read_repacked(
         with tempfile.TemporaryDirectory() as tmp:
             images = (renderer or rasterize(extract.DPI))(pdf_bytes, Path(tmp))
             result.page_count = len(images)
-            entries, side = tiles_for(images)
+            entries, side = tiles_for(images, result.lang)
             result.unknown_pages = side["unknown"]
             if side["summary"] is not None:
                 closing = side["summary"]
@@ -498,18 +560,20 @@ def _fill_repacked(
         result.elector_pages += 1
         if not page["recognised"]:
             result.unrecognised_headers.append(index)
-        section = page["section"]
+        section = pages.section_after(current_section, page["section"])
+        current_section = section
         if section is not pages.Section.MAIN:
             result.supplement_pages.append(index)
-        if section is not current_section:
-            current_section, serial = section, 0
 
         for key in sorted(page["boxes"]):
             found = words.get(key, [])
             if not found:
                 continue
             width = max((w.right for w in found), default=0) + 1
-            body = vision.lines_by_position(found, 0, width)
+            # Stage one sends only the body column to Vision; the header strip is read
+            # separately and never enters the composite. Splitting on the first
+            # Bengali-Assamese line here discarded every line of AC113's English boxes.
+            body = vision.grouped_lines(found, 0, width)
             # The header strip never went to Vision -- the EPIC is outside the text column, and
             # tesseract's English model reads it for nothing on hardware already paid for.
             side_read = page["boxes"][key]
@@ -533,7 +597,15 @@ def _fill_repacked(
                 text_right=0,
             )
             result.electors.append(
-                extract._row(result, elector, page=index, box=box, meta=meta, section=section)
+                extract._row(
+                    result,
+                    elector,
+                    page=index,
+                    box=box,
+                    meta=meta,
+                    section=section,
+                    engine=extract.MIXED_ENGINE,
+                )
             )
 
 
@@ -552,21 +624,8 @@ def _fill(
         if signature.kind is pages.PageKind.UNKNOWN:
             result.unknown_pages.append(index)
             continue
-        if signature.kind is pages.PageKind.SUMMARY and result.summary_total is None:
-            found = summary_page.parse(_page_text(words, image))
-            if found:
-                male, female, third, total = found
-                # The same arithmetic check the tesseract path applies. A triple that does not
-                # balance is a misread, and recording it would give every completeness check a
-                # wrong denominator to agree with.
-                closing = summary_page.RollSummary(
-                    male=male, female=female, third=third, total=total, scale=1
-                )
-                if closing.balances:
-                    result.summary_male = male
-                    result.summary_female = female
-                    result.summary_third = third
-                    result.summary_total = total
+        if signature.kind is pages.PageKind.SUMMARY:
+            _record_summary(result, words, image)
         if not signature.is_elector:
             continue
 
@@ -577,18 +636,19 @@ def _fill(
             # rows of nothing.
             result.unknown_pages.append(index)
             continue
+        header_text = _header_text(words, image, boxes)
+        if summary_page.is_summary(header_text):
+            _record_summary(result, words, image)
+            continue
         result.elector_pages += 1
 
-        section, recognised = pages.section_of(_header_text(words, image, boxes))
+        section, recognised = pages.section_of(header_text)
+        section = pages.section_after(current_section, section)
+        current_section = section
         if not recognised:
             result.unrecognised_headers.append(index)
         if section is not pages.Section.MAIN:
             result.supplement_pages.append(index)
-        # Each list is numbered from 1 in the source, so the counter restarts when the section
-        # changes rather than running through as if it were one roll.
-        if section is not current_section:
-            current_section, serial = section, 0
-
         for box in boxes:
             inside = vision.words_within(words, box.left, box.top, box.text_right, box.bottom)
             header, body = vision.header_and_body(inside, box.left, box.text_right)
@@ -604,7 +664,15 @@ def _fill(
             serial += 1
             elector.serial_no = serial
             result.electors.append(
-                extract._row(result, elector, page=index, box=box, meta=meta, section=section)
+                extract._row(
+                    result,
+                    elector,
+                    page=index,
+                    box=box,
+                    meta=meta,
+                    section=section,
+                    engine=extract.VISION_ENGINE,
+                )
             )
 
 

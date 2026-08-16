@@ -105,6 +105,7 @@ REASON_FIELD: Dict[str, str] = {
     "name_repaired": "name",
     "no_name": "name",
     "relation_has_latin_or_digits": "relation",
+    "relation_contains_label": "relation",
     "relation_type_unknown": "relation",
     "relation_disagreement": "relation",
     "relation_repaired": "relation",

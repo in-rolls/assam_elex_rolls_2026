@@ -28,9 +28,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from assam_rolls import render
+from assam_rolls import render, schema
 
-from . import crops, output, pages, stage1, stage2, vision, vision_part
+from . import crops, extract, output, pages, stage1, stage2, vision, vision_part
 
 #: Cached rows for one part, so a resumed run re-reads them instead of re-buying them.
 ROWS = "rows.jsonl"
@@ -156,6 +156,11 @@ def read(
     def one(number: int, part_dir: Path) -> None:
         cache = part_dir / ROWS
         cached = _cached_rows(cache)
+        if cached and any(
+            row.get("pipeline_version") != extract.PIPELINE_VERSION for row in cached
+        ):
+            cache.unlink(missing_ok=True)
+            cached = None
         # A cache that covers only part of the part. Stage two used to list the composites on
         # disk, so a run that found three of a part's five images read three and cached the
         # result as though it were the whole part -- and every later run served it from that
@@ -456,10 +461,14 @@ def struck_off_check(
     counted: Dict[int, Dict[str, int]] = {}
     for row in rows:
         part = counted.setdefault(row["part_no"], {"main": 0, "extra": 0, "deleted": 0})
-        if row.get("roll_section", pages.Section.MAIN.value) == pages.Section.MAIN.value:
+        section = row.get("roll_section", pages.Section.MAIN.value)
+        if section == pages.Section.MAIN.value:
             part["main"] += 1
-        else:
+        elif section == pages.Section.ADDITION.value:
             part["extra"] += 1
+        # Deletion sheets repeat entries being removed from the roll. They are rows in the
+        # source artifact but not additions to the population, so including them here inflates
+        # the independently implied struck-off count.
         if row.get("deleted"):
             part["deleted"] += 1
 
@@ -495,8 +504,9 @@ def published_totals(ac_no: int, dataset: Path = Path("dataset/parts.jsonl.gz"))
     with gzip.open(dataset, "rt", encoding="utf-8") as handle:
         for line in handle:
             row = json.loads(line)
-            if row.get("ac_no") == ac_no and row.get("electors_total") is not None:
-                out[row["part_no"]] = row["electors_total"]
+            row_ac, part_no = schema.source_file_key(row)
+            if row_ac == ac_no and row.get("electors_total") is not None:
+                out[part_no] = row["electors_total"]
     return out
 
 

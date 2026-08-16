@@ -1,6 +1,6 @@
 """Writing the shards, and the manifest that makes them checkable from the repo.
 
-One Parquet file per assembly constituency. ~19M elector rows statewide will not live in a
+One Parquet file per assembly constituency. Tens of millions of elector rows will not live in a
 repository whose published dataset is 12 MB, and a single combined file could not be built
 incrementally as zips arrive -- but a shard is exactly one downloadable unit of source data,
 so the boundary matches how the corpus actually arrives.

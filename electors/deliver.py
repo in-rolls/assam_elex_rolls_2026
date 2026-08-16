@@ -31,6 +31,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+from assam_rolls import schema
+
 from . import output, reconcile
 
 #: Where the finished data lives. Deliberately not ``out/``, which this project treats as
@@ -151,7 +153,7 @@ def judge_local(
         with gzip.open(info, "rt", encoding="utf-8") as handle:
             for line in handle:
                 row = json.loads(line)
-                if row.get("ac_no") == ac_no:
+                if schema.source_file_key(row)[0] == ac_no:
                     male += row.get("electors_male") or 0
                     female += row.get("electors_female") or 0
 
@@ -204,7 +206,9 @@ def backfill_bundle(
     published = 0
     if info.exists():
         with gzip.open(info, "rt", encoding="utf-8") as handle:
-            published = sum(1 for line in handle if json.loads(line).get("ac_no") == ac_no)
+            published = sum(
+                1 for line in handle if schema.source_file_key(json.loads(line))[0] == ac_no
+            )
 
     with tempfile.TemporaryDirectory() as scratch:
         work = Path(scratch)

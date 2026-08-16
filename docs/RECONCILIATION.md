@@ -98,27 +98,7 @@ The shard's **SHA-256 is checked before it is accepted**, and a shard failing it
 deleted rather than left on disk — a truncated download is otherwise a silently short
 constituency, which is precisely the failure this project keeps producing.
 
-## Current state
-
-Sixty-four constituencies judged, 13.6M electors: **31 PASS, 33 FAIL**. The failures fall into
-three causes, and none of them means the rows are wrong:
-
-```
-   12  rows match printed totals   a part's count differs from its own closing total
-   12  fields populated            a column empty on most rows -- all Bengali, all house_no
-    9  every part measurable       some closing pages were never read, so nothing to compare
-```
-
-The twelve `fields populated` failures are one defect: `HOUSE_RE` knew only the Assamese `ঘৰ নং`
-and the Bengali rolls print `বাড়ী নং`. Fixed, and reproducible at 91.6–94.3% recovery from cached
-words.
-
-**Do not read a PASS as "this constituency is good."** AC101 passes every check on this page —
-210 of 210 parts, all measured, all matching — and the floor below finds 19.5% of its rows
-provably wrong. This section says what is *complete*; the next says what is *right*, and they
-disagree.
-
-## The error floor: rows that are wrong on their face
+## Release results and the error floor
 
 Everything above compares counts. `electors floor` asks a different question — **how many rows are
 provably wrong**, needing no ground truth and no page to be read:
@@ -132,26 +112,13 @@ provably wrong**, needing no ground truth and no page to be read:
 | **the same EPIC on two rows of one constituency** | unique by definition, so one of them is wrong |
 | age outside 18–120 | an electoral roll holds no seven-year-olds |
 
-Measured over 13.6M rows:
+The [extraction report](EXTRACTION_REPORT.md) is the canonical release snapshot. It records the
+statewide row and part counts, reconciliation coverage, field fill by edition, and each floor
+detector's measured rate. Keeping those values in one generated page prevents this design note
+from preserving an intermediate fleet result after the data changes.
 
-```
-   Assamese 11,157,300 rows        Bengali 2,442,020 rows
-     malformed EPIC     4.77%        malformed EPIC     2.23%
-     repeated EPIC      1.81%        repeated EPIC      1.58%
-     label in a value   1.17%        label in a value   2.29%
-     name = relation    0.01%        name = relation    0.01%
-     latin in a name    0.00%        impossible age     0.00%
-```
-
-**Reported per edition, because a single number hides a failure confined to one.** The Bengali
-house-number column was empty on every row of ten constituencies — 2.2 million — and showed up in
-an overall rate as a two percent blemish.
-
-This is a **lower bound**, not an error rate. A row no detector condemns is *unmeasured*, not
-correct. It is also independent of the verdict above, and that independence is the point:
-**AC101 — 210 of 210 parts, passing every check on this page, described in this repository as the
-reference standard — has 19.5% of its rows provably wrong.** Completeness and accuracy are
-different questions and this is what the difference looks like.
+The floor remains independent of the completeness verdict. A row no detector condemns is
+*unmeasured*, not correct. Completeness and transcription accuracy are different questions.
 
 ## What none of this can see
 

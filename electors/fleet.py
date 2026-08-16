@@ -30,6 +30,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from assam_rolls import schema
+
 #: Matches ``gcp_worker.sh``'s ``STALE``. A claim older than this is one the workers themselves
 #: will steal, so reporting a different threshold here would describe a fleet that does not exist.
 #: Six missed heartbeats: the beat runs on its own timer, so a quiet machine is gone rather than
@@ -187,9 +189,8 @@ def published_parts(info: Path = Path("dataset/parts.jsonl.gz")) -> Dict[int, in
         return {}
     with gzip.open(info, "rt", encoding="utf-8") as handle:
         for line in handle:
-            ac_no = json.loads(line).get("ac_no")
-            if ac_no is not None:
-                counts[int(ac_no)] += 1
+            ac_no, _ = schema.source_file_key(json.loads(line))
+            counts[ac_no] += 1
     return dict(counts)
 
 

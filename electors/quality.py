@@ -35,13 +35,12 @@ import re
 from collections import Counter
 from typing import Any, Dict, Iterable, List, Sequence
 
+from . import floor
+
 #: Assamese text. A name made only of these is at least plausible; one containing Latin
 #: letters or digits is not.
 LATIN = re.compile(r"[A-Za-z]")
 DIGIT = re.compile(r"[0-9০-৯]")
-
-#: Label fragments that mean the label leaked into the value rather than being stripped.
-LEAKED_LABELS = ("নাম", "বয়স", "লিঙ্গ", "ঘৰ")
 
 EPIC_RE = re.compile(r"^[A-Z]{2,4}\d{6,9}$")
 
@@ -56,13 +55,16 @@ def problems_with(row: Dict[str, Any]) -> List[str]:
     relation = row.get("relation_name") or ""
     epic = row.get("epic_no") or ""
     age = row.get("age")
+    latin_is_wrong = row.get("lang") != "ENG"
 
-    if name and (LATIN.search(name) or DIGIT.search(name)):
+    if name and ((latin_is_wrong and LATIN.search(name)) or DIGIT.search(name)):
         problems.append("name_has_latin_or_digits")
-    if relation and (LATIN.search(relation) or DIGIT.search(relation)):
+    if relation and ((latin_is_wrong and LATIN.search(relation)) or DIGIT.search(relation)):
         problems.append("relation_has_latin_or_digits")
-    if name and any(label in name for label in LEAKED_LABELS):
+    if name and floor.has_leaked_label(row, name):
         problems.append("name_contains_label")
+    if relation and floor.has_leaked_label(row, relation):
+        problems.append("relation_contains_label")
     if name and relation and name == relation:
         # Seen in real output: তন্ডা ৰাভা as both. One band was read twice.
         problems.append("name_equals_relation")

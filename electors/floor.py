@@ -28,7 +28,7 @@ from __future__ import annotations
 import collections
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Sequence
 
 #: Latin letters and Latin digits. On a roll printed in Assamese or Bengali these do not belong in
 #: a person's name: the engine mapped a Bengali glyph onto a lookalike from the wrong script.
@@ -37,6 +37,10 @@ LATIN = re.compile(r"[A-Za-z]")
 #: Printed field labels. A label inside a *value* means the split between label and value failed,
 #: so the value carries text that is not the person's.
 LABELS = ("নাম", "বয়স", "লিঙ্গ", "ঘৰ", "বাড়ী", "বাড়ি", "নং")
+
+#: The corresponding labels on AC113's English edition. As with the Bengali-script labels below,
+#: only a whole label at a value edge counts; a label-shaped substring inside a name does not.
+ENGLISH_LABEL = r"(?:NAME|AGE|GENDER|HOUSE\s+NO\.?|(?:FATHER|MOTHER|HUSBAND)'?S?\s+NAME)"
 
 #: Three letters and seven digits, as the roll prints it.
 EPIC = re.compile(r"^[A-Z]{3}[0-9]{7}$")
@@ -76,7 +80,7 @@ def latin_in_name(rows: Sequence[Dict[str, Any]]) -> Finding:
         rows,
         "latin in name",
         "the roll prints names in Assamese/Bengali; Latin letters are a cross-script misread",
-        lambda r: bool(LATIN.search(r.get("name") or "")),
+        lambda r: r.get("lang") != "ENG" and bool(LATIN.search(r.get("name") or "")),
         lambda r: f"{r.get('name')!r}",
     )
 
@@ -113,6 +117,13 @@ def name_is_relation(rows: Sequence[Dict[str, Any]]) -> Finding:
 #: (73 rows against 11,362) but no less wrong.
 _LABELS = "|".join(LABELS)
 LEAKED = re.compile(rf"^\s*(?:{_LABELS})(?![ঀ-৿])|(?<![ঀ-৿])(?:{_LABELS})\s*$")
+ENGLISH_LEAKED = re.compile(rf"^\s*{ENGLISH_LABEL}\b|\b{ENGLISH_LABEL}\s*$", re.IGNORECASE)
+
+
+def has_leaked_label(row: Dict[str, Any], value: str) -> bool:
+    """Whether a value starts or ends with a printed label for its roll language."""
+    pattern = ENGLISH_LEAKED if row.get("lang") == "ENG" else LEAKED
+    return bool(pattern.search(value))
 
 
 def label_in_value(rows: Sequence[Dict[str, Any]]) -> Finding:
@@ -121,7 +132,7 @@ def label_in_value(rows: Sequence[Dict[str, Any]]) -> Finding:
         rows,
         "label inside a value",
         "a printed label leaked past the label/value split",
-        lambda r: any(LEAKED.search(r.get(f) or "") for f in ("name", "relation_name")),
+        lambda r: any(has_leaked_label(r, r.get(f) or "") for f in ("name", "relation_name")),
         lambda r: f"{r.get('name')!r} / {r.get('relation_name')!r}",
     )
 
@@ -145,16 +156,16 @@ def repeated_epic(rows: Sequence[Dict[str, Any]]) -> Finding:
     also *directional*: rows sharing an EPIC were already found to be eleven times likelier to
     carry an unreadable name, which is what implicated the digit-position repair.
 
-    Counted as ``rows involved in a repeat`` rather than ``distinct repeated values``, because the
-    question is how many rows are suspect, and only one row of each colliding pair is necessarily
-    wrong -- so this over-counts by design and is a bound on the bound.
+    Counted as the minimum number of wrong rows: for an identifier seen ``n`` times, at least
+    ``n - 1`` rows must be wrong. Counting every row involved would describe suspicion, not a
+    lower bound.
     """
     seen = collections.Counter(r["epic_no"] for r in rows if EPIC.match(r.get("epic_no") or ""))
     repeats = {value for value, n in seen.items() if n > 1}
-    hits = [r for r in rows if r.get("epic_no") in repeats]
+    condemned = sum(seen[value] - 1 for value in repeats)
     return Finding(
         "repeated EPIC",
-        len(hits),
+        condemned,
         len(rows),
         "an identifier unique by definition, appearing twice; at least one row is wrong",
         [f"{v} x{seen[v]}" for v in list(repeats)[:4]],
@@ -184,6 +195,24 @@ DETECTORS = (
 
 def scan(rows: Sequence[Dict[str, Any]]) -> List[Finding]:
     return [detector(rows) for detector in DETECTORS]
+
+
+def combine(scans: Iterable[Sequence[Finding]]) -> List[Finding]:
+    """Merge shard-level scans without retaining the statewide rows in memory."""
+    merged: Dict[str, Finding] = {}
+    order: List[str] = []
+    for findings in scans:
+        for found in findings:
+            if found.name not in merged:
+                order.append(found.name)
+                merged[found.name] = Finding(found.name, 0, 0, found.why)
+            current = merged[found.name]
+            if current.why != found.why:
+                raise ValueError(f"detector {found.name!r} changed its meaning between shards")
+            current.condemned += found.condemned
+            current.total += found.total
+            current.examples.extend(found.examples[: max(0, 4 - len(current.examples))])
+    return [merged[name] for name in order]
 
 
 def render(findings: Sequence[Finding], label: str = "") -> str:

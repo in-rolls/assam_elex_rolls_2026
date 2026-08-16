@@ -1038,12 +1038,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if all(not r.error for r in runs) else 1
 
 
-#: Constituencies published in Bengali. The editions take different label paths through the
-#: parser, so a single overall rate hides a failure confined to one of them -- which is exactly
-#: how an empty house-number column survived in 2.2 million rows.
-BENGALI = frozenset({114, 115, 116, 117, 118, 119, 120, 122, 123, 125, 126})
-
-
 def cmd_floor(args: argparse.Namespace) -> int:
     """Count the rows that are wrong on their face, and say what the count does not cover."""
     from . import floor, output
@@ -1056,15 +1050,26 @@ def cmd_floor(args: argparse.Namespace) -> int:
         print("   no shards; run 'electors pull' first")
         return 1
 
-    groups: Dict[str, List[Dict[str, Any]]] = {"Assamese": [], "Bengali": []}
+    labels = {"ASM": "Assamese", "BEN": "Bengali", "ENG": "English"}
+    groups: Dict[str, List[List[floor.Finding]]] = {}
     for shard in shards:
-        edition = "Bengali" if int(shard.name[2:5]) in BENGALI else "Assamese"
-        groups[edition].extend(output.read_shard(shard))
+        rows = output.read_shard(shard)
+        by_edition: Dict[str, List[Dict[str, Any]]] = {}
+        for row in rows:
+            code = row.get("lang", "")
+            edition = labels.get(code, f"Unknown ({code or 'blank'})")
+            by_edition.setdefault(edition, []).append(row)
+        for edition, edition_rows in by_edition.items():
+            groups.setdefault(edition, []).append(floor.scan(edition_rows))
 
-    for edition, rows in groups.items():
-        if rows:
-            print(floor.render(floor.scan(rows), edition))
+    for edition in ("Assamese", "Bengali", "English"):
+        scans = groups.pop(edition, [])
+        if scans:
+            print(floor.render(floor.combine(scans), edition))
             print()
+    for edition, scans in sorted(groups.items()):
+        print(floor.render(floor.combine(scans), edition))
+        print()
     print("   a lower bound. A row no detector condemns is unmeasured, not correct --")
     print("   nothing here can see a name that is plausible and wrong.")
     return 0
@@ -1167,9 +1172,10 @@ def cmd_status(args: argparse.Namespace) -> int:
         with gzip.open(info, "rt", encoding="utf-8") as handle:
             for line in handle:
                 row = json.loads(line)
-                published[row["ac_no"]] += 1
-                male[row["ac_no"]] += row.get("electors_male") or 0
-                female[row["ac_no"]] += row.get("electors_female") or 0
+                ac_no, _ = schema.source_file_key(row)
+                published[ac_no] += 1
+                male[ac_no] += row.get("electors_male") or 0
+                female[ac_no] += row.get("electors_female") or 0
 
     verdicts = []
     for shard in sorted(Path(args.shards).glob("AC*.parquet")):
@@ -1243,6 +1249,18 @@ def cmd_verify(args: argparse.Namespace) -> int:
     print()
     print(verify.render_report(checks))
     return 0 if all(c.ok for c in checks) else 1
+
+
+def cmd_release(args: argparse.Namespace) -> int:
+    """Build the statewide artifact only after every shard passes its release invariants."""
+    from . import release
+
+    report = release.build(Path(args.shards), Path(args.parts), Path(args.out))
+    print(
+        f"{report.rows:,} rows, {report.parts:,} parts, {report.acs} constituencies -> "
+        f"{args.out}\nSHA-256 {report.sha256}"
+    )
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1452,6 +1470,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_ver.add_argument("--sample", type=int, default=40, help="tiles per part; 0 means all")
     p_ver.add_argument("--all", action="store_true", help="compare every tile, not a sample")
     p_ver.set_defaults(func=cmd_verify)
+
+    p_release = sub.add_parser(
+        "release", help="validate all elector shards and assemble the statewide Parquet"
+    )
+    p_release.add_argument("--shards", default="data/electors")
+    p_release.add_argument("--parts", default="dataset/parts.jsonl.gz")
+    p_release.add_argument("--out", default="data/assam_electoral_rolls_2026.parquet")
+    p_release.set_defaults(func=cmd_release)
 
     p_report = sub.add_parser("report", help="reconcile a shard against the info pages")
     p_report.add_argument("shard")

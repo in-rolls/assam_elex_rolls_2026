@@ -8,7 +8,7 @@ input that must not.
 
 import pytest
 
-from electors import floor
+from electors import floor, quality
 
 
 def rows(**overrides):
@@ -53,8 +53,14 @@ def test_repeated_epic_needs_two_rows():
     """Uniqueness is the one detector a single row cannot express."""
     shared = dict(rows()[0])
     other = dict(shared, name="আনোৱাৰ আলী")
-    assert floor.repeated_epic([shared, other]).condemned == 2
+    assert floor.repeated_epic([shared, other]).condemned == 1
     assert floor.repeated_epic([shared, dict(other, epic_no="XYZ7654321")]).condemned == 0
+
+
+def test_repeated_epic_counts_the_minimum_wrong_rows():
+    repeated = rows(epic_no="ABC1234567") * 3
+
+    assert floor.repeated_epic(repeated).condemned == 2
 
 
 def test_repeated_epic_ignores_malformed_ones():
@@ -73,9 +79,47 @@ def test_an_empty_field_is_not_condemned():
     assert all(f.condemned == 0 for f in floor.scan(blank))
 
 
+def test_a_latin_name_is_valid_on_the_english_roll():
+    assert floor.latin_in_name(rows(name="PROKAS RAI", lang="ENG")).condemned == 0
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        "Age Fathers House : 89 : No. RAM Name Ge",
+        "Fathers House : 59 : No.46 NIBARON Name",
+        "House Fathers : 67 : No. NAR Name Gender",
+    ),
+)
+def test_an_english_label_at_a_value_edge_is_a_leak(value):
+    assert floor.label_in_value(rows(name=value, lang="ENG")).condemned == 1
+
+
+def test_shared_quality_checks_are_language_aware():
+    clean = {"name": "PROKAS RAI", "relation_name": "RAJ BAHADUR RAI", "lang": "ENG"}
+    assert quality.problems_with(clean) == []
+
+    labeled = dict(clean, name="Age Fathers House : 89 : No. RAM Name Ge")
+    assert "name_contains_label" in quality.problems_with(labeled)
+
+    digit = dict(clean, name="PROKAS RAI 7")
+    assert "name_has_latin_or_digits" in quality.problems_with(digit)
+
+
 def test_render_names_the_failing_detector():
     text = floor.render(floor.scan(rows(name="PROKAS RAI")))
     assert "latin in name" in text
+
+
+def test_shard_scans_combine_without_losing_counts_or_examples():
+    first = floor.scan(rows(name="PROKAS RAI"))
+    second = floor.scan(rows(name="ৰমেন Das"))
+
+    combined = floor.combine([first, second])
+    latin = next(found for found in combined if found.name == "latin in name")
+
+    assert (latin.condemned, latin.total) == (2, 2)
+    assert latin.examples == ["'PROKAS RAI'", "'ৰমেন Das'"]
 
 
 def test_a_name_containing_a_label_is_not_a_leak():

@@ -56,7 +56,17 @@ from . import crops, extract, pages, repack, summary, vision, vision_part
 #: 2.4.0 -- the Bengali genitive section titles (সংযোজনের তালিকা) classify as supplements, and the
 #:          Bengali র is accepted where only the Assamese ৰ was. AC126's sections were written by
 #:          the older classifier and are exactly the stale output this gate exists to invalidate.
-STAGE1_VERSION = "2.4.0"
+#: 2.5.0 -- section markers have a left word boundary, so -বাদ in place names is not a deletion,
+#:          and sparse continuation pages inherit an addition section.
+#: 2.6.0 -- section headers and closing summaries use the source roll's declared language;
+#:          English pages are no longer sent through the Assamese OCR model.
+#: 2.7.0 -- a single ruled elector row is recovered, and an English closing table whose rules
+#:          resemble elector boxes is identified by its explicit title instead of emitted.
+#: 2.8.0 -- a page whose three detected text columns have impossible unequal widths inherits
+#:          the part's established geometry; stray vertical rules no longer become dividers.
+#: 2.9.0 -- cached serial, EPIC, and status reads require both identical source bytes and an
+#:          identical crop rectangle; a geometry repair cannot retain reads from the old box.
+STAGE1_VERSION = "2.9.0"
 
 
 @dataclass
@@ -131,7 +141,11 @@ def prepare_part(
         with tempfile.TemporaryDirectory() as tmp:
             images = vision_part.rasterize(dpi)(pdf_bytes, Path(tmp))
             prep.pages = len(images)
-            entries, side = vision_part.tiles_for(images)
+            entries, side = vision_part.tiles_for(
+                images,
+                meta.get("lang", ""),
+                prior_box_reads=_prior_box_reads(part_dir, sha),
+            )
             prep.unknown_pages = side["unknown"]
             prep.elector_pages = len(side["pages"])
             prep.boxes = len(entries)
@@ -206,6 +220,30 @@ def prepare_part(
     return prep
 
 
+def _prior_box_reads(part_dir: Path, pdf_sha256: str) -> vision_part.PriorBoxReads:
+    """Reusable serial/EPIC reads from an earlier layout of the identical source PDF.
+
+    A stage-one version bump can change page classification without changing an existing box's
+    header. Re-running two Tesseract processes for every unchanged box makes a safe cache
+    invalidation take hours. Position keys are reused only when the old manifest proves that it
+    came from the same source bytes and records the exact header OCR rectangles. The caller
+    compares those rectangles with the current serial/status and EPIC crops before reuse.
+    """
+    side_path = part_dir / "side.json"
+    if not side_path.exists():
+        return {}
+    try:
+        manifest = crops.read_manifest(part_dir)
+        if not manifest or {row.get("pdf_sha256") for row in manifest.values()} != {pdf_sha256}:
+            return {}
+        previous = read_side(side_path)
+        if previous.get("header_reader_version") != vision_part.HEADER_READER_VERSION:
+            return {}
+    except (KeyError, OSError, ValueError):
+        return {}
+    return {key: read for page in previous["pages"].values() for key, read in page["boxes"].items()}
+
+
 def _write(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
@@ -232,6 +270,9 @@ def write_side(path: Path, side: Dict[str, Any]) -> None:
             # total, and stamping the current version there would mark output produced by older
             # stage-one code as fresh -- the exact failure done() exists to prevent.
             "stage1_version": side.get("stage1_version") or STAGE1_VERSION,
+            # Unlike stage1_version, never default this while rewriting an older side file in
+            # stage two. A purchased summary must not make stale header OCR look compatible.
+            "header_reader_version": side.get("header_reader_version", ""),
             "unknown": side["unknown"],
             "summary": (
                 None
@@ -264,6 +305,7 @@ def read_side(path: Path) -> Dict[str, Any]:
             for number, page in raw["pages"].items()
         },
         "stage1_version": raw.get("stage1_version", ""),
+        "header_reader_version": raw.get("header_reader_version", ""),
         "unknown": raw["unknown"],
         "summary": (None if raw["summary"] is None else summary.RollSummary(**raw["summary"])),
     }

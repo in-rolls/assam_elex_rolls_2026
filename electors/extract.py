@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from PIL import Image
 
-from assam_rolls import ocr, render, schema
+from assam_rolls import languages, ocr, render, schema
 
 from . import fields, grid, pages, replay
 from . import summary as summary_page
@@ -55,7 +55,18 @@ DPI = 400
 #:          scanner debris by definition: the roll prints those fields in Assamese only.
 #: 1.8.0 -- relation labels are matched by shape and scored against the three relatives, rather
 #:          than enumerated. The enumeration was not converging.
-PIPELINE_VERSION = "1.8.0"
+#: 1.9.0 -- repacked English boxes retain their body lines instead of passing through the
+#:          Assamese-script header splitter, which discarded every field in AC113.
+#: 2.0.0 -- serial numbers continue through supplements instead of restarting at section
+#:          boundaries, and sparse supplement pages inherit the preceding addition section.
+#: 2.1.0 -- row provenance records the Google Cloud Vision body reader and Tesseract header
+#:          reader instead of incorrectly attributing every extracted field to Tesseract.
+PIPELINE_VERSION = "2.1.0"
+
+#: The production path sends elector body fields to Google Cloud Vision and reads the header
+#: cells locally with Tesseract. A single-engine label would misstate either half of the row.
+MIXED_ENGINE = "google-cloud-vision+tesseract"
+VISION_ENGINE = "google-cloud-vision"
 
 
 @dataclass
@@ -133,7 +144,8 @@ def read_part(
         source_pdf=pdf_name,
         pdf_sha256=render.sha256_bytes(pdf_bytes),
     )
-    engine = engine or ocr.get_engine("tesseract", lang="asm")
+    tesseract_lang = languages.profile_for(result.lang).tesseract_lang
+    engine = engine or ocr.get_engine("tesseract", lang=tesseract_lang)
     captured = (
         replay.PartLines(
             part=result.part_no,
@@ -141,7 +153,7 @@ def read_part(
             capture_version=replay.CAPTURE_VERSION,
             scale=fields.NAME_SCALES[0],
             psm=7,
-            lang="asm",
+            lang=tesseract_lang,
         )
         if capture_lines
         else None
@@ -162,7 +174,7 @@ def read_part(
                     result.unknown_pages.append(index)
                     continue
                 if signature.kind is pages.PageKind.SUMMARY and result.summary_total is None:
-                    found = summary_page.read(engine, image)
+                    found = summary_page.read(engine, image, tesseract_lang)
                     if found:
                         result.summary_male = found.male
                         result.summary_female = found.female
@@ -178,18 +190,26 @@ def read_part(
                     # thirty plausible rows of nothing.
                     result.unknown_pages.append(index)
                     continue
-                result.elector_pages += 1
+                header = _page_header(engine, image, boxes, tesseract_lang)
+                if summary_page.is_summary(header):
+                    if result.summary_total is None:
+                        found = summary_page.read(engine, image, tesseract_lang)
+                        if found:
+                            result.summary_male = found.male
+                            result.summary_female = found.female
+                            result.summary_third = found.third
+                            result.summary_total = found.total
+                    image.close()
+                    continue
 
-                section, recognised = _section_of_page(engine, image, boxes)
+                result.elector_pages += 1
+                section, recognised = pages.section_of(header)
+                section = pages.section_after(current_section, section)
+                current_section = section
                 if not recognised:
                     result.unrecognised_headers.append(index)
                 if section is not pages.Section.MAIN:
                     result.supplement_pages.append(index)
-                # Each list is numbered from 1 in the source, so the counter restarts when
-                # the section changes rather than running through as if it were one roll.
-                if section is not current_section:
-                    current_section, serial = section, 0
-
                 for box, elector, reads in fields.read_page(image, boxes):
                     if captured is not None:
                         captured.boxes.append(
@@ -232,13 +252,12 @@ def read_part(
     return result
 
 
-def _section_of_page(engine, image: Image.Image, boxes: List[grid.Box]):
-    """Read the header band above the first box and say which list this page belongs to."""
+def _page_header(engine, image: Image.Image, boxes: List[grid.Box], lang: str) -> str:
+    """Read the title band used to distinguish sections from closing summaries."""
     top = min(boxes[0].top, int(image.height * 0.09))
     if top <= 0:
-        return pages.Section.MAIN, False
-    header = engine._run(image.crop((0, 0, image.width, top)), "asm", None, 1, psm=6)
-    return pages.section_of(header)
+        return ""
+    return engine._run(image.crop((0, 0, image.width, top)), lang, None, 1, psm=6)
 
 
 def _row(
@@ -248,6 +267,7 @@ def _row(
     box: grid.Box,
     meta: Dict[str, Any],
     section: "pages.Section",
+    engine: str = "tesseract",
 ) -> Dict[str, Any]:
     """One output row: the elector, where it came from, and how it was read."""
     row = asdict(elector)
@@ -268,7 +288,7 @@ def _row(
             "roll_type": meta.get("roll_type", ""),
             "revision": meta.get("revision"),
             "year": meta.get("year"),
-            "engine": "tesseract",
+            "engine": engine,
             "pipeline_version": PIPELINE_VERSION,
             "extracted_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }

@@ -13,7 +13,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from electors import stage1, stage2
+from electors import extract, stage1, stage2
 
 #: One real word. An empty list now means "never usefully read", so a fixture that wants a
 #: cached read has to contain something.
@@ -145,7 +145,17 @@ def _part_with_boxes(tmp_path: Path, boxes: int, cached_rows: int) -> Path:
         },
     )
     (part / "rows.jsonl").write_text(
-        "".join('{"part_no": 1, "roll_section": "main"}\n' for _ in range(cached_rows)),
+        "".join(
+            json.dumps(
+                {
+                    "part_no": 1,
+                    "roll_section": "main",
+                    "pipeline_version": extract.PIPELINE_VERSION,
+                }
+            )
+            + "\n"
+            for _ in range(cached_rows)
+        ),
         encoding="utf-8",
     )
     return part

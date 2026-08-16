@@ -14,7 +14,7 @@ target would mean deleting real rows until a number that cannot be right looks r
 
 So the checks are separated by what each can actually prove:
 
-``serial``     serials run 1..N within each list, no gaps. Ordering and numbering are
+``serial``     serials run 1..N within each part, no gaps. Ordering and numbering are
                intact. This is checkable from the data alone.
 ``sex``        the male/female split against the published one. A *ratio* check: it caught a
                matcher that returned 41/59 against a published 51/49, which no count would
@@ -39,6 +39,8 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
+
+from assam_rolls import schema
 
 PARTS = Path("dataset/parts.jsonl.gz")
 
@@ -99,14 +101,14 @@ class PartCheck:
 
 
 def load_part_totals(path: Path = PARTS) -> Dict[tuple, Dict[str, Any]]:
-    """``(ac_no, part_no)`` -> the published elector counts."""
+    """Filename-derived ``(ac_no, part_no)`` -> the published elector counts."""
     out: Dict[tuple, Dict[str, Any]] = {}
     with gzip.open(path, "rt", encoding="utf-8") as handle:
         for line in handle:
             if not line.strip():
                 continue
             row = json.loads(line)
-            out[(row["ac_no"], row["part_no"])] = {
+            out[schema.source_file_key(row)] = {
                 "total": row.get("electors_total"),
                 "male": row.get("electors_male"),
                 "female": row.get("electors_female"),
